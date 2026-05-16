@@ -1,12 +1,12 @@
 """
-pull_savant.py — Pull batter and pitcher season stats via pybaseball.
+pull_savant.py — Pull batter season stats from Baseball Savant raw Statcast.
 
-This script pulls FanGraphs season-level stats (which include Statcast columns
-like Barrel%, HardHit%, EV, LA, etc.) and writes them to the `batter_stats`
-and `pitcher_arsenals` (base row) tables.
+Strategy: pull this season's pitch-level Statcast data ONCE (big request),
+then aggregate per batter into season totals, including L/R splits.
 
-Only pulls for players currently in the `players` table (probable pitchers
-and lineup-relevant batters — keeps us under 500MB).
+We skip FanGraphs entirely. FanGraphs' legacy leaderboard endpoint blocks
+pybaseball's default User-Agent with a 403, but Baseball Savant's CSV
+endpoints (which pybaseball.statcast uses) work fine.
 
 Runs twice daily via GitHub Actions.
 """
@@ -14,13 +14,12 @@ Runs twice daily via GitHub Actions.
 import os
 import sys
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 import pandas as pd
 from supabase import create_client
 from dotenv import load_dotenv
 
-# pybaseball has noisy progress bars; suppress
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -31,6 +30,7 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CURRENT_SEASON = 2026
+SEASON_START = f"{CURRENT_SEASON}-03-15"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,101 +39,13 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ────────────────────────────────────────────────────────────────
-# BATTER STATS
-# ────────────────────────────────────────────────────────────────
-
-def fetch_batter_stats() -> pd.DataFrame:
-    """Pull FanGraphs season batting stats. ~500 qualified batters."""
-    from pybaseball import batting_stats
-    log.info("Fetching FanGraphs batting stats for %d…", CURRENT_SEASON)
-    # qual=1 means at least 1 PA; we want everyone, we'll filter later
-    df = batting_stats(CURRENT_SEASON, CURRENT_SEASON, qual=1)
-    log.info("  Got %d batters", len(df))
-    return df
+def get_known_batters() -> dict[int, int]:
+    """Return {mlbam_id: players.id} for all non-pitchers we know."""
+    res = sb.table("players").select("id, mlbam_id, is_pitcher").execute()
+    return {p["mlbam_id"]: p["id"] for p in res.data if not p["is_pitcher"]}
 
 
-def transform_batter_row(row: pd.Series, player_id: int) -> dict:
-    """Convert a FanGraphs row to our `batter_stats` schema."""
-    return {
-        "batter_id": player_id,
-        "season": CURRENT_SEASON,
-        "window_type": "season",
-        "vs_hand": "A",  # season totals vs all pitchers
-        "pa": int(row.get("PA", 0)),
-        "ab": int(row.get("AB", 0)),
-        "hits": int(row.get("H", 0)),
-        "hr": int(row.get("HR", 0)),
-        "avg": float(row.get("AVG", 0)) if pd.notna(row.get("AVG")) else None,
-        "obp": float(row.get("OBP", 0)) if pd.notna(row.get("OBP")) else None,
-        "slg": float(row.get("SLG", 0)) if pd.notna(row.get("SLG")) else None,
-        "iso": float(row.get("ISO", 0)) if pd.notna(row.get("ISO")) else None,
-        "hr_per_pa": (
-            float(row["HR"]) / float(row["PA"])
-            if row.get("PA", 0) > 0 else None
-        ),
-        "hit_per_pa": (
-            float(row["H"]) / float(row["PA"])
-            if row.get("PA", 0) > 0 else None
-        ),
-        "barrel_pct": _pct(row.get("Barrel%")),
-        "hard_hit_pct": _pct(row.get("HardHit%")),
-        "ev_avg": _num(row.get("EV")),
-        "la_avg": _num(row.get("LA")),
-        "pull_pct": _pct(row.get("Pull%")),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-# ────────────────────────────────────────────────────────────────
-# PITCHER STATS (base row, arsenal details come from pull_arsenals.py)
-# ────────────────────────────────────────────────────────────────
-
-def fetch_pitcher_stats() -> pd.DataFrame:
-    """Pull FanGraphs season pitching stats."""
-    from pybaseball import pitching_stats
-    log.info("Fetching FanGraphs pitching stats for %d…", CURRENT_SEASON)
-    df = pitching_stats(CURRENT_SEASON, CURRENT_SEASON, qual=1)
-    log.info("  Got %d pitchers", len(df))
-    return df
-
-
-# ────────────────────────────────────────────────────────────────
-# HELPERS
-# ────────────────────────────────────────────────────────────────
-
-def _pct(v):
-    """FanGraphs returns percentages as 0.123 or '12.3%'. Normalize to 0-100."""
-    if v is None or pd.isna(v):
-        return None
-    if isinstance(v, str):
-        v = v.strip().rstrip("%")
-        try:
-            v = float(v)
-        except ValueError:
-            return None
-    v = float(v)
-    # If less than 1, it's a decimal; multiply by 100
-    return v * 100 if v <= 1 else v
-
-
-def _num(v):
-    if v is None or pd.isna(v):
-        return None
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return None
-
-
-def get_known_players() -> dict[int, int]:
-    """Return {mlbam_id: players.id} for everyone we've already seen."""
-    res = sb.table("players").select("id, mlbam_id").execute()
-    return {p["mlbam_id"]: p["id"] for p in res.data}
-
-
-def upsert_batter(mlbam_id: int, name: str, team_abbrev: str | None) -> int:
-    """Create a batter record if we haven't seen them, return players.id."""
+def upsert_batter(mlbam_id: int, name: str) -> int:
     payload = {
         "mlbam_id": mlbam_id,
         "name": name,
@@ -144,84 +56,204 @@ def upsert_batter(mlbam_id: int, name: str, team_abbrev: str | None) -> int:
     return res.data[0]["id"]
 
 
-def lookup_mlbam_id(fg_name: str, fg_team: str) -> int | None:
-    """
-    FanGraphs uses 'IDfg' but we key by mlbam_id. Use playerid_lookup to bridge.
-    Names from FanGraphs can be 'Aaron Judge' style.
-    """
-    from pybaseball import playerid_lookup
-    parts = fg_name.split(" ", 1)
-    if len(parts) < 2:
-        return None
-    first, last = parts[0], parts[1]
+def fetch_all_statcast() -> pd.DataFrame | None:
+    """Pull this season's pitch-level Statcast data."""
+    from pybaseball import statcast
+    today = date.today().isoformat()
+    log.info("Fetching Statcast %s → %s (this can take 1-3 minutes)…",
+             SEASON_START, today)
     try:
-        df = playerid_lookup(last, first, fuzzy=False)
-        if df.empty:
+        df = statcast(start_dt=SEASON_START, end_dt=today)
+        if df is None or df.empty:
+            log.warning("Empty Statcast response")
             return None
-        # Active players (still playing in current season)
-        active = df[df["mlb_played_last"] >= CURRENT_SEASON - 1]
-        if active.empty:
-            return None
-        return int(active.iloc[0]["key_mlbam"])
+        log.info("  Got %d pitches", len(df))
+        return df
     except Exception as e:
-        log.debug("  playerid_lookup failed for %s: %s", fg_name, e)
+        log.exception("Statcast pull failed: %s", e)
         return None
 
 
-# ────────────────────────────────────────────────────────────────
-# MAIN
-# ────────────────────────────────────────────────────────────────
+def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str) -> dict:
+    """Aggregate one batter's pitches into season totals."""
+    pa_rows = group[group["events"].notna()]
+    pa = len(pa_rows)
 
-def sync_batters():
-    """Pull batting stats and write to batter_stats for every batter."""
-    df = fetch_batter_stats()
-    known = get_known_players()
+    # AB excludes BB, HBP, sac flies, etc.
+    non_ab_events = {
+        "walk", "hit_by_pitch", "sac_fly", "sac_bunt",
+        "intent_walk", "catcher_interf",
+    }
+    ab = pa_rows[~pa_rows["events"].isin(non_ab_events)].shape[0]
+
+    hit_events = {"single", "double", "triple", "home_run"}
+    hits = pa_rows[pa_rows["events"].isin(hit_events)].shape[0]
+    hr = int((pa_rows["events"] == "home_run").sum())
+    singles = int((pa_rows["events"] == "single").sum())
+    doubles = int((pa_rows["events"] == "double").sum())
+    triples = int((pa_rows["events"] == "triple").sum())
+
+    bb = int(pa_rows["events"].isin(["walk", "intent_walk"]).sum())
+    hbp = int((pa_rows["events"] == "hit_by_pitch").sum())
+    sf = int((pa_rows["events"] == "sac_fly").sum())
+
+    avg = hits / ab if ab > 0 else None
+    obp_denom = ab + bb + hbp + sf
+    obp = (hits + bb + hbp) / obp_denom if obp_denom > 0 else None
+    tb = singles + 2 * doubles + 3 * triples + 4 * hr
+    slg = tb / ab if ab > 0 else None
+    iso = (slg - avg) if (slg is not None and avg is not None) else None
+
+    # Ball-in-play stats
+    bip = group[group["type"] == "X"] if "type" in group.columns else group.iloc[0:0]
+
+    barrel_pct = None
+    if not bip.empty and "launch_speed_angle" in bip.columns:
+        barrels = (bip["launch_speed_angle"] == 6).sum()
+        if len(bip):
+            barrel_pct = barrels / len(bip) * 100
+
+    hh_pct = ev_avg = la_avg = None
+    if not bip.empty and "launch_speed" in bip.columns:
+        ev_clean = bip["launch_speed"].dropna()
+        if len(ev_clean):
+            hh = (ev_clean >= 95).sum()
+            hh_pct = hh / len(ev_clean) * 100
+            ev_avg = float(ev_clean.mean())
+        if "launch_angle" in bip.columns:
+            la_clean = bip["launch_angle"].dropna()
+            if len(la_clean):
+                la_avg = float(la_clean.mean())
+
+    pull_pct = None
+    if not bip.empty and "hc_x" in bip.columns and "stand" in bip.columns:
+        bip_clean = bip.dropna(subset=["hc_x", "stand"])
+        if len(bip_clean):
+            pulled = bip_clean[
+                ((bip_clean["stand"] == "L") & (bip_clean["hc_x"] > 125)) |
+                ((bip_clean["stand"] == "R") & (bip_clean["hc_x"] < 125))
+            ]
+            pull_pct = len(pulled) / len(bip_clean) * 100
+
+    return {
+        "batter_id": batter_id,
+        "season": CURRENT_SEASON,
+        "window_type": "season",
+        "vs_hand": vs_hand,
+        "pa": int(pa),
+        "ab": int(ab),
+        "hits": int(hits),
+        "hr": int(hr),
+        "avg": round(avg, 3) if avg is not None else None,
+        "obp": round(obp, 3) if obp is not None else None,
+        "slg": round(slg, 3) if slg is not None else None,
+        "iso": round(iso, 3) if iso is not None else None,
+        "hr_per_pa": round(hr / pa, 4) if pa > 0 else None,
+        "hit_per_pa": round(hits / pa, 4) if pa > 0 else None,
+        "barrel_pct": round(barrel_pct, 2) if barrel_pct is not None else None,
+        "hard_hit_pct": round(hh_pct, 2) if hh_pct is not None else None,
+        "ev_avg": round(ev_avg, 1) if ev_avg is not None else None,
+        "la_avg": round(la_avg, 1) if la_avg is not None else None,
+        "pull_pct": round(pull_pct, 2) if pull_pct is not None else None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def lookup_player_name(mlbam_id: int) -> str:
+    """Try playerid_reverse_lookup; fallback to MLB Stats API."""
+    try:
+        from pybaseball import playerid_reverse_lookup
+        df = playerid_reverse_lookup([mlbam_id], key_type="mlbam")
+        if not df.empty:
+            first = df.iloc[0].get("name_first", "")
+            last = df.iloc[0].get("name_last", "")
+            name = f"{first} {last}".strip().title()
+            if name:
+                return name
+    except Exception:
+        pass
+    # Fallback to MLB Stats API
+    try:
+        import requests
+        r = requests.get(
+            f"https://statsapi.mlb.com/api/v1/people/{mlbam_id}", timeout=5
+        )
+        if r.ok:
+            data = r.json()
+            if data.get("people"):
+                return data["people"][0]["fullName"]
+    except Exception:
+        pass
+    return f"Player {mlbam_id}"
+
+
+def main():
+    log.info("🧅 Cebolla Lab — Savant batter sync starting")
+
+    df = fetch_all_statcast()
+    if df is None:
+        log.error("No Statcast data; aborting")
+        sys.exit(1)
+
+    known = get_known_batters()
+
+    # Filter to batting events (exclude rows where the player is being recorded as pitcher)
+    if "batter" not in df.columns:
+        log.error("Statcast data missing 'batter' column")
+        sys.exit(1)
+
+    batter_ids = df["batter"].dropna().unique()
+    log.info("Found %d unique batters in season Statcast", len(batter_ids))
+
+    by_batter = df.groupby("batter", sort=False)
+    by_batter_hand = df.groupby(["batter", "p_throws"], sort=False) \
+        if "p_throws" in df.columns else None
 
     rows = []
-    new_batters = 0
-    skipped = 0
+    new_count = 0
+    processed = 0
 
-    for _, fg_row in df.iterrows():
-        # FanGraphs has IDfg, we need mlbam_id
-        name = fg_row.get("Name")
-        if not name or pd.isna(name):
-            continue
-
-        # Try to find this player in our DB by mlbam_id
-        # FanGraphs sometimes includes mlbam id via the 'xMLBAMID' column
-        mlbam_id = None
-        for col in ("MLBAMID", "xMLBAMID", "mlbam_id"):
-            if col in fg_row and pd.notna(fg_row[col]):
-                try:
-                    mlbam_id = int(fg_row[col])
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        if mlbam_id is None:
-            # Fallback: lookup by name
-            mlbam_id = lookup_mlbam_id(name, fg_row.get("Team", ""))
-
-        if mlbam_id is None:
-            skipped += 1
-            continue
-
-        if mlbam_id in known:
-            player_id = known[mlbam_id]
-        else:
-            player_id = upsert_batter(mlbam_id, name, fg_row.get("Team"))
-            known[mlbam_id] = player_id
-            new_batters += 1
-
+    for batter_mlbam in batter_ids:
         try:
-            rows.append(transform_batter_row(fg_row, player_id))
-        except Exception as e:
-            log.warning("  Skipped %s: %s", name, e)
+            batter_mlbam_int = int(batter_mlbam)
+        except (ValueError, TypeError):
+            continue
 
-    log.info("  %d batter stat rows ready; %d new batters; %d skipped (no mlbam)",
-             len(rows), new_batters, skipped)
+        if batter_mlbam_int in known:
+            player_id = known[batter_mlbam_int]
+        else:
+            name = lookup_player_name(batter_mlbam_int)
+            player_id = upsert_batter(batter_mlbam_int, name)
+            known[batter_mlbam_int] = player_id
+            new_count += 1
 
-    # Batch upsert in chunks of 100
+        # vs ALL pitchers
+        group_all = by_batter.get_group(batter_mlbam)
+        rows.append(aggregate_batter(group_all, player_id, "A"))
+
+        # vs L
+        if by_batter_hand is not None:
+            try:
+                group_l = by_batter_hand.get_group((batter_mlbam, "L"))
+                if len(group_l) >= 10:
+                    rows.append(aggregate_batter(group_l, player_id, "L"))
+            except KeyError:
+                pass
+            try:
+                group_r = by_batter_hand.get_group((batter_mlbam, "R"))
+                if len(group_r) >= 10:
+                    rows.append(aggregate_batter(group_r, player_id, "R"))
+            except KeyError:
+                pass
+
+        processed += 1
+        if processed % 100 == 0:
+            log.info("  Processed %d / %d batters…", processed, len(batter_ids))
+
+    log.info("Prepared %d batter stat rows (%d new batter records)",
+             len(rows), new_count)
+
+    # Batch upsert
     written = 0
     for i in range(0, len(rows), 100):
         chunk = rows[i:i + 100]
@@ -230,62 +262,11 @@ def sync_batters():
             on_conflict="batter_id,season,window_type,vs_hand",
         ).execute()
         written += len(chunk)
-        log.info("  Wrote %d / %d batter stat rows", written, len(rows))
+        if i % 500 == 0:
+            log.info("  Wrote %d / %d", written, len(rows))
 
-    log.info("✓ Batter stats sync complete")
-
-
-def sync_pitchers_metadata():
-    """
-    Just ensure every FanGraphs-tracked pitcher exists in our players table.
-    Per-pitch arsenal data comes from pull_arsenals.py.
-    """
-    df = fetch_pitcher_stats()
-    known = get_known_players()
-
-    new_count = 0
-    for _, row in df.iterrows():
-        name = row.get("Name")
-        if not name or pd.isna(name):
-            continue
-
-        mlbam_id = None
-        for col in ("MLBAMID", "xMLBAMID", "mlbam_id"):
-            if col in row and pd.notna(row[col]):
-                try:
-                    mlbam_id = int(row[col])
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        if mlbam_id is None or mlbam_id in known:
-            continue
-
-        payload = {
-            "mlbam_id": mlbam_id,
-            "name": name,
-            "is_pitcher": True,
-            "position": "P",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        res = sb.table("players").upsert(
-            payload, on_conflict="mlbam_id"
-        ).execute()
-        known[mlbam_id] = res.data[0]["id"]
-        new_count += 1
-
-    log.info("✓ Registered %d new pitchers", new_count)
-
-
-def main():
-    log.info("🧅 Cebolla Lab — Savant/FanGraphs sync starting")
-    try:
-        sync_pitchers_metadata()
-        sync_batters()
-    except Exception as e:
-        log.exception("Fatal error: %s", e)
-        sys.exit(1)
-    log.info("🧅 Savant sync complete")
+    log.info("✓ Wrote %d total", written)
+    log.info("🧅 Savant batter sync complete")
 
 
 if __name__ == "__main__":
