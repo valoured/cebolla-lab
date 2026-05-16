@@ -2,11 +2,24 @@ name: Cebolla — Daily Data Pulls
 
 on:
   schedule:
-    # All times UTC. ET = UTC - 4 (DST) or UTC - 5 (standard).
-    # Schedule pull: keep frequent for lineup updates
-    - cron: '0 6 * * *'      # 06:00 UTC (02:00 ET) — overnight prep
-    - cron: '0 14 * * *'     # 14:00 UTC (10:00 ET) — mid-morning
-    - cron: '0 22 * * *'     # 22:00 UTC (18:00 ET) — pre-game
+    # Schedule pulls (3x daily)
+    - cron: '0 6 * * *'      # 06:00 UTC — overnight prep
+    - cron: '0 14 * * *'     # 14:00 UTC — mid-morning
+    - cron: '0 22 * * *'     # 22:00 UTC — pre-game
+
+    # DK odds pulls — hourly during slate window
+    # MLB games run ~17:00 UTC (1PM ET day games) through ~05:00 UTC (1AM ET West Coast)
+    - cron: '0 17 * * *'     # 17:00 UTC = 1PM ET
+    - cron: '0 18 * * *'
+    - cron: '0 19 * * *'
+    - cron: '0 20 * * *'
+    - cron: '0 21 * * *'
+    - cron: '0 23 * * *'     # 22:00 already covered
+    - cron: '0 0 * * *'      # 00:00 UTC = 8PM ET prime time
+    - cron: '0 1 * * *'
+    - cron: '0 2 * * *'
+    - cron: '0 3 * * *'
+
   workflow_dispatch:
     inputs:
       job:
@@ -14,7 +27,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, schedule, savant, arsenals, weather]
+        options: [all, schedule, savant, arsenals, weather, dk_odds]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -24,7 +37,12 @@ jobs:
   # 1. Schedule + probable pitchers (3x daily)
   # ─────────────────────────────────────────────
   pull-schedule:
-    if: github.event_name == 'schedule' || inputs.job == 'all' || inputs.job == 'schedule'
+    if: |
+      (github.event_name == 'schedule' &&
+       (github.event.schedule == '0 6 * * *' ||
+        github.event.schedule == '0 14 * * *' ||
+        github.event.schedule == '0 22 * * *'))
+      || inputs.job == 'all' || inputs.job == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,21 +50,20 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      - name: Install deps
-        run: pip install -r scripts/requirements.txt
-      - name: Pull schedule
-        env:
+      - run: pip install -r scripts/requirements.txt
+      - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_schedule.py
 
   # ─────────────────────────────────────────────
-  # 2. Savant / FanGraphs stats (twice daily, after schedule)
-  #    Schedule via GH cron in second workflow OR triggered after schedule
+  # 2. Savant / FanGraphs stats (twice daily)
   # ─────────────────────────────────────────────
   pull-savant:
     if: |
-      (github.event_name == 'schedule' && (github.event.schedule == '0 6 * * *' || github.event.schedule == '0 22 * * *'))
+      (github.event_name == 'schedule' &&
+       (github.event.schedule == '0 6 * * *' ||
+        github.event.schedule == '0 22 * * *'))
       || inputs.job == 'all' || inputs.job == 'savant'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -56,17 +73,14 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      - name: Install deps
-        run: pip install -r scripts/requirements.txt
-      - name: Pull FanGraphs/Savant stats
-        env:
+      - run: pip install -r scripts/requirements.txt
+      - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_savant.py
 
   # ─────────────────────────────────────────────
-  # 3. Pitcher arsenals (once daily, runs after schedule)
-  #    Statcast pitch-level data; refreshes for upcoming probable pitchers
+  # 3. Pitcher arsenals (once daily)
   # ─────────────────────────────────────────────
   pull-arsenals:
     if: |
@@ -80,19 +94,22 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      - name: Install deps
-        run: pip install -r scripts/requirements.txt
-      - name: Pull pitcher arsenals
-        env:
+      - run: pip install -r scripts/requirements.txt
+      - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_arsenals.py
 
   # ─────────────────────────────────────────────
-  # 4. Weather (runs every schedule pull, fresh forecast)
+  # 4. Weather (3x daily with schedule)
   # ─────────────────────────────────────────────
   pull-weather:
-    if: github.event_name == 'schedule' || inputs.job == 'all' || inputs.job == 'weather'
+    if: |
+      (github.event_name == 'schedule' &&
+       (github.event.schedule == '0 6 * * *' ||
+        github.event.schedule == '0 14 * * *' ||
+        github.event.schedule == '0 22 * * *'))
+      || inputs.job == 'all' || inputs.job == 'weather'
     runs-on: ubuntu-latest
     needs: pull-schedule
     steps:
@@ -101,10 +118,29 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      - name: Install deps
-        run: pip install -r scripts/requirements.txt
-      - name: Pull weather forecasts
-        env:
+      - run: pip install -r scripts/requirements.txt
+      - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_weather.py
+
+  # ─────────────────────────────────────────────
+  # 5. DraftKings odds (hourly during slate)
+  # ─────────────────────────────────────────────
+  pull-dk-odds:
+    if: |
+      (github.event_name == 'schedule' &&
+       contains(fromJSON('["0 17 * * *", "0 18 * * *", "0 19 * * *", "0 20 * * *", "0 21 * * *", "0 22 * * *", "0 23 * * *", "0 0 * * *", "0 1 * * *", "0 2 * * *", "0 3 * * *"]'), github.event.schedule))
+      || inputs.job == 'all' || inputs.job == 'dk_odds'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/pull_dk_odds.py
