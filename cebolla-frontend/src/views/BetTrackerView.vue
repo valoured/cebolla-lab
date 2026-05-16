@@ -1,0 +1,19 @@
+<script setup>
+</script>
+
+<template>
+  <div class="min-h-screen px-6 py-10">
+    <div class="label-bracket text-signal-400 mb-3">module · M.02</div>
+    <h1 class="display-text text-4xl text-fg-700 mb-2">Bet Log</h1>
+    <p class="font-mono text-xs text-fg-500 mb-6">phase.05</p>
+    <p class="text-fg-500 text-sm max-w-xl leading-relaxed">
+      Every bet logged with edge-at-placement. ROI by edge bucket.
+      The feedback loop that turns the model honest. Coming after
+      Phase 4 (projection model) lands.
+    </p>
+    <router-link to="/"
+      class="inline-block mt-6 label-caps hover:text-signal-400 transition">
+      ← back to slate
+    </router-link>
+  </div>
+</template>
