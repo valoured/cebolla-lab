@@ -1,0 +1,36 @@
+name: Cebolla — Daily Data Pulls
+
+on:
+  schedule:
+    # All times UTC. MLB is mostly evening ET (23:00-04:00 UTC).
+    - cron: '0 6 * * *'    # 06:00 UTC — first probables
+    - cron: '0 14 * * *'   # 14:00 UTC — mid-day check
+    - cron: '0 22 * * *'   # 22:00 UTC — final pre-game
+  workflow_dispatch:        # Manual trigger from GitHub UI
+
+jobs:
+  pull-schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Pull schedule + probable pitchers
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/pull_schedule.py
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "::warning::Schedule pull failed — check logs"
