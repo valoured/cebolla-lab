@@ -3,19 +3,18 @@ name: Cebolla — Daily Data Pulls
 on:
   schedule:
     # Schedule pulls (3x daily)
-    - cron: '0 6 * * *'      # 06:00 UTC — overnight prep
-    - cron: '0 14 * * *'     # 14:00 UTC — mid-morning
-    - cron: '0 22 * * *'     # 22:00 UTC — pre-game
+    - cron: '0 6 * * *'
+    - cron: '0 14 * * *'
+    - cron: '0 22 * * *'
 
-    # DK odds pulls — hourly during slate window
-    # MLB games run ~17:00 UTC (1PM ET day games) through ~05:00 UTC (1AM ET West Coast)
-    - cron: '0 17 * * *'     # 17:00 UTC = 1PM ET
+    # Slate window — hourly for DK odds, lineups, weather refresh
+    - cron: '0 17 * * *'
     - cron: '0 18 * * *'
     - cron: '0 19 * * *'
     - cron: '0 20 * * *'
     - cron: '0 21 * * *'
-    - cron: '0 23 * * *'     # 22:00 already covered
-    - cron: '0 0 * * *'      # 00:00 UTC = 8PM ET prime time
+    - cron: '0 23 * * *'
+    - cron: '0 0 * * *'
     - cron: '0 1 * * *'
     - cron: '0 2 * * *'
     - cron: '0 3 * * *'
@@ -27,14 +26,14 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, schedule, savant, arsenals, weather, dk_odds]
+        options: [all, schedule, savant, arsenals, weather, dk_odds, lineups]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   # ─────────────────────────────────────────────
-  # 1. Schedule + probable pitchers (3x daily)
+  # 1. Schedule + probable pitchers
   # ─────────────────────────────────────────────
   pull-schedule:
     if: |
@@ -47,9 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+        with: { python-version: '3.12', cache: 'pip' }
       - run: pip install -r scripts/requirements.txt
       - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -57,7 +54,7 @@ jobs:
         run: python scripts/pull_schedule.py
 
   # ─────────────────────────────────────────────
-  # 2. Savant / FanGraphs stats (twice daily)
+  # 2. Savant batter stats (twice daily)
   # ─────────────────────────────────────────────
   pull-savant:
     if: |
@@ -70,9 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+        with: { python-version: '3.12', cache: 'pip' }
       - run: pip install -r scripts/requirements.txt
       - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -80,7 +75,7 @@ jobs:
         run: python scripts/pull_savant.py
 
   # ─────────────────────────────────────────────
-  # 3. Pitcher arsenals (once daily)
+  # 3. Pitcher arsenals (once daily, overnight)
   # ─────────────────────────────────────────────
   pull-arsenals:
     if: |
@@ -91,9 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+        with: { python-version: '3.12', cache: 'pip' }
       - run: pip install -r scripts/requirements.txt
       - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -115,9 +108,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+        with: { python-version: '3.12', cache: 'pip' }
       - run: pip install -r scripts/requirements.txt
       - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -125,7 +116,26 @@ jobs:
         run: python scripts/pull_weather.py
 
   # ─────────────────────────────────────────────
-  # 5. DraftKings odds (hourly during slate)
+  # 5. Lineups (frequent during slate window)
+  # ─────────────────────────────────────────────
+  pull-lineups:
+    if: |
+      (github.event_name == 'schedule' &&
+       contains(fromJSON('["0 14 * * *", "0 17 * * *", "0 18 * * *", "0 19 * * *", "0 20 * * *", "0 21 * * *", "0 22 * * *", "0 23 * * *", "0 0 * * *", "0 1 * * *", "0 2 * * *"]'), github.event.schedule))
+      || inputs.job == 'all' || inputs.job == 'lineups'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/pull_lineups.py
+
+  # ─────────────────────────────────────────────
+  # 6. DK odds (hourly during slate)
   # ─────────────────────────────────────────────
   pull-dk-odds:
     if: |
@@ -136,9 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+        with: { python-version: '3.12', cache: 'pip' }
       - run: pip install -r scripts/requirements.txt
       - env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
