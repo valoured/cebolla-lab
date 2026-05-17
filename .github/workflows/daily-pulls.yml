@@ -23,7 +23,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, schedule, savant, arsenals, pitcher_stats, weather, dk_odds, lineups, projections]
+        options: [all, schedule, savant, arsenals, pitcher_stats, weather, dk_odds, lineups, projections, settle_bets]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -165,3 +165,22 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/compute_projections.py
+
+  # Phase 5: auto-grade pending bets against MLB boxscores
+  # Runs hourly in the post-game window (00–06 UTC = 8 PM–2 AM ET)
+  # plus once at 14 UTC to catch overnight East Coast finals
+  settle-bets:
+    if: |
+      (github.event_name == 'schedule' &&
+       contains(fromJSON('["0 0 * * *", "0 1 * * *", "0 2 * * *", "0 3 * * *", "0 6 * * *", "0 14 * * *"]'), github.event.schedule))
+      || inputs.job == 'all' || inputs.job == 'settle_bets'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/settle_bets.py

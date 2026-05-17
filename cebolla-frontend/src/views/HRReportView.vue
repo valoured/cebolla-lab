@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useGame } from '../composables/useGame.js'
 import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
+import LogBetModal from '../components/LogBetModal.vue'
 
 const route = useRoute()
 const gameId = Number(route.params.gameId)
@@ -17,6 +18,18 @@ const {
 
 const showSecondary = ref(false)
 const secondaryMarket = ref('hits')
+
+// ─── Bet logging state ───
+const showLogModal = ref(false)
+const logBetCtx = ref({ player: {}, proj: {}, marketMode: 'hr' })
+function onLogBet(payload) {
+  logBetCtx.value = payload
+  showLogModal.value = true
+}
+function onBetLogged() {
+  // Could surface a toast here; for now just close
+  showLogModal.value = false
+}
 
 const gameTime = computed(() => {
   if (!game.value?.game_time_utc) return ''
@@ -175,6 +188,8 @@ const modelMeta = computed(() => {
             :pitcher-id="game.home_pitcher?.id"
             :team-label="`${game.away_team?.abbrev} BATTERS`"
             market-mode="hr"
+            :game-id="gameId"
+            @log-bet="onLogBet"
           />
           <BatterTable
             :lineup="homeLineup"
@@ -185,6 +200,8 @@ const modelMeta = computed(() => {
             :pitcher-id="game.away_pitcher?.id"
             :team-label="`${game.home_team?.abbrev} BATTERS`"
             market-mode="hr"
+            :game-id="gameId"
+            @log-bet="onLogBet"
           />
         </div>
       </section>
@@ -225,6 +242,8 @@ const modelMeta = computed(() => {
               :pitcher-id="game.home_pitcher?.id"
               :team-label="`${game.away_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
+              :game-id="gameId"
+              @log-bet="onLogBet"
             />
             <BatterTable
               :lineup="homeLineup"
@@ -235,6 +254,8 @@ const modelMeta = computed(() => {
               :pitcher-id="game.away_pitcher?.id"
               :team-label="`${game.home_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
+              :game-id="gameId"
+              @log-bet="onLogBet"
             />
           </div>
         </div>
@@ -246,5 +267,16 @@ const modelMeta = computed(() => {
         </p>
       </footer>
     </template>
+
+    <!-- Bet logging modal -->
+    <LogBetModal
+      :open="showLogModal"
+      :game-id="gameId"
+      :player="logBetCtx.player"
+      :proj="logBetCtx.proj"
+      :market-mode="logBetCtx.marketMode"
+      @close="showLogModal = false"
+      @logged="onBetLogged"
+    />
   </div>
 </template>
