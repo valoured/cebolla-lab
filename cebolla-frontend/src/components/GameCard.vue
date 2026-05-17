@@ -62,6 +62,28 @@ const isLive = computed(() => {
   return s.includes('progress')
 })
 
+const isFinal = computed(() => {
+  const s = (props.game.status || '').toLowerCase()
+  return s.includes('final') || s.includes('game over')
+})
+
+const showScores = computed(() => {
+  return (isLive.value || isFinal.value) &&
+         props.game.away_score != null &&
+         props.game.home_score != null
+})
+
+const inningDisplay = computed(() => {
+  if (!isLive.value) return null
+  const inning = props.game.current_inning
+  const state = (props.game.inning_state || '').toLowerCase()
+  if (!inning) return null
+  const arrow = state.startsWith('top') ? '↑' :
+                state.startsWith('bot') ? '↓' :
+                state.startsWith('mid') ? '·' : ''
+  return `${arrow}${inning}`
+})
+
 const awayLogo = computed(() => teamLogoUrl(props.game.away_team?.mlb_id))
 const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
 </script>
@@ -99,6 +121,13 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
         <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-3 mb-3.5">
           <!-- Away -->
           <div class="text-right flex items-center justify-end gap-2">
+            <span
+              v-if="showScores"
+              class="display-num text-2xl leading-none"
+              :class="game.away_score > game.home_score ? 'text-fg-800' : 'text-fg-500'"
+            >
+              {{ game.away_score }}
+            </span>
             <div class="min-w-0">
               <div class="display-text text-xl text-fg-700 leading-tight tracking-tight">
                 {{ game.away_team?.abbrev || '—' }}
@@ -117,7 +146,12 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
             />
           </div>
 
-          <div class="text-fg-400 text-xs">@</div>
+          <div class="text-center">
+            <div v-if="inningDisplay" class="display-num text-[11px] text-signal-400 leading-none">
+              {{ inningDisplay }}
+            </div>
+            <div v-else class="text-fg-400 text-xs">@</div>
+          </div>
 
           <!-- Home -->
           <div class="text-left flex items-center gap-2">
@@ -137,26 +171,33 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
                 {{ game.home_pitcher?.name || 'TBD' }}
               </div>
             </div>
+            <span
+              v-if="showScores"
+              class="display-num text-2xl leading-none"
+              :class="game.home_score > game.away_score ? 'text-fg-800' : 'text-fg-500'"
+            >
+              {{ game.home_score }}
+            </span>
           </div>
         </div>
 
         <!-- Stats strip: HR factor, temp, wind -->
-        <div class="grid grid-cols-3 gap-2 pt-2 border-t border-bg-200">
+        <div class="grid grid-cols-3 gap-3 pt-4 border-t border-bg-200">
           <div class="flex flex-col">
-            <span class="label-caps !text-[8px]">HRF</span>
-            <span class="display-num text-sm mt-0.5" :class="hrFactorTone">
+            <span class="label-caps !text-[10px]">HRF</span>
+            <span class="display-num text-2xl mt-1.5 leading-none" :class="hrFactorTone">
               {{ hrFactor ?? '—' }}
             </span>
           </div>
           <div class="flex flex-col">
-            <span class="label-caps !text-[8px]">Temp</span>
-            <span class="display-num text-sm mt-0.5 text-fg-600">
+            <span class="label-caps !text-[10px]">Temp</span>
+            <span class="display-num text-2xl mt-1.5 leading-none text-fg-600">
               {{ tempDisplay }}
             </span>
           </div>
           <div class="flex flex-col min-w-0">
-            <span class="label-caps !text-[8px]">Wind</span>
-            <span class="display-num text-[11px] mt-1 truncate" :class="windTone" :title="windDisplay">
+            <span class="label-caps !text-[10px]">Wind</span>
+            <span class="display-num text-base mt-1.5 leading-tight truncate" :class="windTone" :title="windDisplay">
               {{ windDisplay }}
             </span>
           </div>
