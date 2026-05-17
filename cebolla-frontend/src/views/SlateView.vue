@@ -134,8 +134,8 @@ const filterChips = [
         </button>
       </div>
 
-      <!-- Fixed 5-column grid -->
-      <div v-else class="grid grid-cols-5 gap-3">
+      <!-- 4-column grid (was 5 — gives cards more breathing room) -->
+      <div v-else class="grid grid-cols-4 gap-4">
         <GameCard v-for="game in filteredGames" :key="game.id" :game="game" />
       </div>
     </section>

@@ -29,8 +29,8 @@ export function useGame(gameId) {
           id, mlb_game_pk, game_date, game_time_utc, venue, status,
           temp_f, wind_mph, wind_label, precip_pct,
           hr_factor_overall, hr_factor_lhb, hr_factor_rhb,
-          away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium ),
-          home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium ),
+          away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
+          home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
           away_pitcher:players!games_away_pitcher_id_fkey ( id, mlbam_id, name, throws ),
           home_pitcher:players!games_home_pitcher_id_fkey ( id, mlbam_id, name, throws )
         `)

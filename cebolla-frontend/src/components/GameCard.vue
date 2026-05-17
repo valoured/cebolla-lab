@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
 
 const props = defineProps({
   game: { type: Object, required: true },
@@ -55,17 +56,27 @@ const statusBadge = computed(() => {
   if (s.includes('pre')) return { text: 'soon', color: 'text-fg-500 bg-bg-200/40' }
   return null
 })
+
+const isLive = computed(() => {
+  const s = (props.game.status || '').toLowerCase()
+  return s.includes('progress')
+})
+
+const awayLogo = computed(() => teamLogoUrl(props.game.away_team?.mlb_id))
+const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
 </script>
 
 <template>
   <router-link
     :to="{ name: 'hr-report', params: { gameId: game.id } }"
     class="block group reticle-card"
+    :class="{ 'live-pulse': isLive }"
   >
     <article
       class="bg-bg-50 border border-bg-200 hover:border-signal-400/50
              hover:bg-bg-100 transition-all duration-200 h-full
              flex flex-col"
+      :class="{ 'live-border': isLive }"
     >
       <!-- Header strip: time, status, venue -->
       <div class="px-3 py-2 border-b border-bg-200 flex items-center justify-between gap-2">
@@ -85,27 +96,47 @@ const statusBadge = computed(() => {
       </div>
 
       <!-- Matchup -->
-      <div class="px-3 py-3 flex-1">
-        <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-3 mb-3">
+      <div class="px-3.5 py-4 flex-1">
+        <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-3 mb-3.5">
           <!-- Away -->
-          <div class="text-right">
-            <div class="display-text text-lg text-fg-700 leading-tight tracking-tight">
-              {{ game.away_team?.abbrev || '—' }}
+          <div class="text-right flex items-center justify-end gap-2">
+            <div class="min-w-0">
+              <div class="display-text text-xl text-fg-700 leading-tight tracking-tight">
+                {{ game.away_team?.abbrev || '—' }}
+              </div>
+              <div class="text-[10px] text-fg-500 mt-0.5 truncate">
+                {{ game.away_pitcher?.name || 'TBD' }}
+              </div>
             </div>
-            <div class="text-[10px] text-fg-500 mt-0.5 truncate">
-              {{ game.away_pitcher?.name || 'TBD' }}
-            </div>
+            <img
+              v-if="awayLogo"
+              :src="awayLogo"
+              :alt="game.away_team?.abbrev"
+              class="team-logo"
+              loading="lazy"
+              @error="hideOnError"
+            />
           </div>
 
           <div class="text-fg-400 text-xs">@</div>
 
           <!-- Home -->
-          <div class="text-left">
-            <div class="display-text text-lg text-fg-700 leading-tight tracking-tight">
-              {{ game.home_team?.abbrev || '—' }}
-            </div>
-            <div class="text-[10px] text-fg-500 mt-0.5 truncate">
-              {{ game.home_pitcher?.name || 'TBD' }}
+          <div class="text-left flex items-center gap-2">
+            <img
+              v-if="homeLogo"
+              :src="homeLogo"
+              :alt="game.home_team?.abbrev"
+              class="team-logo"
+              loading="lazy"
+              @error="hideOnError"
+            />
+            <div class="min-w-0">
+              <div class="display-text text-xl text-fg-700 leading-tight tracking-tight">
+                {{ game.home_team?.abbrev || '—' }}
+              </div>
+              <div class="text-[10px] text-fg-500 mt-0.5 truncate">
+                {{ game.home_pitcher?.name || 'TBD' }}
+              </div>
             </div>
           </div>
         </div>
@@ -134,7 +165,7 @@ const statusBadge = computed(() => {
       </div>
 
       <!-- Hover arrow on right side (subtle) -->
-      <div class="px-3 pb-2 flex justify-end">
+      <div class="px-3.5 pb-2 flex justify-end">
         <span class="label-caps !text-[9px] group-hover:text-signal-400 transition opacity-60 group-hover:opacity-100">
           open →
         </span>
@@ -142,3 +173,50 @@ const statusBadge = computed(() => {
     </article>
   </router-link>
 </template>
+
+<style scoped>
+/* ── Team logos: monochrome-tinted, low-key ── */
+.team-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: grayscale(0.5) brightness(0.95) contrast(1.1);
+  opacity: 0.85;
+  transition: filter 0.2s, opacity 0.2s;
+}
+.group:hover .team-logo {
+  filter: grayscale(0.2) brightness(1) contrast(1.1);
+  opacity: 1;
+}
+
+/* ── Live game: signal-red pulse halo behind the card ── */
+.live-pulse {
+  position: relative;
+}
+.live-pulse::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.0);
+  animation: live-glow 2.4s ease-in-out infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+.live-border {
+  border-color: rgba(255, 42, 42, 0.35) !important;
+}
+
+@keyframes live-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.0),
+                0 0 12px 0 rgba(255, 42, 42, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(255, 42, 42, 0.25),
+                0 0 22px 4px rgba(255, 42, 42, 0.18);
+  }
+}
+</style>

@@ -29,8 +29,8 @@ export function useSlate(dateStr) {
         hr_factor_overall,
         hr_factor_lhb,
         hr_factor_rhb,
-        away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium ),
-        home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium ),
+        away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
+        home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
         away_pitcher:players!games_away_pitcher_id_fkey ( id, name ),
         home_pitcher:players!games_home_pitcher_id_fkey ( id, name )
       `)

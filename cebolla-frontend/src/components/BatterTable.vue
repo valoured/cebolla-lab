@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 
 const props = defineProps({
   lineup:      { type: Array,  required: true },
@@ -80,6 +81,7 @@ const rows = computed(() => {
       position: l.position || player.position,
       bats: l.bats || player.bats,
       player_id: player.id,
+      mlbam_id: player.mlbam_id,
       name: player.name,
       pa: stats.pa,
       hr: stats.hr,
@@ -153,8 +155,16 @@ const isConfirmed = computed(() => {
             <td class="py-2 px-3 border-b border-bg-200/40">
               <router-link
                 :to="{ name: 'player', params: { playerId: row.player_id } }"
-                class="flex items-baseline gap-2 group-hover:text-signal-200 transition"
+                class="flex items-center gap-2 group-hover:text-signal-200 transition"
               >
+                <img
+                  v-if="row.mlbam_id"
+                  :src="playerHeadshotUrl(row.mlbam_id)"
+                  :alt="row.name"
+                  class="player-headshot"
+                  loading="lazy"
+                  @error="hideOnError"
+                />
                 <span class="text-fg-700 text-sm">{{ row.name }}</span>
                 <span class="font-mono text-[9px] text-fg-500">{{ row.bats || '?' }}</span>
                 <span v-if="row.position"
@@ -252,6 +262,23 @@ const isConfirmed = computed(() => {
 </template>
 
 <style scoped>
+/* ── Player headshot: 24px circular, muted ── */
+.player-headshot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.04);
+  filter: grayscale(0.35) brightness(0.95);
+  opacity: 0.85;
+  transition: filter 0.15s, opacity 0.15s;
+}
+.group:hover .player-headshot {
+  filter: grayscale(0) brightness(1);
+  opacity: 1;
+}
+
 .log-btn {
   font-family: 'JetBrains Mono', monospace;
   font-size: 9px;
