@@ -73,17 +73,48 @@ DK_HEADERS = {
 # Be polite. 1 request every few seconds.
 REQUEST_DELAY_SEC = 4
 
-# Market name regex → (our market key, line)
+# Market name regex → our market key.
 # We pattern-match on the `name` field of each market.
-# DK formats them as e.g. "Aaron Judge Home Runs", "Luis Arraez Hits", "Pete Alonso RBIs"
+# The actual LINE (0.5, 1.5, 2.5) is parsed separately from the market name
+# or selection labels via parse_market_line() below.
 MARKET_PATTERNS = [
-    # HR props
-    (re.compile(r"home\s*runs?|to\s+hit\s+a\s+(?:hr|homer)", re.I), "hr_anytime", 0.5),
-    # Hits
-    (re.compile(r"\bhits?\b|player\s+hits|to\s+record\s+a\s+hit", re.I), "hits", 0.5),
-    # RBI
-    (re.compile(r"\brbis?\b|runs\s+batted\s+in", re.I), "rbi", 0.5),
+    (re.compile(r"home\s*runs?|to\s+hit\s+a\s+(?:hr|homer)", re.I), "hr_anytime"),
+    (re.compile(r"\bhits?\b|player\s+hits|to\s+record\s+a\s+hit", re.I), "hits"),
+    (re.compile(r"\brbis?\b|runs\s+batted\s+in", re.I), "rbi"),
 ]
+
+
+def parse_market_line(market_name: str, selection_labels: list[str], market_key: str) -> float:
+    """
+    Determine the actual line (0.5, 1.5, 2.5...) from market name + selection labels.
+
+    For 'hits' / 'rbi' markets:
+      - DK presents ladders: '1+ Hits' → line 0.5, '2+ Hits' → line 1.5, '3+ Hits' → 2.5
+      - Or 'Over 0.5' / 'Over 1.5' explicit
+      - Default to 0.5 (1+ hits) if we can't detect
+    For 'hr_anytime': always 0.5 (it's a yes/no on 1+ HR)
+    """
+    if market_key == "hr_anytime":
+        return 0.5
+
+    # Search both market name and selection labels for the strongest signal
+    blobs = [market_name or ""] + [s or "" for s in selection_labels]
+    haystack = " ".join(blobs).lower()
+
+    # Explicit Over/Under N.5 takes precedence
+    m = re.search(r"\bo(?:ver)?\s*([0-9])\.5\b", haystack)
+    if m:
+        return float(m.group(1)) + 0.5
+
+    # "1+", "2+", "3+" — convert to (N-1).5 line
+    # Note: "1+" means at least 1 = Over 0.5
+    m = re.search(r"\b([1-9])\s*\+", haystack)
+    if m:
+        n = int(m.group(1))
+        return n - 0.5
+
+    # Default
+    return 0.5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -258,13 +289,13 @@ def american_to_decimal(odds: int | None) -> float | None:
 # Parsing
 # ────────────────────────────────────────────────────────────────
 
-def classify_market(market_name: str) -> tuple[str, float] | None:
+def classify_market(market_name: str) -> str | None:
     """Pattern-match a market `name` to our internal market key."""
     if not market_name:
         return None
-    for pattern, key, line in MARKET_PATTERNS:
+    for pattern, key in MARKET_PATTERNS:
         if pattern.search(market_name):
-            return (key, line)
+            return key
     return None
 
 
@@ -340,6 +371,7 @@ def parse_response(
     data: dict,
     player_index: dict[str, int],
     dk_event_to_game: dict[str, int],
+    diagnostic_samples: dict | None = None,
 ) -> list[dict]:
     """Walk the response and produce odds_snapshots rows."""
     rows: list[dict] = []
@@ -356,10 +388,9 @@ def parse_response(
 
     for mkt in markets:
         market_name = mkt.get("name") or ""
-        classified = classify_market(market_name)
-        if not classified:
+        market_key = classify_market(market_name)
+        if not market_key:
             continue
-        market_key, line = classified
 
         dk_event_id = str(mkt.get("eventId", ""))
         game_id = dk_event_to_game.get(dk_event_id)
@@ -377,6 +408,22 @@ def parse_response(
 
         # Selections for this market (over/under or yes)
         mkt_sels = sels_by_mkt.get(str(mkt.get("id", "")), [])
+
+        # Compute the LINE from market name + selection labels combined
+        sel_labels = [s.get("label", "") for s in mkt_sels]
+        line = parse_market_line(market_name, sel_labels, market_key)
+
+        # Diagnostic: capture first few samples per market_key so we can audit
+        # the parsing in logs without flooding output.
+        if diagnostic_samples is not None:
+            slot = diagnostic_samples.setdefault(market_key, [])
+            if len(slot) < 3:
+                slot.append({
+                    "name": market_name,
+                    "labels": sel_labels[:4],
+                    "parsed_line": line,
+                })
+
         for sel in mkt_sels:
             american = extract_american_odds(sel)
             if american is None:
@@ -419,6 +466,7 @@ def main():
 
     all_rows: list[dict] = []
     unmatched_players: set[str] = set()
+    diagnostic_samples: dict[str, list] = {}   # market_key → up to 3 sample (name, labels, line)
 
     for subcat_id in DK_SUBCATEGORY_IDS:
         data = fetch_subcategory(subcat_id)
@@ -443,7 +491,7 @@ def main():
             log.info("  market name samples: %s",
                      dict(list(kinds.items())[:5]))
 
-        rows = parse_response(data, player_index, dk_event_to_game)
+        rows = parse_response(data, player_index, dk_event_to_game, diagnostic_samples)
         log.info("  parsed %d odds rows", len(rows))
         all_rows.extend(rows)
 
@@ -454,6 +502,25 @@ def main():
                 unmatched_players.add(nm)
 
         time.sleep(REQUEST_DELAY_SEC)
+
+    # ─── Line-parse diagnostics ───
+    if diagnostic_samples:
+        log.info("─── LINE PARSING SAMPLES ───")
+        for market_key, samples in diagnostic_samples.items():
+            for s in samples:
+                log.info("  [%s] line=%.1f  name=%r  labels=%s",
+                         market_key, s["parsed_line"],
+                         s["name"][:60], s["labels"])
+
+    # ─── Line distribution per market_key ───
+    from collections import Counter
+    by_market_line = Counter(
+        (r["market"], r["line"]) for r in all_rows
+    )
+    if by_market_line:
+        log.info("─── ROWS BY (market, line) ───")
+        for (mkt, ln), cnt in sorted(by_market_line.items()):
+            log.info("  %-25s line=%.1f  count=%d", mkt, ln, cnt)
 
     if all_rows:
         # Insert in batches of 500

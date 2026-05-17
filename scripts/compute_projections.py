@@ -320,17 +320,27 @@ def get_pitcher_stats(pitcher_id: int) -> dict | None:
     return res.data[0]
 
 
-def get_current_odds(game_id: int, batter_ids: list[int], market: str) -> dict[int, dict]:
+def get_current_odds(
+    game_id: int, batter_ids: list[int], market: str,
+    line: float | None = None,
+) -> dict[int, dict]:
+    """
+    Fetch latest odds_snapshots rows for a (game, market) tuple.
+    For markets with multiple lines (e.g. hits_yes has both 1+ and 2+),
+    pass an explicit `line` to filter.
+    """
     if not batter_ids:
         return {}
-    res = sb.table("odds_snapshots").select("*") \
+    q = sb.table("odds_snapshots").select("*") \
         .eq("game_id", game_id) \
         .eq("market", market) \
         .eq("book", "draftkings") \
         .eq("is_current", True) \
         .in_("player_id", batter_ids) \
-        .order("snapshot_time", desc=True) \
-        .execute()
+        .order("snapshot_time", desc=True)
+    if line is not None:
+        q = q.eq("line", line)
+    res = q.execute()
     out = {}
     for row in res.data:
         if row["player_id"] not in out:
@@ -370,8 +380,10 @@ def project_game(game: dict) -> list[dict]:
     batter_stats_map = get_batter_stats_map(all_batter_ids)
 
     # Two odds markets, fetched in parallel
+    # NOTE: hits_yes contains BOTH 1+ Hits (line=0.5) and 2+ Hits (line=1.5)
+    # rows because DK uses Yes/No labels for both ladders. Filter to line=0.5.
     hr_odds_map   = get_current_odds(game["id"], all_batter_ids, "hr_anytime_yes")
-    hits_odds_map = get_current_odds(game["id"], all_batter_ids, "hits_yes")
+    hits_odds_map = get_current_odds(game["id"], all_batter_ids, "hits_yes", line=0.5)
 
     # Pitcher data
     away_arsenal = get_pitcher_arsenal(game.get("away_pitcher_id"))
