@@ -1,17 +1,17 @@
 """
-compute_projections.py — Cebolla Lab projection model v0.1.1
+compute_projections.py — Cebolla Lab projection model v0.1.2
 
-Changes from v0.1.0:
-  - Bayesian shrinkage on batter HR/PA using K=200 phantom PAs (regress to league mean)
-  - Tightened arsenal_adj cap: [0.85, 1.15] (was [0.70, 1.30])
-  - Tightened pitcher_factor cap: [0.75, 1.40] (was [0.50, 1.80])
-  - Hard cap on projected_hr_per_pa: 0.08 (was 0.20)
-  - Floor on arsenal multiplier: 0.5 (was 0, which let zero-HR small-sample pitch types nuke the projection)
-  - Diagnostic logging: per-component breakdown for top 3 edges
+Changes from v0.1.1:
+  - REPLACED broken pitcher HR/9 calc with clean read from pitcher_stats table
+    (was incorrectly summing PAs across pitch types in arsenal data)
+  - Added Bayesian shrinkage on pitcher HR/9 too (K=80 BF for pitchers)
+    -- short of 80 BF, pitcher pulls toward league avg
+  - Better diagnostic: shows pitcher's HR/9 and BF alongside each top edge
 
-Math:
-  shrunk_hr_per_pa = (PA × observed + K × league) / (PA + K)
-  projected_per_pa = shrunk × pitcher_factor × park_factor × arsenal_adj
+Math (unchanged from v0.1.1 except pitcher_factor source):
+  shrunk_batter_hr_per_pa = (PA × observed + 200 × league) / (PA + 200)
+  shrunk_pitcher_hr_per_9 = (BF × observed + 80 × league) / (BF + 80)
+  projected_per_pa = shrunk_batter × pitcher_factor × park_factor × arsenal_adj
   projected_anytime = 1 - (1 - per_pa)^expected_PAs
   edge = projected_anytime - no_vig_prob_from_DK
 """
@@ -32,35 +32,32 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_VERSION = "v0.1.1"
+MODEL_VERSION = "v0.1.2"
 
 # ──── League constants ────
 LEAGUE_HR_PER_PA = 0.029
 LEAGUE_HR_PER_9  = 1.15
 
-# ──── Shrinkage constant for batter HR/PA ────
-# Higher K = more regression to mean for small samples.
-# K=200 means a batter needs ~200 PA to be ~50% trusted vs league avg.
-SHRINKAGE_K = 200
+# ──── Shrinkage ────
+BATTER_SHRINKAGE_K  = 200     # batter HR/PA: needs ~200 PA to weigh ~50% trusted
+PITCHER_SHRINKAGE_K = 80      # pitcher HR/9: needs ~80 BF to weigh ~50% trusted
 
-# ──── Caps (tightened in v0.1.1) ────
+# ──── Caps ────
 ARSENAL_CAP_LO = 0.85
 ARSENAL_CAP_HI = 1.15
-ARSENAL_MIN_MULT = 0.5    # individual pitch-type multiplier floor
+ARSENAL_MIN_MULT = 0.5
 PITCHER_CAP_LO = 0.75
 PITCHER_CAP_HI = 1.40
 PARK_CAP_LO    = 0.80
 PARK_CAP_HI    = 1.20
-PROJ_PER_PA_CAP = 0.08    # absolute ceiling
+PROJ_PER_PA_CAP = 0.08
 
-# ──── Expected PAs per lineup spot ────
 PA_BY_LINEUP_SPOT = {
     1: 4.55,  2: 4.45,  3: 4.35,  4: 4.25,  5: 4.15,
     6: 4.05,  7: 3.92,  8: 3.80,  9: 3.68,
 }
 
-# ──── Devig assumption ────
-DK_HR_VIG = 0.06    # DK builds ~6% vig into HR Anytime props
+DK_HR_VIG = 0.06
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,14 +67,19 @@ log = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────────
-# Math helpers
+# Shrinkage helpers
 # ────────────────────────────────────────────────────────────────
 
-def shrink_hr_per_pa(observed: float, pa: int) -> float:
-    """Bayesian shrinkage toward league mean."""
+def shrink_batter_hr_per_pa(observed: float, pa: int) -> float:
     if pa is None or pa <= 0:
         return LEAGUE_HR_PER_PA
-    return (pa * observed + SHRINKAGE_K * LEAGUE_HR_PER_PA) / (pa + SHRINKAGE_K)
+    return (pa * observed + BATTER_SHRINKAGE_K * LEAGUE_HR_PER_PA) / (pa + BATTER_SHRINKAGE_K)
+
+
+def shrink_pitcher_hr_per_9(observed: float, bf: int) -> float:
+    if bf is None or bf <= 0:
+        return LEAGUE_HR_PER_9
+    return (bf * observed + PITCHER_SHRINKAGE_K * LEAGUE_HR_PER_9) / (bf + PITCHER_SHRINKAGE_K)
 
 
 def american_to_implied(odds: int | None) -> float | None:
@@ -89,16 +91,13 @@ def american_to_implied(odds: int | None) -> float | None:
 
 
 def devig_anytime(implied: float | None) -> float | None:
-    """DK 'Anytime HR' is single-sided. Simple vig removal."""
     if implied is None or implied <= 0 or implied >= 1:
         return implied
     return implied / (1 + DK_HR_VIG)
 
 
-def pitcher_factor(pitcher_hr_per_9: float | None) -> float:
-    if pitcher_hr_per_9 is None or pitcher_hr_per_9 <= 0:
-        return 1.0
-    raw = pitcher_hr_per_9 / LEAGUE_HR_PER_9
+def pitcher_factor_from_shrunk(shrunk_hr_per_9: float) -> float:
+    raw = shrunk_hr_per_9 / LEAGUE_HR_PER_9
     return max(PITCHER_CAP_LO, min(PITCHER_CAP_HI, raw))
 
 
@@ -111,10 +110,6 @@ def compute_arsenal_adjustment(
     pitcher_arsenal: list,
     batter_overall_hr_pct: float,
 ) -> tuple[float, dict]:
-    """
-    Weighted average of per-pitch multipliers, shrunk by sample size,
-    capped at the individual-pitch and overall levels.
-    """
     if not batter_by_pitch or not pitcher_arsenal or batter_overall_hr_pct <= 0:
         return (1.0, {})
 
@@ -145,10 +140,7 @@ def compute_arsenal_adjustment(
                 multiplier = 1.0
             else:
                 raw_mult = b_hr_pct / batter_overall_hr_pct
-                # Floor on individual multiplier (prevents 0-HR/15-PA from nuking)
                 raw_mult = max(ARSENAL_MIN_MULT, min(2.0, raw_mult))
-                # Bayesian-ish shrinkage based on sample
-                # Weight: 0 at PA=10, 1 at PA=150
                 weight = min(1.0, max(0, (sample_pa - 10) / 140))
                 multiplier = 1.0 + (raw_mult - 1.0) * weight
         weighted_sum += multiplier * usage
@@ -217,7 +209,6 @@ def get_batter_stats_map(batter_ids: list[int]) -> dict[int, dict]:
 
 
 def get_player_names(player_ids: list[int]) -> dict[int, str]:
-    """For diagnostic logging."""
     if not player_ids:
         return {}
     res = sb.table("players").select("id, name").in_("id", player_ids).execute()
@@ -234,13 +225,16 @@ def get_pitcher_arsenal(pitcher_id: int) -> list[dict]:
     return res.data
 
 
-def compute_pitcher_hr_per_9(arsenal: list[dict]) -> float | None:
-    total_pa = sum(a.get("pa", 0) or 0 for a in arsenal)
-    total_hr = sum(a.get("hr", 0) or 0 for a in arsenal)
-    if total_pa < 50:
+def get_pitcher_stats(pitcher_id: int) -> dict | None:
+    """Read clean season pitching stats from pitcher_stats table."""
+    if not pitcher_id:
         return None
-    # HR/9 ≈ HR/PA × 4.3 (avg PA per inning)
-    return (total_hr / total_pa) * 4.3
+    res = sb.table("pitcher_stats").select(
+        "hr_per_9, hr_per_pa, batters_faced, innings_pitched, hr_allowed"
+    ).eq("pitcher_id", pitcher_id).eq("window_type", "season").execute()
+    if not res.data:
+        return None
+    return res.data[0]
 
 
 def get_current_odds(game_id: int, batter_ids: list[int], market: str) -> dict[int, dict]:
@@ -282,17 +276,20 @@ def project_game(game: dict) -> list[dict]:
     batter_stats_map = get_batter_stats_map(all_batter_ids)
     odds_map = get_current_odds(game["id"], all_batter_ids, "hr_anytime_yes")
 
+    # Pull pitcher data from BOTH arsenals and pitcher_stats
     away_arsenal = get_pitcher_arsenal(game.get("away_pitcher_id"))
     home_arsenal = get_pitcher_arsenal(game.get("home_pitcher_id"))
-    away_hr9 = compute_pitcher_hr_per_9(away_arsenal)
-    home_hr9 = compute_pitcher_hr_per_9(home_arsenal)
+    away_pstats = get_pitcher_stats(game.get("away_pitcher_id"))
+    home_pstats = get_pitcher_stats(game.get("home_pitcher_id"))
 
     rows = []
     snapshot_time = datetime.now(timezone.utc).isoformat()
 
+    # Away batters face HOME pitcher
     for batter in away_batters:
         row = _project_single(
-            batter, home_arsenal, home_hr9, batter_stats_map.get(batter["player_id"]),
+            batter, home_arsenal, home_pstats,
+            batter_stats_map.get(batter["player_id"]),
             odds_map.get(batter["player_id"]),
             game.get("hr_factor_lhb"), game.get("hr_factor_rhb"),
             game.get("hr_factor_overall"), game["id"], snapshot_time,
@@ -300,9 +297,11 @@ def project_game(game: dict) -> list[dict]:
         if row:
             rows.append(row)
 
+    # Home batters face AWAY pitcher
     for batter in home_batters:
         row = _project_single(
-            batter, away_arsenal, away_hr9, batter_stats_map.get(batter["player_id"]),
+            batter, away_arsenal, away_pstats,
+            batter_stats_map.get(batter["player_id"]),
             odds_map.get(batter["player_id"]),
             game.get("hr_factor_lhb"), game.get("hr_factor_rhb"),
             game.get("hr_factor_overall"), game["id"], snapshot_time,
@@ -316,7 +315,7 @@ def project_game(game: dict) -> list[dict]:
 def _project_single(
     batter: dict,
     opposing_arsenal: list[dict],
-    opposing_hr_per_9: float | None,
+    opposing_pstats: dict | None,
     batter_stats: dict | None,
     odds_row: dict | None,
     park_factor_lhb: float | None,
@@ -334,10 +333,10 @@ def _project_single(
         return None
     raw_hr_per_pa = float(raw_hr_per_pa)
 
-    # Bayesian shrinkage
-    base = shrink_hr_per_pa(raw_hr_per_pa, pa)
+    # ─── Bayesian shrinkage on batter ───
+    base = shrink_batter_hr_per_pa(raw_hr_per_pa, pa)
 
-    # Park factor by handedness
+    # ─── Park factor ───
     bats = batter.get("bats") or "R"
     if bats == "L":
         park_raw = park_factor_lhb or park_factor_overall or 1.0
@@ -347,17 +346,25 @@ def _project_single(
         park_raw = park_factor_rhb or park_factor_overall or 1.0
     park = park_capped(float(park_raw))
 
-    # Pitcher factor
-    p_factor = pitcher_factor(opposing_hr_per_9)
+    # ─── Pitcher factor from clean pitcher_stats ───
+    if opposing_pstats and opposing_pstats.get("hr_per_9") is not None:
+        bf = opposing_pstats.get("batters_faced") or 0
+        shrunk_pitcher_hr9 = shrink_pitcher_hr_per_9(
+            float(opposing_pstats["hr_per_9"]), bf
+        )
+    else:
+        # No pitcher data → assume league average (factor = 1.0)
+        shrunk_pitcher_hr9 = LEAGUE_HR_PER_9
+    p_factor = pitcher_factor_from_shrunk(shrunk_pitcher_hr9)
 
-    # Arsenal adjustment — uses shrunk base for the "overall" comparison too
-    # Note: by_pitch stores HR% in percent units, not per-PA. Convert.
+    # ─── Arsenal adjustment ───
     base_pct_for_arsenal = base * 100
     by_pitch = batter_stats.get("by_pitch_type") or {}
     arsenal_adj, _breakdown = compute_arsenal_adjustment(
         by_pitch, opposing_arsenal, base_pct_for_arsenal
     )
 
+    # ─── Combine ───
     projected_per_pa = base * p_factor * park * arsenal_adj
     projected_per_pa = max(0.001, min(PROJ_PER_PA_CAP, projected_per_pa))
 
@@ -366,6 +373,7 @@ def _project_single(
 
     projected_prob = hr_anytime_from_per_pa(projected_per_pa, expected_pas)
 
+    # ─── Edge ───
     edge = None
     no_vig = None
     best_american = None
@@ -404,8 +412,9 @@ def _project_single(
 
 def main():
     log.info("🧅 Cebolla Lab — projection compute starting (model %s)", MODEL_VERSION)
-    log.info("   Shrinkage K=%d, arsenal cap=[%.2f, %.2f], pitcher cap=[%.2f, %.2f]",
-             SHRINKAGE_K, ARSENAL_CAP_LO, ARSENAL_CAP_HI, PITCHER_CAP_LO, PITCHER_CAP_HI)
+    log.info("   Batter K=%d, pitcher K=%d  |  arsenal=[%.2f,%.2f]  pitcher=[%.2f,%.2f]",
+             BATTER_SHRINKAGE_K, PITCHER_SHRINKAGE_K,
+             ARSENAL_CAP_LO, ARSENAL_CAP_HI, PITCHER_CAP_LO, PITCHER_CAP_HI)
 
     games = get_todays_games()
     if not games:
@@ -438,8 +447,7 @@ def main():
         written += len(chunk)
     log.info("✓ Wrote %d", written)
 
-    # ──── Diagnostics ────
-    # Get player names for top edges so we can verify
+    # ─── Diagnostics ───
     sorted_by_edge = sorted(
         [r for r in all_rows if r.get("edge") is not None],
         key=lambda r: r["edge"], reverse=True,
@@ -467,7 +475,6 @@ def main():
                  r["edge"]*100,
                  r["base_rate"], r["pitcher_adj"], r["park_adj"], r["arsenal_adj"])
 
-    # Distribution stats
     edges_pct = [r["edge"] * 100 for r in sorted_by_edge]
     if edges_pct:
         log.info("─── Edge distribution ───")
@@ -477,8 +484,16 @@ def main():
                  max(edges_pct),
                  len(edges_pct))
         strong_back = sum(1 for e in edges_pct if e >= 5)
-        strong_fade = sum(1 for e in edges_pct if e <= -5)
-        log.info("  strong_back (≥+5%%): %d   strong_fade (≤-5%%): %d", strong_back, strong_fade)
+        lean_back   = sum(1 for e in edges_pct if 2 <= e < 5)
+        flat        = sum(1 for e in edges_pct if -2 <= e < 2)
+        lean_fade   = sum(1 for e in edges_pct if -5 <= e < -2)
+        strong_fade = sum(1 for e in edges_pct if e < -5)
+        log.info("  strong_back(≥+5%%)=%d  lean_back(+2 to +5%%)=%d  flat(±2%%)=%d  lean_fade(-5 to -2%%)=%d  strong_fade(≤-5%%)=%d",
+                 strong_back, lean_back, flat, lean_fade, strong_fade)
+        # Pitcher factor distribution sanity check
+        pfactors = [r["pitcher_adj"] for r in all_rows]
+        unique_p = len(set(round(p, 2) for p in pfactors))
+        log.info("  Pitcher factor: unique values = %d (was 1 if broken)", unique_p)
 
     log.info("🧅 Projection compute complete")
 
