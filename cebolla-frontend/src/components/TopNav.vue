@@ -1,6 +1,7 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { refreshSlate } from '../utils/githubDispatch.js'
 
 const route = useRoute()
 
@@ -19,6 +20,42 @@ function isActive(name) {
 const now = computed(() => {
   const d = new Date()
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+})
+
+// ── Manual refresh ──
+const refreshState = ref('idle')   // 'idle' | 'firing' | 'pulling' | 'done' | 'error'
+const refreshError = ref(null)
+
+async function handleRefresh() {
+  if (refreshState.value !== 'idle' && refreshState.value !== 'done' && refreshState.value !== 'error') return
+  refreshState.value = 'firing'
+  refreshError.value = null
+
+  const result = await refreshSlate()
+  if (!result.ok) {
+    refreshState.value = 'error'
+    refreshError.value = result.error || 'dispatch failed'
+    setTimeout(() => { refreshState.value = 'idle' }, 5000)
+    return
+  }
+
+  // Workflows are now running on GH. Give them ~45s to write fresh data,
+  // then auto-reload the page so the user sees the new state.
+  refreshState.value = 'pulling'
+  setTimeout(() => {
+    refreshState.value = 'done'
+    setTimeout(() => window.location.reload(), 800)
+  }, 45000)
+}
+
+const refreshLabel = computed(() => {
+  switch (refreshState.value) {
+    case 'firing':  return 'sending…'
+    case 'pulling': return 'pulling…'
+    case 'done':    return 'refreshed ✓'
+    case 'error':   return 'failed'
+    default:        return 'refresh'
+  }
 })
 </script>
 
@@ -67,6 +104,19 @@ const now = computed(() => {
           <span class="w-1.5 h-1.5 rounded-full bg-signal-400 animate-pulse"></span>
           <span class="label-caps">live</span>
         </div>
+
+        <!-- Refresh data button -->
+        <button
+          @click="handleRefresh"
+          :disabled="refreshState !== 'idle' && refreshState !== 'done' && refreshState !== 'error'"
+          class="refresh-btn"
+          :class="`state-${refreshState}`"
+          :title="refreshError || 'Trigger lineups + odds + projections pull'"
+        >
+          <span class="refresh-dot"></span>
+          <span class="label-caps">{{ refreshLabel }}</span>
+        </button>
+
         <div class="flex items-baseline gap-2">
           <span class="label-caps">UTC</span>
           <span class="display-num text-xs text-fg-600">{{ now }}</span>
@@ -75,3 +125,71 @@ const now = computed(() => {
     </div>
   </header>
 </template>
+
+<style scoped>
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  color: var(--color-fg-500, #888);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.refresh-btn:hover:not(:disabled) {
+  border-color: rgba(255, 42, 42, 0.4);
+  color: rgba(255, 42, 42, 0.85);
+}
+.refresh-btn:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.refresh-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transition: background 0.15s;
+}
+.refresh-btn:hover:not(:disabled) .refresh-dot {
+  background: rgba(255, 42, 42, 0.85);
+}
+
+.state-firing .refresh-dot,
+.state-pulling .refresh-dot {
+  background: rgba(255, 42, 42, 0.85);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+.state-firing,
+.state-pulling {
+  border-color: rgba(255, 42, 42, 0.4) !important;
+  color: rgba(255, 42, 42, 0.85) !important;
+}
+.state-done .refresh-dot {
+  background: rgba(95, 158, 160, 1);
+}
+.state-done {
+  border-color: rgba(95, 158, 160, 0.5) !important;
+  color: rgba(95, 158, 160, 1) !important;
+}
+.state-error .refresh-dot {
+  background: rgba(255, 42, 42, 1);
+}
+.state-error {
+  border-color: rgba(255, 42, 42, 0.6) !important;
+  color: rgba(255, 42, 42, 1) !important;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.5; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1.2);  }
+}
+</style>
