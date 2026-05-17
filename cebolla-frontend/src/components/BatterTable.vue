@@ -235,10 +235,9 @@ const isConfirmed = computed(() => {
             </td>
             <td class="py-2 px-2 border-b border-bg-200/40 text-center">
               <button
-                v-if="row.odds"
                 @click="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode })"
                 class="log-btn"
-                title="Log a bet on this player"
+                :title="row.odds ? 'Log a bet on this player' : 'Log a bet (no DK odds yet)'"
               >LOG</button>
             </td>
           </tr>
@@ -254,16 +253,15 @@ const isConfirmed = computed(() => {
   font-size: 9px;
   letter-spacing: 0.08em;
   padding: 2px 6px;
-  border: 1px solid rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,42,42,0.30);
   background: transparent;
-  color: rgb(160,160,160);
+  color: rgba(255,42,42,0.75);
   border-radius: 2px;
   transition: all 0.12s;
-  opacity: 0.5;
 }
-tr:hover .log-btn { opacity: 1; }
 .log-btn:hover {
   border-color: var(--color-accent-red, #FF2A2A);
   color: var(--color-accent-red, #FF2A2A);
+  background: rgba(255,42,42,0.08);
 }
 </style>
