@@ -1,19 +1,19 @@
 """
-compute_projections.py — Cebolla Lab projection model v0.1.2
+compute_projections.py — Cebolla Lab projection model v0.1.3
 
-Changes from v0.1.1:
-  - REPLACED broken pitcher HR/9 calc with clean read from pitcher_stats table
-    (was incorrectly summing PAs across pitch types in arsenal data)
-  - Added Bayesian shrinkage on pitcher HR/9 too (K=80 BF for pitchers)
-    -- short of 80 BF, pitcher pulls toward league avg
-  - Better diagnostic: shows pitcher's HR/9 and BF alongside each top edge
+Changes from v0.1.2:
+  - DYNAMIC VIG CURVE: longshot HR props carry more vig than favorites.
+    Replaces flat 6% with a piecewise function of American odds.
+  - LONGSHOT FILTER: don't compute edge when odds ≥ +2000 (too noisy to trust).
+    Sets edge=None, edge_bucket='longshot_unrated' so frontend can mark them.
+  - Removed debug logging (was diagnostic for v0.1.2)
 
-Math (unchanged from v0.1.1 except pitcher_factor source):
-  shrunk_batter_hr_per_pa = (PA × observed + 200 × league) / (PA + 200)
-  shrunk_pitcher_hr_per_9 = (BF × observed + 80 × league) / (BF + 80)
-  projected_per_pa = shrunk_batter × pitcher_factor × park_factor × arsenal_adj
-  projected_anytime = 1 - (1 - per_pa)^expected_PAs
-  edge = projected_anytime - no_vig_prob_from_DK
+Vig curve (Yes-side, "Anytime HR" market):
+  odds ≤ +200   → 5% vig
+  odds +200..+500   → 7%
+  odds +500..+1000  → 10%
+  odds +1000..+2000 → 13%
+  odds > +2000      → unrated (longshot filter kicks in)
 """
 
 import os
@@ -32,15 +32,15 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_VERSION = "v0.1.2"
+MODEL_VERSION = "v0.1.3"
 
 # ──── League constants ────
 LEAGUE_HR_PER_PA = 0.029
 LEAGUE_HR_PER_9  = 1.15
 
 # ──── Shrinkage ────
-BATTER_SHRINKAGE_K  = 200     # batter HR/PA: needs ~200 PA to weigh ~50% trusted
-PITCHER_SHRINKAGE_K = 80      # pitcher HR/9: needs ~80 BF to weigh ~50% trusted
+BATTER_SHRINKAGE_K  = 200
+PITCHER_SHRINKAGE_K = 80
 
 # ──── Caps ────
 ARSENAL_CAP_LO = 0.85
@@ -57,7 +57,8 @@ PA_BY_LINEUP_SPOT = {
     6: 4.05,  7: 3.92,  8: 3.80,  9: 3.68,
 }
 
-DK_HR_VIG = 0.06
+# ──── Longshot filter ────
+LONGSHOT_THRESHOLD_AMERICAN = 2000   # don't compute edge for +2000 or higher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,10 +91,31 @@ def american_to_implied(odds: int | None) -> float | None:
     return -odds / (-odds + 100)
 
 
-def devig_anytime(implied: float | None) -> float | None:
-    if implied is None or implied <= 0 or implied >= 1:
-        return implied
-    return implied / (1 + DK_HR_VIG)
+def devig_anytime(american_odds: int | None, implied: float | None) -> float | None:
+    """
+    Dynamic vig curve for single-sided HR Anytime props.
+    Yes-side vig grows as odds get longer (no Pinnacle anchor, so we
+    empirically estimate from DK's behavior).
+    Returns no-vig probability or None if outside our trust range.
+    """
+    if american_odds is None or implied is None or implied <= 0 or implied >= 1:
+        return None
+
+    # Longshot filter: refuse to estimate for very long odds
+    if american_odds >= LONGSHOT_THRESHOLD_AMERICAN:
+        return None
+
+    # Piecewise vig curve
+    if american_odds <= 200:
+        vig = 0.05
+    elif american_odds <= 500:
+        vig = 0.07
+    elif american_odds <= 1000:
+        vig = 0.10
+    else:
+        vig = 0.13   # +1000 to +2000
+
+    return implied / (1 + vig)
 
 
 def pitcher_factor_from_shrunk(shrunk_hr_per_9: float) -> float:
@@ -167,7 +189,9 @@ def hr_anytime_from_per_pa(hr_per_pa: float, expected_pas: float) -> float:
     return 1 - math.pow(1 - hr_per_pa, expected_pas)
 
 
-def edge_bucket(edge: float) -> str:
+def edge_bucket(edge: float | None) -> str:
+    if edge is None:
+        return "longshot_unrated"
     if edge >= 0.05:  return "strong_back"
     if edge >= 0.02:  return "lean_back"
     if edge >= -0.02: return "flat"
@@ -381,7 +405,7 @@ def _project_single(
         american = odds_row.get("american_odds")
         if american is not None:
             implied = american_to_implied(american)
-            no_vig = devig_anytime(implied)
+            no_vig = devig_anytime(american, implied)
             if no_vig is not None:
                 edge = projected_prob - no_vig
             best_american = american
@@ -412,9 +436,10 @@ def _project_single(
 
 def main():
     log.info("🧅 Cebolla Lab — projection compute starting (model %s)", MODEL_VERSION)
-    log.info("   Batter K=%d, pitcher K=%d  |  arsenal=[%.2f,%.2f]  pitcher=[%.2f,%.2f]",
+    log.info("   Batter K=%d, pitcher K=%d  |  arsenal=[%.2f,%.2f]  pitcher=[%.2f,%.2f]  longshot_cap=+%d",
              BATTER_SHRINKAGE_K, PITCHER_SHRINKAGE_K,
-             ARSENAL_CAP_LO, ARSENAL_CAP_HI, PITCHER_CAP_LO, PITCHER_CAP_HI)
+             ARSENAL_CAP_LO, ARSENAL_CAP_HI, PITCHER_CAP_LO, PITCHER_CAP_HI,
+             LONGSHOT_THRESHOLD_AMERICAN)
 
     games = get_todays_games()
     if not games:
@@ -448,10 +473,10 @@ def main():
     log.info("✓ Wrote %d", written)
 
     # ─── Diagnostics ───
-    sorted_by_edge = sorted(
-        [r for r in all_rows if r.get("edge") is not None],
-        key=lambda r: r["edge"], reverse=True,
-    )
+    rated = [r for r in all_rows if r.get("edge") is not None]
+    longshots = [r for r in all_rows if r.get("edge_bucket") == "longshot_unrated"]
+
+    sorted_by_edge = sorted(rated, key=lambda r: r["edge"], reverse=True)
     edge_player_ids = list({r["player_id"] for r in sorted_by_edge[:5] + sorted_by_edge[-5:]})
     name_map = get_player_names(edge_player_ids)
 
@@ -477,12 +502,13 @@ def main():
 
     edges_pct = [r["edge"] * 100 for r in sorted_by_edge]
     if edges_pct:
-        log.info("─── Edge distribution ───")
-        log.info("  Min: %+.2f%%   Median: %+.2f%%   Max: %+.2f%%   Count: %d",
+        log.info("─── Edge distribution (rated only) ───")
+        log.info("  Min: %+.2f%%   Median: %+.2f%%   Max: %+.2f%%   Rated: %d   Longshots filtered: %d",
                  min(edges_pct),
                  sorted(edges_pct)[len(edges_pct)//2],
                  max(edges_pct),
-                 len(edges_pct))
+                 len(edges_pct),
+                 len(longshots))
         strong_back = sum(1 for e in edges_pct if e >= 5)
         lean_back   = sum(1 for e in edges_pct if 2 <= e < 5)
         flat        = sum(1 for e in edges_pct if -2 <= e < 2)
@@ -490,10 +516,9 @@ def main():
         strong_fade = sum(1 for e in edges_pct if e < -5)
         log.info("  strong_back(≥+5%%)=%d  lean_back(+2 to +5%%)=%d  flat(±2%%)=%d  lean_fade(-5 to -2%%)=%d  strong_fade(≤-5%%)=%d",
                  strong_back, lean_back, flat, lean_fade, strong_fade)
-        # Pitcher factor distribution sanity check
         pfactors = [r["pitcher_adj"] for r in all_rows]
         unique_p = len(set(round(p, 2) for p in pfactors))
-        log.info("  Pitcher factor: unique values = %d (was 1 if broken)", unique_p)
+        log.info("  Pitcher factor: unique values = %d", unique_p)
 
     log.info("🧅 Projection compute complete")
 

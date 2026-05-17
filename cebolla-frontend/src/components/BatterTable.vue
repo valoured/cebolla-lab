@@ -198,6 +198,13 @@ const isConfirmed = computed(() => {
                   {{ edgeDisplay(row.proj.edge).text }}
                 </span>
               </template>
+              <span
+                v-else-if="row.proj?.edge_bucket === 'longshot_unrated'"
+                class="label-bracket !text-[8px] opacity-40"
+                title="Longshot — edge unreliable beyond +2000"
+              >
+                longshot
+              </span>
               <span v-else class="label-bracket !text-[8px] opacity-50">
                 {{ marketMode === 'hr' ? 'no data' : 'pending' }}
               </span>
