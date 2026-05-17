@@ -1,20 +1,29 @@
 name: Cebolla — Daily Data Pulls
 
+# IMPORTANT: All cron times use minute offsets (not :00) to avoid GitHub's
+# top-of-hour load spike, which delays/drops scheduled workflows.
+# Times are UTC. EDT = UTC - 4 (summer 2026 = EDT).
+
 on:
   schedule:
-    - cron: '0 6 * * *'
-    - cron: '0 14 * * *'
-    - cron: '0 22 * * *'
-    - cron: '0 17 * * *'
-    - cron: '0 18 * * *'
-    - cron: '0 19 * * *'
-    - cron: '0 20 * * *'
-    - cron: '0 21 * * *'
-    - cron: '0 23 * * *'
-    - cron: '0 0 * * *'
-    - cron: '0 1 * * *'
-    - cron: '0 2 * * *'
-    - cron: '0 3 * * *'
+    # Overnight + morning heavy jobs
+    - cron: '13 6 * * *'   # 06:13 UTC = 2:13 AM ET — schedule, savant, arsenals, pitcher_stats, weather, settle
+    - cron: '13 14 * * *'  # 14:13 UTC = 10:13 AM ET — schedule, lineups, weather, settle (East Coast finals)
+
+    # Hourly slate window (15 UTC = 11 AM ET through 03 UTC = 11 PM ET)
+    - cron: '17 15 * * *'  # 11:17 AM ET
+    - cron: '17 16 * * *'  # 12:17 PM ET
+    - cron: '17 17 * * *'  # 1:17 PM ET
+    - cron: '17 18 * * *'  # 2:17 PM ET
+    - cron: '17 19 * * *'  # 3:17 PM ET
+    - cron: '17 20 * * *'  # 4:17 PM ET
+    - cron: '17 21 * * *'  # 5:17 PM ET
+    - cron: '17 22 * * *'  # 6:17 PM ET
+    - cron: '17 23 * * *'  # 7:17 PM ET
+    - cron: '17 0 * * *'   # 8:17 PM ET
+    - cron: '17 1 * * *'   # 9:17 PM ET
+    - cron: '17 2 * * *'   # 10:17 PM ET
+    - cron: '17 3 * * *'   # 11:17 PM ET (last odds pull, settle late-night games)
 
   workflow_dispatch:
     inputs:
@@ -29,12 +38,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  # ── SCHEDULE: 3x daily ──
   pull-schedule:
     if: |
       (github.event_name == 'schedule' &&
-       (github.event.schedule == '0 6 * * *' ||
-        github.event.schedule == '0 14 * * *' ||
-        github.event.schedule == '0 22 * * *'))
+       contains(fromJSON('["13 6 * * *", "13 14 * * *", "17 22 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -47,11 +55,10 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_schedule.py
 
+  # ── SAVANT: heavy Statcast, 1x daily overnight ──
   pull-savant:
     if: |
-      (github.event_name == 'schedule' &&
-       (github.event.schedule == '0 6 * * *' ||
-        github.event.schedule == '0 22 * * *'))
+      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
       || inputs.job == 'all' || inputs.job == 'savant'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -65,9 +72,10 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_savant.py
 
+  # ── ARSENALS: pitcher pitch-type splits, 1x daily ──
   pull-arsenals:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '0 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
       || inputs.job == 'all' || inputs.job == 'arsenals'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -81,10 +89,10 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_arsenals.py
 
-  # NEW in v0.1.2: pitcher season stats (HR/9, K/9, BF, IP, etc.) from MLB Stats API
+  # ── PITCHER STATS: clean season stats from MLB API, 1x daily ──
   pull-pitcher-stats:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '0 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
       || inputs.job == 'all' || inputs.job == 'pitcher_stats'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -98,12 +106,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_pitcher_stats.py
 
+  # ── WEATHER: 3x daily ──
   pull-weather:
     if: |
       (github.event_name == 'schedule' &&
-       (github.event.schedule == '0 6 * * *' ||
-        github.event.schedule == '0 14 * * *' ||
-        github.event.schedule == '0 22 * * *'))
+       contains(fromJSON('["13 6 * * *", "13 14 * * *", "17 20 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'weather'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -117,10 +124,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_weather.py
 
+  # ── LINEUPS: every hour during slate window ──
   pull-lineups:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["0 14 * * *", "0 17 * * *", "0 18 * * *", "0 19 * * *", "0 20 * * *", "0 21 * * *", "0 22 * * *", "0 23 * * *", "0 0 * * *", "0 1 * * *", "0 2 * * *"]'), github.event.schedule))
+       contains(fromJSON('["13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'lineups'
     runs-on: ubuntu-latest
     steps:
@@ -133,10 +141,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_lineups.py
 
+  # ── DK ODDS: hourly during slate window ──
   pull-dk-odds:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["0 17 * * *", "0 18 * * *", "0 19 * * *", "0 20 * * *", "0 21 * * *", "0 22 * * *", "0 23 * * *", "0 0 * * *", "0 1 * * *", "0 2 * * *", "0 3 * * *"]'), github.event.schedule))
+       contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'dk_odds'
     runs-on: ubuntu-latest
     steps:
@@ -149,10 +158,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_dk_odds.py
 
+  # ── PROJECTIONS: hourly after odds + lineups ──
   compute-projections:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["0 17 * * *", "0 18 * * *", "0 19 * * *", "0 20 * * *", "0 21 * * *", "0 22 * * *", "0 23 * * *", "0 0 * * *", "0 1 * * *", "0 2 * * *"]'), github.event.schedule))
+       contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'projections'
     runs-on: ubuntu-latest
     needs: [pull-dk-odds, pull-lineups]
@@ -166,13 +176,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/compute_projections.py
 
-  # Phase 5: auto-grade pending bets against MLB boxscores
-  # Runs hourly in the post-game window (00–06 UTC = 8 PM–2 AM ET)
-  # plus once at 14 UTC to catch overnight East Coast finals
+  # ── SETTLE BETS: post-game grading + overnight catch-up ──
   settle-bets:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["0 0 * * *", "0 1 * * *", "0 2 * * *", "0 3 * * *", "0 6 * * *", "0 14 * * *"]'), github.event.schedule))
+       contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 6 * * *", "13 14 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'settle_bets'
     runs-on: ubuntu-latest
     steps:
