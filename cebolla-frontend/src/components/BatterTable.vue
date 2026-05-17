@@ -30,8 +30,12 @@ function getOdds(playerId) {
 }
 
 function getProjection(playerId) {
-  if (props.marketMode !== 'hr') return null   // only HR projections for now
-  const key = `${playerId}_hr_anytime`
+  const marketKey =
+    props.marketMode === 'hr'   ? 'hr_anytime' :
+    props.marketMode === 'hits' ? 'hits_yes'   :
+    null
+  if (!marketKey) return null
+  const key = `${playerId}_${marketKey}`
   return props.projections[key] || null
 }
 

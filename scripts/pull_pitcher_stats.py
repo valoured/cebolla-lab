@@ -115,9 +115,12 @@ def transform(stat: dict, pitcher_id: int, throws: str | None) -> dict:
     ip = parse_ip(stat.get("inningsPitched"))
     bf = safe_int(stat.get("battersFaced")) or 0
     hr = safe_int(stat.get("homeRuns")) or 0
+    hits_allowed = safe_int(stat.get("hits")) or 0
 
     hr_per_9 = (hr / ip * 9) if ip > 0 else None
     hr_per_pa = (hr / bf) if bf > 0 else None
+    hits_per_9 = (hits_allowed / ip * 9) if ip > 0 else None
+    hit_per_pa = (hits_allowed / bf) if bf > 0 else None
 
     return {
         "pitcher_id": pitcher_id,
@@ -127,6 +130,7 @@ def transform(stat: dict, pitcher_id: int, throws: str | None) -> dict:
         "innings_pitched": round(ip, 1) if ip else None,
         "batters_faced": bf if bf else None,
         "hr_allowed": hr,
+        "hits_allowed": hits_allowed,
         "bb": safe_int(stat.get("baseOnBalls")),
         "so": safe_int(stat.get("strikeOuts")),
         "er": safe_int(stat.get("earnedRuns")),
@@ -136,6 +140,9 @@ def transform(stat: dict, pitcher_id: int, throws: str | None) -> dict:
         "k_per_9": safe_num(stat.get("strikeoutsPer9Inn")),
         "bb_per_9": safe_num(stat.get("walksPer9Inn")),
         "hr_per_pa": round(hr_per_pa, 4) if hr_per_pa is not None else None,
+        "hits_per_9": round(hits_per_9, 2) if hits_per_9 is not None else None,
+        "hit_per_pa": round(hit_per_pa, 4) if hit_per_pa is not None else None,
+        "baa": safe_num(stat.get("avg")),
         "throws": throws,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

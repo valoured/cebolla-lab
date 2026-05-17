@@ -37,8 +37,8 @@ watch(() => props.open, (isOpen) => {
   notes.value  = ''
 
   if (props.marketMode === 'hits') {
-    market.value = 'hits_over_under'
-    side.value   = 'over'
+    market.value = 'hits_yes'
+    side.value   = 'yes'
     line.value   = 0.5
   } else {
     market.value = 'hr_anytime'
@@ -175,20 +175,14 @@ function close() {
                   <div class="label-bracket !text-[8px] opacity-60 mb-1">[ MARKET ]</div>
                   <select v-model="market" class="bet-input">
                     <option value="hr_anytime">HR Anytime</option>
-                    <option value="hits_over_under">Hits O/U</option>
+                    <option value="hits_yes">1+ Hits</option>
                   </select>
                 </div>
                 <div>
                   <div class="label-bracket !text-[8px] opacity-60 mb-1">[ SIDE ]</div>
                   <select v-model="side" class="bet-input">
-                    <template v-if="market === 'hr_anytime'">
-                      <option value="yes">Yes</option>
-                      <option value="no">No</option>
-                    </template>
-                    <template v-else>
-                      <option value="over">Over</option>
-                      <option value="under">Under</option>
-                    </template>
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
                   </select>
                 </div>
               </div>
