@@ -24,7 +24,7 @@ const routes = [
   },
   {
     path: '/bets',
-    name: 'bet-tracker',
+    name: 'bets',
     component: () => import('./views/BetTrackerView.vue'),
     meta: { title: 'Bet Log · Cebolla Lab' },
   },
