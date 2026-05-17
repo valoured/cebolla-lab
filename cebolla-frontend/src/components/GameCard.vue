@@ -76,7 +76,6 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
       class="bg-bg-50 border border-bg-200 hover:border-signal-400/50
              hover:bg-bg-100 transition-all duration-200 h-full
              flex flex-col"
-      :class="{ 'live-border': isLive }"
     >
       <!-- Header strip: time, status, venue -->
       <div class="px-3 py-2 border-b border-bg-200 flex items-center justify-between gap-2">
@@ -175,48 +174,38 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
 </template>
 
 <style scoped>
-/* ── Team logos: monochrome-tinted, low-key ── */
+/* ── Team logos: bigger, less muted ── */
 .team-logo {
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
   flex-shrink: 0;
-  filter: grayscale(0.5) brightness(0.95) contrast(1.1);
-  opacity: 0.85;
-  transition: filter 0.2s, opacity 0.2s;
+  filter: grayscale(0.15) brightness(1.05) contrast(1.05);
+  opacity: 0.95;
+  transition: filter 0.2s, opacity 0.2s, transform 0.2s;
 }
 .group:hover .team-logo {
-  filter: grayscale(0.2) brightness(1) contrast(1.1);
+  filter: grayscale(0) brightness(1.1) contrast(1.05);
   opacity: 1;
+  transform: scale(1.05);
 }
 
-/* ── Live game: signal-red pulse halo behind the card ── */
-.live-pulse {
-  position: relative;
-}
-.live-pulse::before {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border-radius: 2px;
-  background: transparent;
-  box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.0);
+/* ── Live game: signal-red box-shadow pulse on the article ── */
+.live-pulse article {
   animation: live-glow 2.4s ease-in-out infinite;
-  pointer-events: none;
-  z-index: -1;
-}
-.live-border {
-  border-color: rgba(255, 42, 42, 0.35) !important;
+  border-color: rgba(255, 42, 42, 0.5) !important;
+  position: relative;
+  z-index: 1;
 }
 
 @keyframes live-glow {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.0),
-                0 0 12px 0 rgba(255, 42, 42, 0.08);
+                0 0 8px 0 rgba(255, 42, 42, 0.20);
   }
   50% {
-    box-shadow: 0 0 0 1px rgba(255, 42, 42, 0.25),
-                0 0 22px 4px rgba(255, 42, 42, 0.18);
+    box-shadow: 0 0 0 2px rgba(255, 42, 42, 0.35),
+                0 0 24px 4px rgba(255, 42, 42, 0.40);
   }
 }
 </style>
