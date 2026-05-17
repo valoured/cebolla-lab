@@ -84,37 +84,42 @@ MARKET_PATTERNS = [
 ]
 
 
-def parse_market_line(market_name: str, selection_labels: list[str], market_key: str) -> float:
+def parse_selection_line(selection_label: str, market_key: str) -> float | None:
     """
-    Determine the actual line (0.5, 1.5, 2.5...) from market name + selection labels.
+    Determine the line for ONE selection in a multi-line market.
 
-    For 'hits' / 'rbi' markets:
-      - DK presents ladders: '1+ Hits' → line 0.5, '2+ Hits' → line 1.5, '3+ Hits' → 2.5
-      - Or 'Over 0.5' / 'Over 1.5' explicit
-      - Default to 0.5 (1+ hits) if we can't detect
-    For 'hr_anytime': always 0.5 (it's a yes/no on 1+ HR)
+    DK 'Hits' markets ship a single market with multiple selections like
+    ['1+', '2+', '3+', '4+']. Each label maps to a different line:
+        '1+' → 0.5  (at least 1 hit  = Over 0.5)
+        '2+' → 1.5  (at least 2 hits = Over 1.5)
+        '3+' → 2.5
+        '4+' → 3.5
+
+    For 'hr_anytime' markets, the only selection that matters is '1+' (or 'Yes').
+    Returns None for selections we can't classify (e.g. '5+' which we don't model).
     """
-    if market_key == "hr_anytime":
-        return 0.5
+    if not selection_label:
+        return None
 
-    # Search both market name and selection labels for the strongest signal
-    blobs = [market_name or ""] + [s or "" for s in selection_labels]
-    haystack = " ".join(blobs).lower()
+    label = selection_label.strip().lower()
 
-    # Explicit Over/Under N.5 takes precedence
-    m = re.search(r"\bo(?:ver)?\s*([0-9])\.5\b", haystack)
-    if m:
-        return float(m.group(1)) + 0.5
-
-    # "1+", "2+", "3+" — convert to (N-1).5 line
-    # Note: "1+" means at least 1 = Over 0.5
-    m = re.search(r"\b([1-9])\s*\+", haystack)
+    # "1+", "2+", "3+", etc.
+    m = re.match(r"^([1-9])\s*\+\s*$", label)
     if m:
         n = int(m.group(1))
         return n - 0.5
 
-    # Default
-    return 0.5
+    # "Over 0.5", "Over 1.5", etc.
+    m = re.match(r"^o(?:ver)?\s*([0-9])\.5\s*$", label)
+    if m:
+        return float(m.group(1)) + 0.5
+
+    # "Yes" on a single-line market (HR Anytime) means 1+
+    if label == "yes":
+        return 0.5
+
+    # "No", "Under …" → not a target line we project
+    return None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -406,12 +411,8 @@ def parse_response(
         if not player_id:
             continue
 
-        # Selections for this market (over/under or yes)
+        # Selections for this market
         mkt_sels = sels_by_mkt.get(str(mkt.get("id", "")), [])
-
-        # Compute the LINE from market name + selection labels combined
-        sel_labels = [s.get("label", "") for s in mkt_sels]
-        line = parse_market_line(market_name, sel_labels, market_key)
 
         # Diagnostic: capture first few samples per market_key so we can audit
         # the parsing in logs without flooding output.
@@ -420,24 +421,30 @@ def parse_response(
             if len(slot) < 3:
                 slot.append({
                     "name": market_name,
-                    "labels": sel_labels[:4],
-                    "parsed_line": line,
+                    "labels": [s.get("label", "") for s in mkt_sels[:5]],
                 })
 
         for sel in mkt_sels:
             american = extract_american_odds(sel)
             if american is None:
                 continue
-            side = detect_side(sel.get("label", ""))
+
+            sel_label = sel.get("label", "")
+            line = parse_selection_line(sel_label, market_key)
+            if line is None:
+                # Selection we don't model (e.g. "No", "5+", "Under 0.5")
+                continue
+
+            # For HR Anytime we only care about the "1+" / "Yes" line
+            if market_key == "hr_anytime" and line != 0.5:
+                continue
+
             decimal_ = american_to_decimal(american)
             implied = american_to_implied(american)
 
-            # Build market key with side
-            full_market = (
-                f"{market_key}_under" if side == "under"
-                else f"{market_key}_over" if side == "over"
-                else f"{market_key}_yes"
-            )
+            # All multi-line "Yes" props (HR Anytime, Hits ladder) are single-sided
+            full_market = f"{market_key}_yes"
+
             rows.append({
                 "game_id": game_id,
                 "player_id": player_id,
@@ -505,12 +512,11 @@ def main():
 
     # ─── Line-parse diagnostics ───
     if diagnostic_samples:
-        log.info("─── LINE PARSING SAMPLES ───")
+        log.info("─── MARKET SAMPLES (one line per selection from labels) ───")
         for market_key, samples in diagnostic_samples.items():
             for s in samples:
-                log.info("  [%s] line=%.1f  name=%r  labels=%s",
-                         market_key, s["parsed_line"],
-                         s["name"][:60], s["labels"])
+                log.info("  [%s] name=%r  labels=%s",
+                         market_key, s["name"][:60], s["labels"])
 
     # ─── Line distribution per market_key ───
     from collections import Counter
