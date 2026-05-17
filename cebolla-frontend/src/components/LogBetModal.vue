@@ -238,7 +238,7 @@ function close() {
                 <button
                   @click="submit"
                   :disabled="saving"
-                  class="flex-[1.4] py-2 text-xs label-bracket bg-accent-red/90 hover:bg-accent-red text-bg-50 border border-accent-red transition disabled:opacity-50"
+                  class="log-submit-btn flex-[1.4] py-2 text-xs"
                 >{{ saving ? '[ SAVING… ]' : '[ LOG BET ]' }}</button>
               </div>
             </div>
@@ -267,6 +267,27 @@ function close() {
 }
 .bet-input.display-num {
   font-family: 'JetBrains Mono', monospace;
+}
+
+/* Explicit submit button — bypasses Tailwind color resolution issues */
+.log-submit-btn {
+  font-family: 'IBM Plex Sans', sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: #FF2A2A;
+  color: #ffffff;
+  border: 1px solid #FF2A2A;
+  font-weight: 600;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+.log-submit-btn:hover:not(:disabled) {
+  background: #FF4444;
+  border-color: #FF4444;
+}
+.log-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s; }
