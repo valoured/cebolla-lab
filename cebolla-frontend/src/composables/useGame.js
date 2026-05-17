@@ -1,14 +1,9 @@
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { supabase } from '../supabase.js'
 
 /**
- * Loads everything the HR Report needs for one game:
- *  - game header (teams, pitchers, weather, HR factors)
- *  - lineups for both teams (sorted by batting order)
- *  - batter stats for every batter in the lineups
- *  - pitcher arsenals for both starting pitchers
- *  - current DK odds (HR / hits / RBI) for everyone in the lineups
- *  - BvP history for every batter against the opposing starter
+ * Loads everything the HR Report needs for one game.
+ * Now also pulls projections rows so the Edge column can render real values.
  */
 export function useGame(gameId) {
   const game        = ref(null)
@@ -16,9 +11,10 @@ export function useGame(gameId) {
   const homeLineup  = ref([])
   const arsenalAway = ref([])
   const arsenalHome = ref([])
-  const batterStats = ref({})   // {player_id: row}
-  const odds        = ref({})   // {player_id: { market: {american, line, ...} }}
-  const bvp         = ref({})   // {`${batter_id}_${pitcher_id}`: row}
+  const batterStats = ref({})
+  const odds        = ref({})
+  const bvp         = ref({})
+  const projections = ref({})   // {`${player_id}_${market}`: row}
   const loading     = ref(true)
   const error       = ref(null)
 
@@ -43,7 +39,7 @@ export function useGame(gameId) {
       if (gErr) throw gErr
       game.value = g
 
-      // 2) Lineups for both teams
+      // 2) Lineups
       const { data: lns } = await supabase
         .from('lineups')
         .select(`
@@ -56,7 +52,7 @@ export function useGame(gameId) {
       awayLineup.value = (lns || []).filter(l => l.team_id === g.away_team.id)
       homeLineup.value = (lns || []).filter(l => l.team_id === g.home_team.id)
 
-      // 3) Pitcher arsenals
+      // 3) Arsenals
       const pitcherIds = [g.away_pitcher?.id, g.home_pitcher?.id].filter(Boolean)
       if (pitcherIds.length) {
         const { data: ars } = await supabase
@@ -68,7 +64,7 @@ export function useGame(gameId) {
         arsenalHome.value = (ars || []).filter(a => a.pitcher_id === g.home_pitcher?.id)
       }
 
-      // 4) Batter stats for every batter in either lineup
+      // 4) Batter stats
       const batterIds = [...awayLineup.value, ...homeLineup.value]
         .map(l => l.player?.id)
         .filter(Boolean)
@@ -78,14 +74,13 @@ export function useGame(gameId) {
           .select('*')
           .in('batter_id', batterIds)
           .eq('window_type', 'season')
-          .eq('vs_hand', 'A')   // season totals vs all
+          .eq('vs_hand', 'A')
         const map = {}
         for (const r of (bs || [])) map[r.batter_id] = r
         batterStats.value = map
       }
 
-      // 5) Current odds (HR / Hits / RBI markets) for this game
-      // We rely on `is_current` being true for the latest snapshot.
+      // 5) Odds (latest snapshot per player+market)
       if (batterIds.length) {
         const { data: o } = await supabase
           .from('odds_snapshots')
@@ -97,7 +92,6 @@ export function useGame(gameId) {
         const oddsMap = {}
         for (const row of (o || [])) {
           if (!oddsMap[row.player_id]) oddsMap[row.player_id] = {}
-          // Only keep the first (most recent) seen per market
           if (!oddsMap[row.player_id][row.market]) {
             oddsMap[row.player_id][row.market] = row
           }
@@ -105,10 +99,9 @@ export function useGame(gameId) {
         odds.value = oddsMap
       }
 
-      // 6) BvP history: each batter vs the opposing starter
+      // 6) BvP
       const bvpQueries = []
       if (g.home_pitcher?.id) {
-        // Away batters vs home pitcher
         const awayBatterIds = awayLineup.value.map(l => l.player?.id).filter(Boolean)
         if (awayBatterIds.length) {
           bvpQueries.push(
@@ -137,6 +130,22 @@ export function useGame(gameId) {
       }
       bvp.value = bvpMap
 
+      // 7) Projections — keyed by (player_id + market)
+      if (batterIds.length) {
+        const { data: projs } = await supabase
+          .from('projections')
+          .select('*')
+          .eq('game_id', gameId)
+          .in('player_id', batterIds)
+          .order('created_at', { ascending: false })
+        const projMap = {}
+        for (const row of (projs || [])) {
+          const key = `${row.player_id}_${row.market}`
+          if (!projMap[key]) projMap[key] = row   // keep newest only
+        }
+        projections.value = projMap
+      }
+
       loading.value = false
     } catch (e) {
       error.value = e.message || String(e)
@@ -149,7 +158,7 @@ export function useGame(gameId) {
   return {
     game, awayLineup, homeLineup,
     arsenalAway, arsenalHome,
-    batterStats, odds, bvp,
+    batterStats, odds, bvp, projections,
     loading, error, reload: load,
   }
 }

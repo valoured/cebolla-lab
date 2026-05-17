@@ -11,12 +11,12 @@ const gameId = Number(route.params.gameId)
 const {
   game, awayLineup, homeLineup,
   arsenalAway, arsenalHome,
-  batterStats, odds, bvp,
+  batterStats, odds, bvp, projections,
   loading, error,
 } = useGame(gameId)
 
 const showSecondary = ref(false)
-const secondaryMarket = ref('hits')   // 'hits' | 'rbi'
+const secondaryMarket = ref('hits')
 
 const gameTime = computed(() => {
   if (!game.value?.game_time_utc) return ''
@@ -46,18 +46,22 @@ function hrfTone(v) {
 function fmtFactor(v) {
   return v != null ? Number(v).toFixed(2) : '—'
 }
+
+// Model meta — which model version are we showing
+const modelMeta = computed(() => {
+  const proj = Object.values(projections.value)[0]
+  return proj?.model_version || null
+})
 </script>
 
 <template>
   <div class="min-h-screen">
-    <!-- Top breadcrumb -->
     <div class="px-6 pt-5 pb-2">
       <router-link to="/" class="label-caps hover:text-signal-400 transition inline-flex items-center gap-2">
         <span>←</span><span>slate</span>
       </router-link>
     </div>
 
-    <!-- Loading -->
     <div v-if="loading" class="text-center py-32">
       <div class="inline-flex items-center gap-3 text-fg-500">
         <span class="w-2 h-2 bg-signal-400 animate-pulse"></span>
@@ -65,7 +69,6 @@ function fmtFactor(v) {
       </div>
     </div>
 
-    <!-- Error -->
     <div v-else-if="error" class="px-6 pb-8">
       <div class="border border-signal-400/30 bg-signal-400/5 p-5">
         <div class="label-bracket text-signal-400 mb-2">error</div>
@@ -74,7 +77,6 @@ function fmtFactor(v) {
     </div>
 
     <template v-else-if="game">
-      <!-- Header strip -->
       <header class="px-6 pb-5 border-b border-bg-200">
         <div class="flex items-baseline justify-between gap-6 flex-wrap mb-4">
           <div>
@@ -85,6 +87,8 @@ function fmtFactor(v) {
                     :class="statusBadge.color">
                 {{ statusBadge.text }}
               </span>
+              <span v-if="modelMeta"
+                    class="label-bracket !text-[9px] opacity-60">model {{ modelMeta }}</span>
             </div>
             <div class="flex items-baseline gap-4">
               <h1 class="display-text text-4xl text-fg-800 tracking-tight leading-none">
@@ -98,7 +102,6 @@ function fmtFactor(v) {
           </div>
         </div>
 
-        <!-- Conditions row -->
         <div class="grid grid-cols-2 md:grid-cols-6 gap-x-6 gap-y-3">
           <div>
             <div class="label-caps">Temp</div>
@@ -139,7 +142,6 @@ function fmtFactor(v) {
         </div>
       </header>
 
-      <!-- Pitcher arsenals: side by side -->
       <section class="px-6 py-5">
         <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">probable starters</h2>
@@ -158,7 +160,6 @@ function fmtFactor(v) {
         </div>
       </section>
 
-      <!-- HR matchup tables: side by side -->
       <section class="px-6 pb-5">
         <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">HR matchups</h2>
@@ -170,6 +171,7 @@ function fmtFactor(v) {
             :batter-stats="batterStats"
             :odds="odds"
             :bvp="bvp"
+            :projections="projections"
             :pitcher-id="game.home_pitcher?.id"
             :team-label="`${game.away_team?.abbrev} BATTERS`"
             market-mode="hr"
@@ -179,6 +181,7 @@ function fmtFactor(v) {
             :batter-stats="batterStats"
             :odds="odds"
             :bvp="bvp"
+            :projections="projections"
             :pitcher-id="game.away_pitcher?.id"
             :team-label="`${game.home_team?.abbrev} BATTERS`"
             market-mode="hr"
@@ -186,7 +189,6 @@ function fmtFactor(v) {
         </div>
       </section>
 
-      <!-- Collapsible Hits/RBI section -->
       <section class="px-6 pb-10">
         <button
           @click="showSecondary = !showSecondary"
@@ -198,7 +200,6 @@ function fmtFactor(v) {
         </button>
 
         <div v-if="showSecondary" class="mt-5">
-          <!-- Market toggle -->
           <div class="flex items-center gap-2 mb-3">
             <span class="label-caps mr-2">market:</span>
             <button
@@ -220,6 +221,7 @@ function fmtFactor(v) {
               :batter-stats="batterStats"
               :odds="odds"
               :bvp="bvp"
+              :projections="projections"
               :pitcher-id="game.home_pitcher?.id"
               :team-label="`${game.away_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
@@ -229,6 +231,7 @@ function fmtFactor(v) {
               :batter-stats="batterStats"
               :odds="odds"
               :bvp="bvp"
+              :projections="projections"
               :pitcher-id="game.away_pitcher?.id"
               :team-label="`${game.home_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
@@ -237,10 +240,9 @@ function fmtFactor(v) {
         </div>
       </section>
 
-      <!-- Footer note -->
       <footer class="px-6 pb-8 text-center">
         <p class="label-caps !text-[9px] opacity-50">
-          Edge values pending model · Phase 4
+          Edges are model estimates. Hits / RBI projections coming next.
         </p>
       </footer>
     </template>

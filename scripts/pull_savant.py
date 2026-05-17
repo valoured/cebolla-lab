@@ -1,12 +1,12 @@
 """
 pull_savant.py — Pull batter season stats from Baseball Savant raw Statcast.
 
-Strategy: pull this season's pitch-level Statcast data ONCE (big request),
-then aggregate per batter into season totals, including L/R splits.
+Now also computes per-pitch-type batter performance for the
+`batter_stats.by_pitch_type` JSONB column — needed for the Phase 4
+arsenal-weighted projection model.
 
-We skip FanGraphs entirely. FanGraphs' legacy leaderboard endpoint blocks
-pybaseball's default User-Agent with a 403, but Baseball Savant's CSV
-endpoints (which pybaseball.statcast uses) work fine.
+Strategy: one big Statcast pull → groupby batter for season totals →
+groupby (batter, pitch_type) for per-pitch breakdown.
 
 Runs twice daily via GitHub Actions.
 """
@@ -38,9 +38,22 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Pitch type normalization (Statcast 'pitch_type' code → our label)
+PITCH_TYPE_MAP = {
+    "FF": "4SM", "FA": "4SM",
+    "SI": "SI",  "FT": "SI",
+    "FC": "CT",
+    "CH": "CH",
+    "SL": "SL",
+    "CU": "CU",  "KC": "KC",
+    "FS": "FS",
+    "ST": "SW",
+    "SV": "SV",
+    "KN": "KN",
+}
+
 
 def get_known_batters() -> dict[int, int]:
-    """Return {mlbam_id: players.id} for all non-pitchers we know."""
     res = sb.table("players").select("id, mlbam_id, is_pitcher").execute()
     return {p["mlbam_id"]: p["id"] for p in res.data if not p["is_pitcher"]}
 
@@ -57,7 +70,6 @@ def upsert_batter(mlbam_id: int, name: str) -> int:
 
 
 def fetch_all_statcast() -> pd.DataFrame | None:
-    """Pull this season's pitch-level Statcast data."""
     from pybaseball import statcast
     today = date.today().isoformat()
     log.info("Fetching Statcast %s → %s (this can take 1-3 minutes)…",
@@ -74,12 +86,12 @@ def fetch_all_statcast() -> pd.DataFrame | None:
         return None
 
 
-def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str) -> dict:
-    """Aggregate one batter's pitches into season totals."""
+def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str,
+                     by_pitch: dict | None = None) -> dict:
+    """Aggregate one batter's pitches into season totals. Includes by_pitch_type JSON."""
     pa_rows = group[group["events"].notna()]
     pa = len(pa_rows)
 
-    # AB excludes BB, HBP, sac flies, etc.
     non_ab_events = {
         "walk", "hit_by_pitch", "sac_fly", "sac_bunt",
         "intent_walk", "catcher_interf",
@@ -104,7 +116,6 @@ def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str) -> dict:
     slg = tb / ab if ab > 0 else None
     iso = (slg - avg) if (slg is not None and avg is not None) else None
 
-    # Ball-in-play stats
     bip = group[group["type"] == "X"] if "type" in group.columns else group.iloc[0:0]
 
     barrel_pct = None
@@ -155,12 +166,59 @@ def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str) -> dict:
         "ev_avg": round(ev_avg, 1) if ev_avg is not None else None,
         "la_avg": round(la_avg, 1) if la_avg is not None else None,
         "pull_pct": round(pull_pct, 2) if pull_pct is not None else None,
+        "by_pitch_type": by_pitch,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
+def aggregate_by_pitch_type(group: pd.DataFrame) -> dict:
+    """
+    Group one batter's pitches by pitch_type and compute key metrics.
+    Returns {pitch_label: {pa, hr, hr_pct, ev_avg, brl_pct}}.
+    Pitch labels match our pitcher_arsenals table.
+    """
+    if "pitch_type" not in group.columns or group.empty:
+        return {}
+
+    g = group.copy()
+    g["pitch_label"] = g["pitch_type"].map(PITCH_TYPE_MAP).fillna(g["pitch_type"])
+
+    out = {}
+    for label, sub in g.groupby("pitch_label"):
+        if not label or label == "nan":
+            continue
+
+        pa_rows = sub[sub["events"].notna()]
+        pa = int(len(pa_rows))
+        if pa < 5:
+            continue  # too few PAs to be meaningful
+
+        hr = int((pa_rows["events"] == "home_run").sum())
+        bip = sub[sub["type"] == "X"] if "type" in sub.columns else sub.iloc[0:0]
+
+        ev_avg = None
+        if not bip.empty and "launch_speed" in bip.columns:
+            ev_clean = bip["launch_speed"].dropna()
+            if len(ev_clean):
+                ev_avg = round(float(ev_clean.mean()), 1)
+
+        brl_pct = None
+        if not bip.empty and "launch_speed_angle" in bip.columns and len(bip):
+            barrels = (bip["launch_speed_angle"] == 6).sum()
+            brl_pct = round(float(barrels / len(bip) * 100), 2)
+
+        out[label] = {
+            "pa": pa,
+            "hr": hr,
+            "hr_pct": round(hr / pa * 100, 2),
+            "ev_avg": ev_avg,
+            "brl_pct": brl_pct,
+        }
+
+    return out
+
+
 def lookup_player_name(mlbam_id: int) -> str:
-    """Try playerid_reverse_lookup; fallback to MLB Stats API."""
     try:
         from pybaseball import playerid_reverse_lookup
         df = playerid_reverse_lookup([mlbam_id], key_type="mlbam")
@@ -172,7 +230,6 @@ def lookup_player_name(mlbam_id: int) -> str:
                 return name
     except Exception:
         pass
-    # Fallback to MLB Stats API
     try:
         import requests
         r = requests.get(
@@ -188,7 +245,7 @@ def lookup_player_name(mlbam_id: int) -> str:
 
 
 def main():
-    log.info("🧅 Cebolla Lab — Savant batter sync starting")
+    log.info("🧅 Cebolla Lab — Savant batter sync starting (with pitch-type breakdown)")
 
     df = fetch_all_statcast()
     if df is None:
@@ -197,7 +254,6 @@ def main():
 
     known = get_known_batters()
 
-    # Filter to batting events (exclude rows where the player is being recorded as pitcher)
     if "batter" not in df.columns:
         log.error("Statcast data missing 'batter' column")
         sys.exit(1)
@@ -227,22 +283,28 @@ def main():
             known[batter_mlbam_int] = player_id
             new_count += 1
 
-        # vs ALL pitchers
         group_all = by_batter.get_group(batter_mlbam)
-        rows.append(aggregate_batter(group_all, player_id, "A"))
 
-        # vs L
+        # by_pitch_type breakdown (used for arsenal-weighted projection)
+        by_pitch = aggregate_by_pitch_type(group_all)
+
+        # Season totals vs ALL pitchers
+        rows.append(aggregate_batter(group_all, player_id, "A", by_pitch=by_pitch))
+
+        # Splits vs L and R
         if by_batter_hand is not None:
             try:
                 group_l = by_batter_hand.get_group((batter_mlbam, "L"))
                 if len(group_l) >= 10:
-                    rows.append(aggregate_batter(group_l, player_id, "L"))
+                    by_pitch_l = aggregate_by_pitch_type(group_l)
+                    rows.append(aggregate_batter(group_l, player_id, "L", by_pitch=by_pitch_l))
             except KeyError:
                 pass
             try:
                 group_r = by_batter_hand.get_group((batter_mlbam, "R"))
                 if len(group_r) >= 10:
-                    rows.append(aggregate_batter(group_r, player_id, "R"))
+                    by_pitch_r = aggregate_by_pitch_type(group_r)
+                    rows.append(aggregate_batter(group_r, player_id, "R", by_pitch=by_pitch_r))
             except KeyError:
                 pass
 
@@ -253,7 +315,6 @@ def main():
     log.info("Prepared %d batter stat rows (%d new batter records)",
              len(rows), new_count)
 
-    # Batch upsert
     written = 0
     for i in range(0, len(rows), 100):
         chunk = rows[i:i + 100]
