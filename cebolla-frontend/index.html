@@ -1,19 +1,68 @@
-<!doctype html>
+<!--
+  ─────────────────────────────────────────────────────────────────────
+  index.html — favicon + OG meta tag patch
+  ─────────────────────────────────────────────────────────────────────
+
+  This is the full replacement for cebolla-frontend/index.html.
+
+  WHAT'S NEW:
+    1. Favicon links (16/32/192/512 sizes for various browser contexts)
+    2. Apple touch icon (iOS home-screen / Safari)
+    3. <title> with brand name + tagline
+    4. Open Graph tags (social sharing previews — Discord, X, etc.)
+    5. Twitter card metadata
+    6. theme-color (browser chrome tinting on mobile)
+
+  WHEN cebolla.live IS WIRED UP, update ONLY this one line:
+    <meta property="og:url" content="https://cebolla-lab.pages.dev/">
+  to:
+    <meta property="og:url" content="https://cebolla.live/">
+
+  IF YOU CUSTOMIZED YOUR index.html (custom fonts, analytics tags, etc.):
+  Don't replace the whole file. Just COPY the new <link> and <meta>
+  tags from this file into your existing <head>, leaving anything
+  custom intact.
+  ─────────────────────────────────────────────────────────────────────
+-->
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/onion.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>cebolla · lab</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- Syne (display), IBM Plex Sans (body), JetBrains Mono (numbers) -->
-    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700;800&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- ─── Title ─────────────────────────────────────────────── -->
+    <title>Cebolla · Every Layer Reveals an Edge</title>
+    <meta name="description" content="Sports betting research lab. FanGraphs-grade Statcast trends, projected lineups, edge detection. Built for sharps." />
 
-    <meta name="description" content="Peel back the layers. Personal MLB betting research." />
+    <!-- ─── Favicon ───────────────────────────────────────────── -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/cebolla-icon-32-transparent.png" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/cebolla-icon-64-transparent.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/cebolla-icon-128-transparent.png" />
+
+    <!-- Apple touch icon (iOS Add to Home Screen + Safari tab) -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/cebolla-icon-512-transparent.png" />
+
+    <!-- Browser chrome tinting (Android Chrome address bar) -->
+    <meta name="theme-color" content="#08080A" />
+
+    <!-- ─── Open Graph (Discord, X, LinkedIn, iMessage embeds) ── -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Cebolla" />
+    <meta property="og:title" content="Cebolla · Every Layer Reveals an Edge" />
+    <meta property="og:description" content="Sports betting research lab. FanGraphs-grade Statcast trends, projected lineups, edge detection. Built for sharps." />
+    <meta property="og:url" content="https://cebolla-lab.pages.dev/" />
+    <meta property="og:image" content="https://cebolla-lab.pages.dev/cebolla-full-transparent.png" />
+    <meta property="og:image:width" content="1024" />
+    <meta property="og:image:height" content="1024" />
+    <meta property="og:image:alt" content="Cebolla logo — fire-onion mark with bar chart slashes" />
+
+    <!-- ─── Twitter Card ──────────────────────────────────────── -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Cebolla · Every Layer Reveals an Edge" />
+    <meta name="twitter:description" content="Sports betting research lab. Built for sharps." />
+    <meta name="twitter:image" content="https://cebolla-lab.pages.dev/cebolla-full-transparent.png" />
   </head>
-  <body class="bg-bg-0">
+  <body>
     <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
   </body>
