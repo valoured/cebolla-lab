@@ -122,11 +122,9 @@ const filterChips = [
     <section class="px-4 sm:px-6 py-5 sm:py-6">
       <div v-if="loading" class="text-center py-20">
         <img
-          src="/cebolla-icon-128-transparent.png"
-          alt="Cebolla"
-          class="cebolla-logo-loading mx-auto mb-5"
-          width="64"
-          height="64"
+          src="/cebolla-wordmark.png"
+          alt="Cebolla · Every Layer Reveals an Edge"
+          class="cebolla-wordmark-loading mx-auto mb-6"
         />
         <div class="inline-flex items-center gap-3 text-fg-500">
           <span class="w-2 h-2 bg-signal-400 animate-pulse"></span>
@@ -141,11 +139,9 @@ const filterChips = [
 
       <div v-else-if="!games.length" class="text-center py-20">
         <img
-          src="/cebolla-icon-128-transparent.png"
+          src="/cebolla-wordmark.png"
           alt="Cebolla"
-          class="cebolla-logo-empty mx-auto mb-6"
-          width="56"
-          height="56"
+          class="cebolla-wordmark-empty mx-auto mb-6"
         />
         <div class="display-text text-2xl text-fg-500 italic mb-3">No active slate</div>
         <div class="text-fg-500 text-sm max-w-md mx-auto leading-relaxed">
@@ -183,32 +179,32 @@ const filterChips = [
 </template>
 
 <style scoped>
-/* Loading state: pulsing glow logo */
-.cebolla-logo-loading {
+/* Loading state: wordmark with breathing glow */
+.cebolla-wordmark-loading {
   display: block;
-  width: 64px;
-  height: 64px;
-  filter: drop-shadow(0 0 12px rgba(255, 42, 42, 0.45));
+  width: clamp(220px, 50%, 360px);   /* responsive: 220 mobile → 360 desktop */
+  height: auto;
+  filter: drop-shadow(0 0 14px rgba(255, 42, 42, 0.35));
   animation: cebolla-breathe 2.4s ease-in-out infinite;
 }
 
-/* Empty state: dimmer, no animation */
-.cebolla-logo-empty {
+/* Empty state: dimmer wordmark */
+.cebolla-wordmark-empty {
   display: block;
-  width: 56px;
-  height: 56px;
-  filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.25));
+  width: clamp(180px, 45%, 300px);
+  height: auto;
   opacity: 0.55;
+  filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.20));
 }
 
 @keyframes cebolla-breathe {
   0%, 100% {
     transform: scale(1);
-    filter: drop-shadow(0 0 10px rgba(255, 42, 42, 0.35));
+    filter: drop-shadow(0 0 10px rgba(255, 42, 42, 0.30));
   }
   50% {
-    transform: scale(1.04);
-    filter: drop-shadow(0 0 18px rgba(255, 42, 42, 0.65));
+    transform: scale(1.02);
+    filter: drop-shadow(0 0 22px rgba(255, 42, 42, 0.60));
   }
 }
 </style>
