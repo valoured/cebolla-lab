@@ -1,13 +1,9 @@
 <script setup>
 /**
- * PitcherAllowedStats.vue
+ * PitcherAllowedStats.vue — mobile-responsive.
  *
- * Compact 4-stat strip showing pitcher-allowed Statcast.
- * Renders below the arsenal table in HRReportView.
- *
- * Shows: HH% / Brl% / xSLG / xBA
- * Window-aware via useStatcastPitcher composable.
- * Colors are flipped: LOW allowed values = elite (signal-400 red).
+ * Grid: 2 cols on mobile, 4 cols from sm up.
+ * Toggle stays the same.
  */
 
 import { computed, toRef } from 'vue'
@@ -32,7 +28,6 @@ const currentWindow = computed({
   set: (v) => setWindow(v),
 })
 
-// Helper to extract a numeric value safely
 function num(v) {
   if (v == null) return null
   const n = Number(v)
@@ -41,9 +36,9 @@ function num(v) {
 </script>
 
 <template>
-  <div v-if="pitcherId" class="px-4 py-2.5 border-t border-bg-200 bg-bg-50/50">
-    <!-- Header row: label + window toggle -->
-    <div class="flex items-center justify-between gap-3 mb-2">
+  <div v-if="pitcherId" class="px-3 sm:px-4 py-2.5 border-t border-bg-200 bg-bg-50/50">
+    <!-- Header row: stacks on very small screens, side-by-side from xs up -->
+    <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
       <span class="label-caps">Allowed (Statcast)</span>
       <div class="flex items-center gap-2">
         <span v-if="loading" class="label-caps !text-[8px] text-fg-400 italic">loading…</span>
@@ -51,8 +46,8 @@ function num(v) {
       </div>
     </div>
 
-    <!-- Stat strip: 4 cells -->
-    <div class="grid grid-cols-4 gap-3">
+    <!-- 2 cols mobile, 4 cols from sm -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
       <div class="flex flex-col gap-0.5">
         <span class="label-caps !text-[8px]" title="Hard-Hit % (95+ mph) allowed">HH% Allowed</span>
         <span
@@ -91,7 +86,6 @@ function num(v) {
       </div>
     </div>
 
-    <!-- Footer: window context -->
     <div v-if="stats?.bbe != null" class="mt-2 flex items-baseline justify-between">
       <span class="label-caps !text-[8px] text-fg-400">
         {{ stats.bbe }} batted balls

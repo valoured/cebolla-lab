@@ -5,7 +5,6 @@ import GameCard from '../components/GameCard.vue'
 
 const { games, loading, error, activeDate } = useSlate()
 
-// Single active filter (null = show all)
 const activeFilter = ref(null)
 
 function toggleFilter(key) {
@@ -27,9 +26,6 @@ const filteredGames = computed(() => {
   })
 })
 
-// Use the date useSlate decided to load.
-// (When no dateStr is passed, useSlate picks the next active slate's date
-// automatically. So this is correct even when today's games are all done.)
 const displayedDate = computed(() => {
   if (activeDate.value) {
     const [y, m, d] = activeDate.value.split('-').map(Number)
@@ -63,40 +59,42 @@ const filterChips = [
 
 <template>
   <div class="min-h-screen">
-    <!-- Compact header with inline filters -->
-    <header class="px-6 pt-8 pb-5 border-b border-bg-200">
-      <div class="flex items-end justify-between gap-6 flex-wrap mb-4">
+    <!-- Header: stacks vertically on mobile, side-by-side from md up -->
+    <header class="px-4 sm:px-6 pt-6 sm:pt-8 pb-4 sm:pb-5 border-b border-bg-200">
+      <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4 md:gap-6 mb-4">
         <div>
           <div class="flex items-center gap-3 mb-2">
             <span class="label-bracket text-signal-400">slate · MLB</span>
             <span class="label-caps">{{ dateShort }}</span>
           </div>
-          <h1 class="display-text text-3xl text-fg-800 tracking-tight leading-none">
+          <!-- Date text scales: 2xl mobile, 3xl desktop -->
+          <h1 class="display-text text-2xl sm:text-3xl text-fg-800 tracking-tight leading-none">
             {{ dateLong }}
           </h1>
         </div>
 
-        <div class="flex items-center gap-5 text-right">
+        <!-- Stats strip: compact on mobile -->
+        <div class="flex items-center gap-3 sm:gap-5 text-left md:text-right">
           <div>
             <div class="label-caps">Total</div>
-            <div class="display-num text-2xl text-fg-700 leading-none mt-1">{{ games.length }}</div>
+            <div class="display-num text-xl sm:text-2xl text-fg-700 leading-none mt-1">{{ games.length }}</div>
           </div>
-          <div class="w-px h-8 bg-bg-200"></div>
+          <div class="w-px h-7 sm:h-8 bg-bg-200"></div>
           <div>
             <div class="label-caps">Showing</div>
-            <div class="display-num text-2xl text-fg-700 leading-none mt-1">{{ filteredGames.length }}</div>
+            <div class="display-num text-xl sm:text-2xl text-fg-700 leading-none mt-1">{{ filteredGames.length }}</div>
           </div>
-          <div class="w-px h-8 bg-bg-200"></div>
-          <div>
+          <div class="w-px h-7 sm:h-8 bg-bg-200 hidden sm:block"></div>
+          <div class="hidden sm:block">
             <div class="label-caps">Updated</div>
             <div class="display-num text-xs text-fg-500 leading-none mt-1">{{ lastUpdate }}</div>
           </div>
         </div>
       </div>
 
-      <!-- Filter chips: radio-style (one at a time) -->
+      <!-- Filter chips: wrap nicely on mobile -->
       <div class="flex items-center gap-2 flex-wrap">
-        <span class="label-caps mr-2">filter:</span>
+        <span class="label-caps mr-1 sm:mr-2 shrink-0">filter:</span>
         <button
           v-for="chip in filterChips"
           :key="chip.key"
@@ -107,7 +105,8 @@ const filterChips = [
             : 'border-bg-200 text-fg-500 hover:border-bg-300 hover:text-fg-700'"
         >
           <span class="font-medium">{{ chip.label }}</span>
-          <span class="font-mono text-[9px] opacity-70">{{ chip.hint }}</span>
+          <!-- Hint hidden on smallest screens -->
+          <span class="hidden sm:inline font-mono text-[9px] opacity-70">{{ chip.hint }}</span>
         </button>
         <button
           v-if="activeFilter"
@@ -120,7 +119,7 @@ const filterChips = [
     </header>
 
     <!-- Content -->
-    <section class="px-6 py-6">
+    <section class="px-4 sm:px-6 py-5 sm:py-6">
       <div v-if="loading" class="text-center py-20">
         <div class="inline-flex items-center gap-3 text-fg-500">
           <span class="w-2 h-2 bg-signal-400 animate-pulse"></span>
@@ -154,8 +153,15 @@ const filterChips = [
         </button>
       </div>
 
-      <!-- 4-column grid (was 5 — gives cards more breathing room) -->
-      <div v-else class="grid grid-cols-4 gap-4">
+      <!--
+        Responsive grid:
+          mobile (default): 1 column
+          sm (640+):        2 columns
+          lg (1024+):       3 columns
+          xl (1280+):       4 columns
+        Tighter gap on mobile to maximize card width.
+      -->
+      <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
         <GameCard v-for="game in filteredGames" :key="game.id" :game="game" />
       </div>
     </section>

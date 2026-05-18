@@ -81,7 +81,7 @@ const modelMeta = computed(() => {
 
 <template>
   <div class="min-h-screen">
-    <div class="px-6 pt-5 pb-2">
+    <div class="px-4 sm:px-6 pt-4 sm:pt-5 pb-2">
       <router-link to="/" class="label-caps hover:text-signal-400 transition inline-flex items-center gap-2">
         <span>←</span><span>slate</span>
       </router-link>
@@ -102,10 +102,10 @@ const modelMeta = computed(() => {
     </div>
 
     <template v-else-if="game">
-      <header class="px-6 pb-5 border-b border-bg-200">
-        <div class="flex items-baseline justify-between gap-6 flex-wrap mb-4">
-          <div>
-            <div class="flex items-center gap-3 mb-2">
+      <header class="px-4 sm:px-6 pb-5 border-b border-bg-200">
+        <div class="flex items-baseline justify-between gap-3 sm:gap-6 flex-wrap mb-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 sm:gap-3 mb-2 flex-wrap">
               <span class="label-bracket text-signal-400">M.01.b · HR REPORT</span>
               <span v-if="statusBadge"
                     class="text-[9px] uppercase tracking-wide2 font-mono px-2 py-0.5 rounded-sm"
@@ -115,8 +115,9 @@ const modelMeta = computed(() => {
               <span v-if="modelMeta"
                     class="label-bracket !text-[9px] opacity-60">model {{ modelMeta }}</span>
             </div>
-            <div class="flex items-baseline gap-4">
-              <h1 class="display-text text-4xl text-fg-800 tracking-tight leading-none">
+            <!-- Teams + time/venue: row on desktop, wraps tighter on mobile -->
+            <div class="flex items-baseline gap-2 sm:gap-4 flex-wrap">
+              <h1 class="display-text text-3xl sm:text-4xl text-fg-800 tracking-tight leading-none">
                 {{ game.away_team?.abbrev }}
                 <span class="text-fg-400 italic mx-1">@</span>
                 {{ game.home_team?.abbrev }}
@@ -130,7 +131,8 @@ const modelMeta = computed(() => {
           </div>
         </div>
 
-        <div class="grid grid-cols-2 md:grid-cols-6 gap-x-6 gap-y-3">
+        <!-- Stats grid: 3-col mobile / 6-col desktop (was 2-col / 6-col, now denser on mobile) -->
+        <div class="grid grid-cols-3 md:grid-cols-6 gap-x-3 sm:gap-x-6 gap-y-3">
           <div>
             <div class="label-caps">Temp</div>
             <div class="display-num text-lg text-fg-700 mt-0.5">
@@ -170,11 +172,12 @@ const modelMeta = computed(() => {
         </div>
       </header>
 
-      <section class="px-6 py-5">
+      <section class="px-4 sm:px-6 py-5">
         <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">probable starters</h2>
         </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Stacks vertically on mobile/tablet, side-by-side at lg+ -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
           <div class="bg-bg-50 border border-bg-200">
             <ArsenalGrid
               :pitcher="game.away_pitcher"
@@ -194,12 +197,12 @@ const modelMeta = computed(() => {
         </div>
       </section>
 
-      <section class="px-6 pb-5">
-        <div class="flex items-baseline justify-between mb-3">
+      <section class="px-4 sm:px-6 pb-5">
+        <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
           <h2 class="label-bracket text-signal-400">HR matchups</h2>
-          <span class="label-caps">Anytime Home Run · DraftKings</span>
+          <span class="label-caps text-right">Anytime Home Run · DraftKings</span>
         </div>
-        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 sm:gap-4">
           <BatterTable
             :lineup="awayLineup"
             :batter-stats="batterStats"
@@ -229,7 +232,7 @@ const modelMeta = computed(() => {
         </div>
       </section>
 
-      <section class="px-6 pb-10">
+      <section class="px-4 sm:px-6 pb-10">
         <button
           @click="showSecondary = !showSecondary"
           class="w-full py-3 border border-bg-200 hover:border-signal-400/40 transition flex items-center justify-center gap-3 group"
@@ -255,7 +258,7 @@ const modelMeta = computed(() => {
             </button>
           </div>
 
-          <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 sm:gap-4">
             <BatterTable
               :lineup="awayLineup"
               :batter-stats="batterStats"

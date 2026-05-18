@@ -2,13 +2,11 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  pitcher: { type: Object, default: null },          // {id, name, throws, mlbam_id}
-  arsenal: { type: Array, default: () => [] },        // rows from pitcher_arsenals
+  pitcher: { type: Object, default: null },
+  arsenal: { type: Array, default: () => [] },
   label:   { type: String, default: 'PITCHER' },
 })
 
-// Combine L+R rows per pitch type so we can show a unified arsenal,
-// then sort by overall usage descending.
 const pitchRows = computed(() => {
   const byPitch = {}
   for (const r of props.arsenal) {
@@ -60,7 +58,6 @@ const pitchRows = computed(() => {
     .sort((a, b) => b.usage_pct - a.usage_pct)
 })
 
-// Color for HR% — low = safer (teal), high = dangerous (red)
 function hrTone(pct) {
   if (pct == null) return 'text-fg-500'
   if (pct >= 4) return 'text-signal-400'
@@ -71,25 +68,25 @@ function hrTone(pct) {
 </script>
 
 <template>
-  <div class="bg-bg-50 border border-bg-200">
+  <div>
     <!-- Header -->
-    <div class="px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2">
-      <div class="flex items-baseline gap-3 min-w-0">
+    <div class="px-3 sm:px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2">
+      <div class="flex items-baseline gap-2 sm:gap-3 min-w-0">
         <span class="label-bracket text-signal-400 shrink-0">{{ label }}</span>
-        <span v-if="pitcher" class="display-text text-base text-fg-700 truncate">
+        <span v-if="pitcher" class="display-text text-sm sm:text-base text-fg-700 truncate">
           {{ pitcher.name }}
         </span>
         <span v-else class="text-fg-500 text-sm italic">TBD</span>
       </div>
-      <span v-if="pitcher?.throws" class="label-caps !text-[9px]">
+      <span v-if="pitcher?.throws" class="label-caps !text-[9px] shrink-0">
         Throws {{ pitcher.throws }}HP
       </span>
     </div>
 
-    <!-- Arsenal rows -->
-    <div v-if="pitchRows.length" class="px-4 py-2">
+    <!-- Arsenal rows: column widths tighten on mobile -->
+    <div v-if="pitchRows.length" class="px-3 sm:px-4 py-2">
       <!-- Column headers -->
-      <div class="grid grid-cols-[40px_1fr_50px_50px_50px] gap-2 pb-2 border-b border-bg-200">
+      <div class="grid grid-cols-[32px_1fr_38px_38px_38px] sm:grid-cols-[40px_1fr_50px_50px_50px] gap-1.5 sm:gap-2 pb-2 border-b border-bg-200">
         <span class="label-caps !text-[8px]">Pitch</span>
         <span class="label-caps !text-[8px]">Usage</span>
         <span class="label-caps !text-[8px] text-right">Velo</span>
@@ -100,7 +97,7 @@ function hrTone(pct) {
       <div
         v-for="p in pitchRows"
         :key="p.pitch_type"
-        class="grid grid-cols-[40px_1fr_50px_50px_50px] gap-2 items-center py-1.5 border-b border-bg-200/50 last:border-0"
+        class="grid grid-cols-[32px_1fr_38px_38px_38px] sm:grid-cols-[40px_1fr_50px_50px_50px] gap-1.5 sm:gap-2 items-center py-1.5 border-b border-bg-200/50 last:border-0"
       >
         <span class="display-num text-xs text-fg-700 font-medium">{{ p.pitch_type }}</span>
         <!-- Usage bar -->
@@ -109,7 +106,7 @@ function hrTone(pct) {
             <div class="absolute inset-y-0 left-0 bg-signal-400/70"
                  :style="{ width: `${Math.min(p.usage_pct, 100)}%` }"></div>
           </div>
-          <span class="display-num text-[10px] text-fg-500 w-7 text-right">
+          <span class="display-num text-[10px] text-fg-500 w-6 sm:w-7 text-right">
             {{ p.usage_pct.toFixed(0) }}%
           </span>
         </div>

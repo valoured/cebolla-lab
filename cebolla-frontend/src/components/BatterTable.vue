@@ -5,6 +5,7 @@ import { formatLineupETA } from '../utils/timeHelpers.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useStatcastBatters } from '../composables/useStatcast.js'
 import StatcastWindowToggle from './StatcastWindowToggle.vue'
+import BatterCard from './BatterCard.vue'
 
 const props = defineProps({
   lineup:        { type: Array,  required: true },
@@ -16,8 +17,6 @@ const props = defineProps({
   marketMode:    { type: String, default: 'hr' },
   gameId:        { type: Number, default: null },
   gameTimeUtc:   { type: String, default: null },
-  // batterStats prop now optional — used as fallback while Statcast loads,
-  // or for legacy callers that don't need window-switching.
   batterStats:   { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['log-bet'])
@@ -33,7 +32,6 @@ const {
   loading: statcastLoading,
 } = useStatcastBatters(playerIds, 'l14')
 
-// Bound to the toggle's v-model
 const currentWindow = computed({
   get: () => windowType.value,
   set: (v) => setWindow(v),
@@ -94,7 +92,6 @@ const rows = computed(() => {
     const player = l.player
     if (!player) return null
 
-    // Prefer Statcast row (window-aware); fall back to legacy prop if not yet loaded
     const statcastRow = statcastStats.value[player.id]
     const legacyStats = props.batterStats[player.id] || {}
     const stats = statcastRow || legacyStats
@@ -139,13 +136,13 @@ const isConfirmed = computed(() => {
 <template>
   <div class="bg-bg-50 border border-bg-200">
     <!-- Header row -->
-    <div class="px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2 flex-wrap">
-      <div class="flex items-baseline gap-3">
-        <span class="label-bracket text-signal-400">{{ teamLabel }}</span>
-        <span class="display-text text-base text-fg-700">vs Pitcher</span>
+    <div class="px-3 sm:px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2 sm:gap-3 min-w-0">
+        <span class="label-bracket text-signal-400 shrink-0">{{ teamLabel }}</span>
+        <span class="display-text text-sm sm:text-base text-fg-700 truncate">vs Pitcher</span>
       </div>
       <span
-        class="label-caps !text-[9px] px-2 py-0.5 rounded-sm"
+        class="label-caps !text-[9px] px-2 py-0.5 rounded-sm shrink-0"
         :class="isConfirmed
           ? 'text-signal-400 bg-signal-400/10'
           : 'text-fg-500 bg-bg-200/60'"
@@ -154,8 +151,8 @@ const isConfirmed = computed(() => {
       </span>
     </div>
 
-    <!-- Statcast window toggle (only when there's a lineup to filter) -->
-    <div v-if="rows.length" class="px-4 py-2 border-b border-bg-200 flex items-center justify-between gap-3">
+    <!-- Statcast window toggle -->
+    <div v-if="rows.length" class="px-3 sm:px-4 py-2 border-b border-bg-200 flex items-center justify-between gap-3 flex-wrap">
       <span class="label-caps">Statcast Window</span>
       <div class="flex items-center gap-2">
         <span v-if="statcastLoading" class="label-caps !text-[8px] text-fg-400 italic">loading…</span>
@@ -176,8 +173,19 @@ const isConfirmed = computed(() => {
       </p>
     </div>
 
-    <!-- Table -->
-    <div v-else class="overflow-x-auto">
+    <!-- MOBILE VIEW: card-per-batter, hidden md+ -->
+    <div v-else class="md:hidden">
+      <BatterCard
+        v-for="row in rows"
+        :key="row.lineupId"
+        :row="row"
+        :market-mode="marketMode"
+        @log-bet="emit('log-bet', $event)"
+      />
+    </div>
+
+    <!-- DESKTOP VIEW: existing table, hidden below md -->
+    <div v-if="rows.length" class="hidden md:block overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
           <tr class="text-left">
@@ -236,7 +244,6 @@ const isConfirmed = computed(() => {
               </span>
               <span v-else class="display-num text-xs text-fg-400">—</span>
             </td>
-            <!-- Projected probability -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span
                 v-if="row.proj?.projected_prob != null"
@@ -257,7 +264,6 @@ const isConfirmed = computed(() => {
                 }}
               </span>
             </td>
-            <!-- Edge -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <template v-if="row.proj?.edge != null">
                 <span
@@ -279,14 +285,12 @@ const isConfirmed = computed(() => {
                 {{ marketMode === 'hr' ? 'no data' : 'pending' }}
               </span>
             </td>
-            <!-- BvP -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span v-if="row.bvp" class="display-num text-xs text-fg-600">
                 {{ row.bvp.hr }}/{{ row.bvp.pa }}
               </span>
               <span v-else class="display-num text-xs text-fg-400">—</span>
             </td>
-            <!-- HH% -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span
                 class="display-num text-xs"
@@ -295,7 +299,6 @@ const isConfirmed = computed(() => {
                 {{ fmtStat(row.hard_hit_pct, 'hard_hit_pct') }}
               </span>
             </td>
-            <!-- Barrel% -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span
                 class="display-num text-xs"
@@ -304,7 +307,6 @@ const isConfirmed = computed(() => {
                 {{ fmtStat(row.barrel_pct, 'barrel_pct') }}
               </span>
             </td>
-            <!-- xSLG -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span
                 class="display-num text-xs"
@@ -313,7 +315,6 @@ const isConfirmed = computed(() => {
                 {{ fmtStat(row.xslg, 'xslg') }}
               </span>
             </td>
-            <!-- xBA -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span
                 class="display-num text-xs"
@@ -322,7 +323,6 @@ const isConfirmed = computed(() => {
                 {{ fmtStat(row.xba, 'xba') }}
               </span>
             </td>
-            <!-- Log button -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-center">
               <button
                 @click="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode })"
