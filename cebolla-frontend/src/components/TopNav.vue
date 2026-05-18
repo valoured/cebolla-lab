@@ -32,15 +32,15 @@ watch(isPulsing, (v) => {
 <template>
   <header class="sticky top-0 z-50 bg-bg-0/95 backdrop-blur border-b border-bg-200">
     <!-- px-3 mobile / px-6 desktop. Gap collapses on mobile. -->
-    <div class="px-3 sm:px-6 h-14 flex items-center gap-3 sm:gap-8">
+    <div class="px-3 sm:px-6 h-14 sm:h-16 flex items-center gap-3 sm:gap-8">
       <!-- Brand: icon + wordmark. Wordmark hides below sm to save mobile space. -->
       <router-link to="/" class="flex items-center gap-2 sm:gap-3 group shrink-0">
         <img
           src="/cebolla-icon-64-transparent.png"
           alt="Cebolla"
           class="cebolla-logo-nav"
-          width="28"
-          height="28"
+          width="36"
+          height="36"
         />
         <img
           src="/cebolla-wordmark.png"
@@ -95,8 +95,8 @@ watch(isPulsing, (v) => {
 
 <style scoped>
 .cebolla-logo-nav {
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   filter: drop-shadow(0 0 4px rgba(255, 42, 42, 0.25));
   transition: filter 0.3s ease, transform 0.3s ease;
   user-select: none;
@@ -109,8 +109,10 @@ watch(isPulsing, (v) => {
 }
 
 .cebolla-wordmark-nav {
-  /* Wordmark image is 4:1 (1024x254). At ~30px tall = ~120px wide. */
-  height: 30px;
+  /* Full wordmark is 1024x254 (~4:1). At 48px tall ≈ 194px wide.
+     The tagline portion is roughly the bottom third, so at 48px the
+     tagline renders at ~10-12px which is just legible. */
+  height: 48px;
   width: auto;
   filter: drop-shadow(0 0 4px rgba(255, 42, 42, 0.20));
   transition: filter 0.3s ease;
