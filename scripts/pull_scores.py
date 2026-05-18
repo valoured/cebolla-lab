@@ -30,25 +30,40 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
-# Statuses MLB returns and how we classify them
-TERMINAL_STATES = {
-    "Final", "Game Over", "Completed Early",
-    "Postponed", "Cancelled", "Canceled",
-    "Forfeit",
-}
-LIVE_STATES = {
-    "In Progress", "Manager Challenge", "Replay", "Delayed", "Suspended",
-    "Delayed Start: Rain", "Delayed: Rain",
-}
-PREGAME_STATES = {
-    "Scheduled", "Pre-Game", "Warmup", "Pre-Game Warmup",
-    "Game Status Unknown", "Status Unknown",
-}
+# MLB API status classification.
+#
+# MLB has 100+ detailedState variants like "Delayed Start: Rain",
+# "Delayed Start: Wet Grounds", "Delayed Start: Lightning", "Delayed: Wind", etc.
+# Exact-match sets miss 95% of them. Instead we use:
+#   1. abstractGameState (canonical: "Preview" | "Live" | "Final" | "Other")
+#   2. Substring matching on detailedState for nuances
+#
+# Reference: https://statsapi.mlb.com/api/v1/gameStatus
+
+# Terminal/final states — game is done, not coming back
+TERMINAL_KEYWORDS = (
+    "final", "game over", "completed", "postponed",
+    "cancelled", "canceled", "forfeit",
+)
+
+# Active/live states — game is currently playing OR delayed mid-stream
+LIVE_KEYWORDS = (
+    "in progress", "manager challenge", "umpire review",
+    "replay", "instant replay",
+    "delayed",          # catches "Delayed", "Delayed Start: Rain", "Delayed: Wet Grounds", etc.
+    "suspended",        # catches "Suspended", "Suspended: Rain", etc.
+)
+
+# Pre-game states — game hasn't started yet
+PREGAME_KEYWORDS = (
+    "scheduled", "pre-game", "pregame", "warmup", "status unknown",
+)
 
 # A game's row gets force-finalized if its scheduled start was more than this
 # long ago and it's still showing non-terminal status. Average MLB game is ~3h,
-# extras + rain delays can push to 4.5h; 5h is safe upper bound.
-STALE_AFTER_HOURS = 5
+# extras + rain delays can push to 4.5h; 6h is safe upper bound (allows for
+# legitimate long delays before we assume the data is just stuck).
+STALE_AFTER_HOURS = 6
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,17 +123,49 @@ def fetch_schedule_with_linescore(game_dates: list[str]) -> dict[int, dict]:
 def classify_status(detailed: str | None, abstract: str | None) -> str:
     """
     Map MLB's two status fields to one of: 'pregame' | 'live' | 'final' | 'unknown'.
-    abstract is broader ('Preview', 'Live', 'Final'); detailed is the specific one.
+
+    Strategy:
+      1. detailedState substring match — handles all the "Delayed: Wet Grounds"
+         "Delayed Start: Wind" etc. variants by keyword
+      2. Fall back to abstractGameState which is canonical (Preview/Live/Final)
+
+    Order matters: check final FIRST because "Postponed: Rain" shouldn't match
+    "Delayed" or "Suspended" lower in the chain.
     """
-    d = (detailed or "").strip()
-    a = (abstract or "").strip()
-    if d in TERMINAL_STATES or a == "Final":
+    d = (detailed or "").strip().lower()
+    a = (abstract or "").strip().lower()
+
+    # ── Final / terminal — check first to catch "Postponed: Rain" before "delayed" etc. ──
+    if any(k in d for k in TERMINAL_KEYWORDS):
         return "final"
-    if d in LIVE_STATES or a == "Live":
+    if a == "final":
+        return "final"
+
+    # ── Live / in-progress / delayed mid-game / suspended ──
+    if any(k in d for k in LIVE_KEYWORDS):
         return "live"
-    if d in PREGAME_STATES or a == "Preview":
+
+    # ── Pre-game ──
+    if any(k in d for k in PREGAME_KEYWORDS):
         return "pregame"
+
+    # ── Fall back to abstract state ──
+    if a == "live":
+        return "live"
+    if a == "preview":
+        return "pregame"
+
     return "unknown"
+
+
+def is_delay_status(detailed: str | None) -> bool:
+    """
+    True if MLB is reporting any kind of delay/suspension. Used to differentiate
+    "actively delayed" from "actively in progress" so the frontend can apply
+    amber glow vs red glow.
+    """
+    d = (detailed or "").strip().lower()
+    return "delayed" in d or "suspended" in d
 
 
 def parse_game_time(iso: str | None) -> datetime | None:
@@ -213,10 +260,16 @@ def main():
             update_data["home_score"] = home_runs
             update_data["current_inning"] = linescore.get("currentInning")
             update_data["inning_state"] = linescore.get("inningState")
-            log.info("  game %s LIVE: away=%s home=%s inning=%s %s",
-                     game_id, away_runs, home_runs,
-                     update_data["inning_state"],
-                     update_data["current_inning"])
+
+            # Distinguish delayed from in-progress for clearer logs
+            if is_delay_status(detailed):
+                log.info("  game %s DELAYED (%s): away=%s home=%s",
+                         game_id, detailed, away_runs, home_runs)
+            else:
+                log.info("  game %s LIVE: away=%s home=%s inning=%s %s",
+                         game_id, away_runs, home_runs,
+                         update_data["inning_state"],
+                         update_data["current_inning"])
             updated += 1
 
         elif new_class == "pregame":
