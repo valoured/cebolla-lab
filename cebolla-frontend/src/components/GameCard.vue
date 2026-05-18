@@ -82,14 +82,21 @@ const statusBadge = computed(() => {
   return null
 })
 
-const isLive = computed(() => {
+const isInProgress = computed(() => {
   const s = (props.game.status || '').toLowerCase()
   return s.includes('progress') ||
          s.includes('manager challenge') ||
-         s.includes('replay') ||
-         s.includes('delayed') ||
-         s.includes('suspended')
+         s.includes('replay')
 })
+
+const isDelayed = computed(() => {
+  const s = (props.game.status || '').toLowerCase()
+  return s.includes('delayed') || s.includes('suspended')
+})
+
+// Combined "active" flag for things that need to know the game isn't truly idle
+// (used to skip the countdown text for any active game)
+const isLive = computed(() => isInProgress.value || isDelayed.value)
 
 const isFinal = computed(() => {
   const s = (props.game.status || '').toLowerCase()
@@ -121,7 +128,7 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
   <router-link
     :to="{ name: 'hr-report', params: { gameId: game.id } }"
     class="block group reticle-card"
-    :class="{ 'live-pulse': isLive }"
+    :class="{ 'live-pulse': isInProgress, 'delayed-pulse': isDelayed }"
   >
     <article
       class="bg-bg-50 border border-bg-200 hover:border-signal-400/50
@@ -279,6 +286,25 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
   50% {
     box-shadow: 0 0 0 2px rgba(255, 42, 42, 0.35),
                 0 0 24px 4px rgba(255, 42, 42, 0.40);
+  }
+}
+
+/* ── Delayed game: amber/yellow box-shadow pulse ── */
+.delayed-pulse article {
+  animation: delayed-glow 2.8s ease-in-out infinite;
+  border-color: rgba(251, 191, 36, 0.5) !important;  /* amber-400 */
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes delayed-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0),
+                0 0 8px 0 rgba(251, 191, 36, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.30),
+                0 0 22px 4px rgba(251, 191, 36, 0.35);
   }
 }
 </style>
