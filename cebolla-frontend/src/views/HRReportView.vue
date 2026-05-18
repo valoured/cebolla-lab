@@ -5,6 +5,7 @@ import { useGame } from '../composables/useGame.js'
 import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
 import LogBetModal from '../components/LogBetModal.vue'
+import PitcherAllowedStats from '../components/PitcherAllowedStats.vue'
 import { formatGameTime, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
 
 // Tick to refresh countdowns every 30s
@@ -174,16 +175,22 @@ const modelMeta = computed(() => {
           <h2 class="label-bracket text-signal-400">probable starters</h2>
         </div>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <ArsenalGrid
-            :pitcher="game.away_pitcher"
-            :arsenal="arsenalAway"
-            :label="`${game.away_team?.abbrev} · AWAY`"
-          />
-          <ArsenalGrid
-            :pitcher="game.home_pitcher"
-            :arsenal="arsenalHome"
-            :label="`${game.home_team?.abbrev} · HOME`"
-          />
+          <div class="bg-bg-50 border border-bg-200">
+            <ArsenalGrid
+              :pitcher="game.away_pitcher"
+              :arsenal="arsenalAway"
+              :label="`${game.away_team?.abbrev} · AWAY`"
+            />
+            <PitcherAllowedStats :pitcher-id="game.away_pitcher?.id" />
+          </div>
+          <div class="bg-bg-50 border border-bg-200">
+            <ArsenalGrid
+              :pitcher="game.home_pitcher"
+              :arsenal="arsenalHome"
+              :label="`${game.home_team?.abbrev} · HOME`"
+            />
+            <PitcherAllowedStats :pitcher-id="game.home_pitcher?.id" />
+          </div>
         </div>
       </section>
 
