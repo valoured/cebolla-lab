@@ -1,29 +1,3 @@
-<!--
-  ─────────────────────────────────────────────────────────────────────
-  index.html — favicon + OG meta tag patch
-  ─────────────────────────────────────────────────────────────────────
-
-  This is the full replacement for cebolla-frontend/index.html.
-
-  WHAT'S NEW:
-    1. Favicon links (16/32/192/512 sizes for various browser contexts)
-    2. Apple touch icon (iOS home-screen / Safari)
-    3. <title> with brand name + tagline
-    4. Open Graph tags (social sharing previews — Discord, X, etc.)
-    5. Twitter card metadata
-    6. theme-color (browser chrome tinting on mobile)
-
-  WHEN cebolla.live IS WIRED UP, update ONLY this one line:
-    <meta property="og:url" content="https://cebolla-lab.pages.dev/">
-  to:
-    <meta property="og:url" content="https://cebolla.live/">
-
-  IF YOU CUSTOMIZED YOUR index.html (custom fonts, analytics tags, etc.):
-  Don't replace the whole file. Just COPY the new <link> and <meta>
-  tags from this file into your existing <head>, leaving anything
-  custom intact.
-  ─────────────────────────────────────────────────────────────────────
--->
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -33,6 +7,14 @@
     <!-- ─── Title ─────────────────────────────────────────────── -->
     <title>Cebolla · Every Layer Reveals an Edge</title>
     <meta name="description" content="Sports betting research lab. FanGraphs-grade Statcast trends, projected lineups, edge detection. Built for sharps." />
+
+    <!-- ─── Fonts: Syne (display), IBM Plex Sans (body), JetBrains Mono (data) ── -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
 
     <!-- ─── Favicon ───────────────────────────────────────────── -->
     <link rel="icon" type="image/png" sizes="32x32" href="/cebolla-icon-32-transparent.png" />
