@@ -10,6 +10,7 @@ import { computed, toRef } from 'vue'
 import { useStatcastPitcher } from '../composables/useStatcast.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import StatcastWindowToggle from './StatcastWindowToggle.vue'
+import InfoTooltip from './InfoTooltip.vue'
 
 const props = defineProps({
   pitcherId: { type: Number, default: null },
@@ -39,7 +40,10 @@ function num(v) {
   <div v-if="pitcherId" class="px-3 sm:px-4 py-2.5 border-t border-bg-200 bg-bg-50/50">
     <!-- Header row: stacks on very small screens, side-by-side from xs up -->
     <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
-      <span class="label-caps">Allowed (Statcast)</span>
+      <span class="label-caps inline-flex items-center">
+        Allowed (Statcast)
+        <InfoTooltip term="window_l14" />
+      </span>
       <div class="flex items-center gap-2">
         <span v-if="loading" class="label-caps !text-[8px] text-fg-400 italic">loading…</span>
         <StatcastWindowToggle v-model="currentWindow" />
@@ -49,7 +53,9 @@ function num(v) {
     <!-- 2 cols mobile, 4 cols from sm -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
       <div class="flex flex-col gap-0.5">
-        <span class="label-caps !text-[8px]" title="Hard-Hit % (95+ mph) allowed">HH% Allowed</span>
+        <span class="label-caps !text-[8px] inline-flex items-center">
+          HH% Allowed <InfoTooltip term="pitcher_hard_hit_pct" />
+        </span>
         <span
           class="display-num text-base font-medium"
           :class="statColor(num(stats?.hard_hit_pct), 'hard_hit_pct', 'pitcher')"
@@ -58,7 +64,9 @@ function num(v) {
         </span>
       </div>
       <div class="flex flex-col gap-0.5">
-        <span class="label-caps !text-[8px]" title="Barrel % allowed">Brl% Allowed</span>
+        <span class="label-caps !text-[8px] inline-flex items-center">
+          Brl% Allowed <InfoTooltip term="pitcher_barrel_pct" />
+        </span>
         <span
           class="display-num text-base font-medium"
           :class="statColor(num(stats?.barrel_pct), 'barrel_pct', 'pitcher')"
@@ -67,7 +75,9 @@ function num(v) {
         </span>
       </div>
       <div class="flex flex-col gap-0.5">
-        <span class="label-caps !text-[8px]" title="Expected Slugging allowed">xSLG Allowed</span>
+        <span class="label-caps !text-[8px] inline-flex items-center">
+          xSLG Allowed <InfoTooltip term="pitcher_xslg" />
+        </span>
         <span
           class="display-num text-base font-medium"
           :class="statColor(num(stats?.xslg), 'xslg', 'pitcher')"
@@ -76,7 +86,9 @@ function num(v) {
         </span>
       </div>
       <div class="flex flex-col gap-0.5">
-        <span class="label-caps !text-[8px]" title="Expected Batting Average allowed">xBA Allowed</span>
+        <span class="label-caps !text-[8px] inline-flex items-center">
+          xBA Allowed <InfoTooltip term="pitcher_xba" />
+        </span>
         <span
           class="display-num text-base font-medium"
           :class="statColor(num(stats?.xba), 'xba', 'pitcher')"

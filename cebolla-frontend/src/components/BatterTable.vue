@@ -6,6 +6,7 @@ import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useStatcastBatters } from '../composables/useStatcast.js'
 import StatcastWindowToggle from './StatcastWindowToggle.vue'
 import BatterCard from './BatterCard.vue'
+import InfoTooltip from './InfoTooltip.vue'
 
 const props = defineProps({
   lineup:        { type: Array,  required: true },
@@ -153,7 +154,10 @@ const isConfirmed = computed(() => {
 
     <!-- Statcast window toggle -->
     <div v-if="rows.length" class="px-3 sm:px-4 py-2 border-b border-bg-200 flex items-center justify-between gap-3 flex-wrap">
-      <span class="label-caps">Statcast Window</span>
+      <span class="label-caps inline-flex items-center">
+        Statcast Window
+        <InfoTooltip term="window_l14" />
+      </span>
       <div class="flex items-center gap-2">
         <span v-if="statcastLoading" class="label-caps !text-[8px] text-fg-400 italic">loading…</span>
         <StatcastWindowToggle v-model="currentWindow" />
@@ -194,13 +198,41 @@ const isConfirmed = computed(() => {
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
               {{ marketMode === 'hr' ? 'HR Odds' : marketMode === 'hits' ? 'Hits O0.5' : 'RBI O0.5' }}
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Proj%</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Edge</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">BvP HR/PA</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Hard-Hit % (exit velo ≥ 95 mph)">HH%</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Barrel %">Brl%</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Expected Slugging">xSLG</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Expected Batting Average">xBA</th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                Proj% <InfoTooltip term="proj_pct" />
+              </span>
+            </th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                Edge <InfoTooltip term="edge" />
+              </span>
+            </th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                BvP HR/PA <InfoTooltip term="bvp" />
+              </span>
+            </th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                HH% <InfoTooltip term="hard_hit_pct" />
+              </span>
+            </th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                Brl% <InfoTooltip term="barrel_pct" />
+              </span>
+            </th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                xSLG <InfoTooltip term="xslg" />
+              </span>
+            </th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
+              <span class="inline-flex items-center justify-end">
+                xBA <InfoTooltip term="xba" />
+              </span>
+            </th>
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-center w-10"></th>
           </tr>
         </thead>

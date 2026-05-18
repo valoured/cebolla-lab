@@ -6,6 +6,7 @@ import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
 import LogBetModal from '../components/LogBetModal.vue'
 import PitcherAllowedStats from '../components/PitcherAllowedStats.vue'
+import InfoTooltip from '../components/InfoTooltip.vue'
 import { formatGameTime, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
 
 // Tick to refresh countdowns every 30s
@@ -152,19 +153,25 @@ const modelMeta = computed(() => {
             </div>
           </div>
           <div>
-            <div class="label-caps">HR Factor</div>
+            <div class="label-caps inline-flex items-center">
+              HR Factor <InfoTooltip term="hr_factor" />
+            </div>
             <div class="display-num text-lg mt-0.5" :class="hrfTone(game.hr_factor_overall)">
               {{ fmtFactor(game.hr_factor_overall) }}
             </div>
           </div>
           <div>
-            <div class="label-caps">LHB Factor</div>
+            <div class="label-caps inline-flex items-center">
+              LHB Factor <InfoTooltip term="hr_factor_lhb" />
+            </div>
             <div class="display-num text-lg mt-0.5" :class="hrfTone(game.hr_factor_lhb)">
               {{ fmtFactor(game.hr_factor_lhb) }}
             </div>
           </div>
           <div>
-            <div class="label-caps">RHB Factor</div>
+            <div class="label-caps inline-flex items-center">
+              RHB Factor <InfoTooltip term="hr_factor_rhb" />
+            </div>
             <div class="display-num text-lg mt-0.5" :class="hrfTone(game.hr_factor_rhb)">
               {{ fmtFactor(game.hr_factor_rhb) }}
             </div>

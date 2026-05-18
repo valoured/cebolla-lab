@@ -13,6 +13,7 @@
 import { ref, computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
+import InfoTooltip from './InfoTooltip.vue'
 
 const props = defineProps({
   row:        { type: Object, required: true },
@@ -153,7 +154,9 @@ const marketLabel = computed(() => {
       <!-- Statcast 2x2 grid -->
       <div class="grid grid-cols-4 gap-2 mb-3">
         <div class="flex flex-col gap-0.5">
-          <span class="label-caps !text-[7px]">HH%</span>
+          <span class="label-caps !text-[7px] inline-flex items-center">
+            HH% <InfoTooltip term="hard_hit_pct" />
+          </span>
           <span
             class="display-num text-sm"
             :class="statColor(row.hard_hit_pct, 'hard_hit_pct', 'batter')"
@@ -162,7 +165,9 @@ const marketLabel = computed(() => {
           </span>
         </div>
         <div class="flex flex-col gap-0.5">
-          <span class="label-caps !text-[7px]">Brl%</span>
+          <span class="label-caps !text-[7px] inline-flex items-center">
+            Brl% <InfoTooltip term="barrel_pct" />
+          </span>
           <span
             class="display-num text-sm"
             :class="statColor(row.barrel_pct, 'barrel_pct', 'batter')"
@@ -171,7 +176,9 @@ const marketLabel = computed(() => {
           </span>
         </div>
         <div class="flex flex-col gap-0.5">
-          <span class="label-caps !text-[7px]">xSLG</span>
+          <span class="label-caps !text-[7px] inline-flex items-center">
+            xSLG <InfoTooltip term="xslg" />
+          </span>
           <span
             class="display-num text-sm"
             :class="statColor(row.xslg, 'xslg', 'batter')"
@@ -180,7 +187,9 @@ const marketLabel = computed(() => {
           </span>
         </div>
         <div class="flex flex-col gap-0.5">
-          <span class="label-caps !text-[7px]">xBA</span>
+          <span class="label-caps !text-[7px] inline-flex items-center">
+            xBA <InfoTooltip term="xba" />
+          </span>
           <span
             class="display-num text-sm"
             :class="statColor(row.xba, 'xba', 'batter')"
@@ -194,7 +203,9 @@ const marketLabel = computed(() => {
       <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-3">
           <div class="flex flex-col gap-0.5">
-            <span class="label-caps !text-[7px]">BvP HR/PA</span>
+            <span class="label-caps !text-[7px] inline-flex items-center">
+              BvP HR/PA <InfoTooltip term="bvp" />
+            </span>
             <span class="display-num text-xs text-fg-600">
               <template v-if="row.bvp">{{ row.bvp.hr }}/{{ row.bvp.pa }}</template>
               <template v-else>—</template>
