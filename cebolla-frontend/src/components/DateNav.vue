@@ -63,31 +63,15 @@ const pills = computed(() => {
 })
 
 function selectDate(dateStr) {
-  // If they tap the auto-picked date, treat that as "stay in auto mode" (no-op).
-  // If they tap a different date, set it as an explicit override.
-  if (dateStr === props.activeDate && !props.targetDate) return
+  if (dateStr === props.activeDate) return
   emit('update:targetDate', dateStr)
 }
-
-function clearOverride() {
-  emit('update:targetDate', null)
-}
-
-const showClear = computed(() => !!props.targetDate)
 </script>
 
 <template>
   <div class="date-nav">
     <div class="flex items-center gap-2 mb-2">
       <span class="label-bracket text-fg-500">slate dates</span>
-      <button
-        v-if="showClear"
-        @click="clearOverride"
-        class="label-caps text-signal-300 hover:text-signal-200 transition ml-auto"
-        type="button"
-      >
-        auto ×
-      </button>
     </div>
 
     <!-- Scrollable rail for many dates; on narrow screens this slides horizontally -->
