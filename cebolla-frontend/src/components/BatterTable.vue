@@ -132,6 +132,23 @@ const isConfirmed = computed(() => {
   return props.lineup.length === 9 &&
          props.lineup.every(l => l.is_confirmed)
 })
+
+// Detect if ANY row in the lineup is from the last-known fallback.
+// If so, the badge shows "PROJECTED · last lineup" so users know the data
+// is from a previous game, not today's posted card.
+const lineupSource = computed(() => {
+  if (!props.lineup.length) return null
+  const sources = new Set(props.lineup.map(l => l.source).filter(Boolean))
+  if (sources.has('last_known')) return 'last_known'
+  if (sources.has('mlb_api')) return 'mlb_api'
+  return null
+})
+
+const badgeLabel = computed(() => {
+  if (isConfirmed.value) return 'confirmed'
+  if (lineupSource.value === 'last_known') return 'projected · last lineup'
+  return 'projected'
+})
 </script>
 
 <template>
@@ -146,9 +163,11 @@ const isConfirmed = computed(() => {
         class="label-caps !text-[9px] px-2 py-0.5 rounded-sm shrink-0"
         :class="isConfirmed
           ? 'text-signal-400 bg-signal-400/10'
-          : 'text-fg-500 bg-bg-200/60'"
+          : lineupSource === 'last_known'
+            ? 'text-amber-300 bg-amber-500/10'
+            : 'text-fg-500 bg-bg-200/60'"
       >
-        {{ isConfirmed ? 'confirmed' : 'projected' }}
+        {{ badgeLabel }}
       </span>
     </div>
 
@@ -162,6 +181,19 @@ const isConfirmed = computed(() => {
         <span v-if="statcastLoading" class="label-caps !text-[8px] text-fg-400 italic">loading…</span>
         <StatcastWindowToggle v-model="currentWindow" />
       </div>
+    </div>
+
+    <!-- Last-known projection banner -->
+    <div
+      v-if="rows.length && lineupSource === 'last_known'"
+      class="px-3 sm:px-4 py-2 border-b border-bg-200 bg-amber-500/5 flex items-baseline justify-between gap-2 flex-wrap"
+    >
+      <span class="label-caps !text-[9px] text-amber-300">
+        ↺ showing last-known lineup
+      </span>
+      <span class="text-fg-500 text-[10px]">
+        Official lineup typically posts <span class="text-fg-700">~3:40 PM ET</span>
+      </span>
     </div>
 
     <!-- Empty state -->

@@ -93,6 +93,100 @@ def get_todays_games() -> list[dict]:
     return res.data
 
 
+def fetch_last_known_lineup(team_id: int, current_game_id: int,
+                            lookback_days: int = 14) -> list[dict]:
+    """
+    Fall back to this team's most recent posted lineup from the last N days,
+    excluding the current game.
+
+    Returns a list of dicts shaped like extract_lineup() output, or [] if no
+    historical lineup is found in the lookback window.
+
+    Strategy:
+      1. Find this team's most recent past game with at least 9 lineup rows
+      2. Pull those 9 batters with their batting_order, position, bats
+      3. Return them so caller can re-stamp as "projected" for the current game
+
+    Notes:
+      - We only consider lineups from games on dates BEFORE the current game.
+        Same-day doubleheaders are intentionally excluded to avoid the rare
+        case where Game 1 lineup is mid-write when this script fires.
+      - We accept any prior lineup with >=9 rows, regardless of whether it
+        was originally confirmed or projected. Best-available wins.
+    """
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    today_et = et_now.date().isoformat()
+    cutoff_date = (et_now.date() - timedelta(days=lookback_days)).isoformat()
+
+    # Find candidate past games for this team where lineups exist
+    games_res = sb.table("games") \
+        .select("id, game_date") \
+        .or_(f"home_team_id.eq.{team_id},away_team_id.eq.{team_id}") \
+        .gte("game_date", cutoff_date) \
+        .lt("game_date", today_et) \
+        .neq("id", current_game_id) \
+        .order("game_date", desc=True) \
+        .limit(10) \
+        .execute()
+
+    candidate_games = games_res.data or []
+    if not candidate_games:
+        return []
+
+    # For each candidate (newest first), check if 9 lineup rows exist for this team
+    for cg in candidate_games:
+        lineup_res = sb.table("lineups") \
+            .select("player_id, batting_order, position, bats") \
+            .eq("game_id", cg["id"]) \
+            .eq("team_id", team_id) \
+            .order("batting_order") \
+            .execute()
+
+        rows = lineup_res.data or []
+        # Need a real starting lineup — require 9 unique slots 1-9
+        slots = sorted({r["batting_order"] for r in rows if r.get("batting_order")})
+        if slots != list(range(1, 10)):
+            continue
+
+        # Dedupe by slot (in case multiple players share a slot in history)
+        by_slot = {}
+        for r in rows:
+            slot = r["batting_order"]
+            if slot not in by_slot:
+                by_slot[slot] = r
+
+        # Reshape to match extract_lineup() output format (uses mlbam_id)
+        # We need the mlbam_id — look up each player_id
+        player_ids = [by_slot[s]["player_id"] for s in range(1, 10)]
+        players_res = sb.table("players") \
+            .select("id, mlbam_id, name") \
+            .in_("id", player_ids) \
+            .execute()
+        mlbam_by_internal = {p["id"]: p for p in players_res.data}
+
+        out = []
+        for slot in range(1, 10):
+            r = by_slot[slot]
+            p = mlbam_by_internal.get(r["player_id"])
+            if not p:
+                # Missing player record — skip this lineup, try older one
+                break
+            out.append({
+                "mlbam_id": p["mlbam_id"],
+                "name": p["name"],
+                "position": r.get("position"),
+                "bats": r.get("bats"),
+                "batting_order": slot,
+            })
+        else:
+            # All 9 slots resolved cleanly — return this lineup
+            log.info("    fallback: using lineup from game_id=%d (%s)",
+                     cg["id"], cg["game_date"])
+            return out
+
+    return []
+
+
 # ────────────────────────────────────────────────────────────────
 # MLB Stats API boxscore parsing
 # ────────────────────────────────────────────────────────────────
@@ -163,11 +257,19 @@ def extract_lineup(team_blob: dict) -> list[dict]:
 # Main per-game processing
 # ────────────────────────────────────────────────────────────────
 
-def process_game(game: dict, team_map: dict[int, int], player_map: dict[int, int]) -> tuple[int, bool]:
-    """Returns (rows_written, was_confirmed)."""
+def process_game(game: dict, team_map: dict[int, int], player_map: dict[int, int]) -> tuple[int, str]:
+    """
+    Returns (rows_written, status_label).
+
+    status_label is one of:
+      "confirmed"  → all real lineups confirmed (slots 1-9 from MLB API)
+      "projected"  → MLB API returned partial/incomplete lineups
+      "last_known" → at least one team had to fall back to historical lineup
+      "empty"      → nothing posted, no historical fallback either
+    """
     box = fetch_boxscore(game["mlb_game_pk"])
     if not box:
-        return (0, False)
+        return (0, "empty")
 
     teams = box.get("teams", {}) or {}
     away_blob = teams.get("away", {}) or {}
@@ -176,24 +278,36 @@ def process_game(game: dict, team_map: dict[int, int], player_map: dict[int, int
     away_lineup = extract_lineup(away_blob)
     home_lineup = extract_lineup(home_blob)
 
-    if not away_lineup and not home_lineup:
-        return (0, False)
-
     rows = []
-    confirmed = False
+    any_confirmed = False
+    any_fallback = False
 
-    for team_blob, lineup, our_team_id in [
-        (away_blob, away_lineup, game["away_team_id"]),
-        (home_blob, home_lineup, game["home_team_id"]),
+    for team_blob, lineup, our_team_id, team_label in [
+        (away_blob, away_lineup, game["away_team_id"], "away"),
+        (home_blob, home_lineup, game["home_team_id"], "home"),
     ]:
+        source = "mlb_api"
+
+        # ── Last-known fallback ─────────────────────────────────
+        # If MLB hasn't posted anything for this team yet, look back to
+        # this team's most recent posted lineup and use it as projection.
         if not lineup:
-            continue
+            log.info("   %s team has no MLB lineup yet → trying last-known fallback",
+                     team_label)
+            lineup = fetch_last_known_lineup(our_team_id, game["id"])
+            if lineup:
+                source = "last_known"
+                any_fallback = True
+            else:
+                log.info("   %s team has no historical lineup either", team_label)
+                continue
+
         # If batting orders are populated AND game hasn't started, MLB calls
         # them confirmed. Once 9 hitters with consecutive slots 1-9 = confirmed.
         slots = sorted(b["batting_order"] for b in lineup)
-        is_confirmed = (slots == list(range(1, 10)))
+        is_confirmed = (source == "mlb_api" and slots == list(range(1, 10)))
         if is_confirmed:
-            confirmed = True
+            any_confirmed = True
 
         for b in lineup:
             mlbam = b["mlbam_id"]
@@ -213,21 +327,65 @@ def process_game(game: dict, team_map: dict[int, int], player_map: dict[int, int
                 "position": b.get("position"),
                 "bats": b.get("bats"),
                 "is_confirmed": is_confirmed,
-                "source": "mlb_api",
+                "source": source,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
     if not rows:
-        return (0, False)
+        return (0, "empty")
 
-    # Delete existing lineups for this game first, then insert fresh.
-    # Cleaner than upsert because batting_order assignments may shift.
-    sb.table("lineups").delete().eq("game_id", game["id"]).execute()
+    # ── Smart delete: don't wipe a confirmed real lineup with a last_known ──
+    # If ANY existing rows for this game are is_confirmed=true, AND our new
+    # rows include last_known fallback data, only DELETE the team-side that
+    # we're rewriting. This prevents the fallback path from accidentally
+    # wiping a real lineup that arrived between cron runs.
+    if any_fallback:
+        # Per-team delete-and-insert: only nuke the teams we're writing for
+        team_ids_in_rows = {r["team_id"] for r in rows}
+        for tid in team_ids_in_rows:
+            # Check if existing rows for this game+team are confirmed
+            existing = sb.table("lineups") \
+                .select("is_confirmed, source") \
+                .eq("game_id", game["id"]) \
+                .eq("team_id", tid) \
+                .execute()
+            existing_rows = existing.data or []
+            # If existing rows are confirmed from MLB API, and our new rows
+            # are from last_known fallback for the same team, SKIP the rewrite
+            new_for_team = [r for r in rows if r["team_id"] == tid]
+            new_sources = {r["source"] for r in new_for_team}
+            if (
+                existing_rows
+                and any(r.get("is_confirmed") for r in existing_rows)
+                and any(r.get("source") == "mlb_api" for r in existing_rows)
+                and new_sources == {"last_known"}
+            ):
+                log.info("   ⌀ skipping team_id=%d rewrite: existing data is confirmed", tid)
+                # Strip out the rows for this team from our payload
+                rows = [r for r in rows if r["team_id"] != tid]
+                continue
+            # Otherwise, delete this team's rows and we'll re-insert below
+            sb.table("lineups").delete() \
+                .eq("game_id", game["id"]) \
+                .eq("team_id", tid) \
+                .execute()
+    else:
+        # Standard path: real MLB data, full game wipe-and-insert
+        sb.table("lineups").delete().eq("game_id", game["id"]).execute()
+
     # Insert in chunks
     for i in range(0, len(rows), 50):
         sb.table("lineups").insert(rows[i:i+50]).execute()
 
-    return (len(rows), confirmed)
+    # Status label for logging
+    if any_confirmed and not any_fallback:
+        status = "confirmed"
+    elif any_fallback:
+        status = "last_known"
+    else:
+        status = "projected"
+
+    return (len(rows), status)
 
 
 def main():
@@ -244,28 +402,33 @@ def main():
     log.info("Found %d games today", len(games))
 
     total_rows = 0
-    games_confirmed = 0
-    games_with_lineup = 0
-    games_skipped = 0
+    by_status = {"confirmed": 0, "projected": 0, "last_known": 0, "empty": 0}
 
     for i, g in enumerate(games, 1):
         log.info("[%d/%d] gamePk %d", i, len(games), g["mlb_game_pk"])
-        rows, confirmed = process_game(g, team_map, player_map)
+        rows, status = process_game(g, team_map, player_map)
+        by_status[status] = by_status.get(status, 0) + 1
         if rows:
-            games_with_lineup += 1
             total_rows += rows
-            if confirmed:
-                games_confirmed += 1
-                log.info("   ✓ %d batters (CONFIRMED)", rows)
-            else:
-                log.info("   ◦ %d batters (projected)", rows)
+            badge = {
+                "confirmed":   "✓ CONFIRMED",
+                "projected":   "◦ projected",
+                "last_known":  "↺ last-known fallback",
+            }.get(status, status)
+            log.info("   %s — %d batters", badge, rows)
         else:
-            games_skipped += 1
-            log.info("   ⌀ no lineup yet")
+            log.info("   ⌀ no lineup (no fallback available)")
         time.sleep(REQUEST_DELAY)
 
-    log.info("🧅 Lineups sync complete: %d total batters across %d games (%d confirmed); %d games skipped",
-             total_rows, games_with_lineup, games_confirmed, games_skipped)
+    log.info(
+        "🧅 Lineups sync complete: %d batters total | "
+        "confirmed=%d projected=%d last_known=%d empty=%d",
+        total_rows,
+        by_status["confirmed"],
+        by_status["projected"],
+        by_status["last_known"],
+        by_status["empty"],
+    )
 
 
 if __name__ == "__main__":

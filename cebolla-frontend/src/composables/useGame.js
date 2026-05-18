@@ -49,7 +49,7 @@ export function useGame(gameId) {
       const { data: lns } = await supabase
         .from('lineups')
         .select(`
-          id, batting_order, position, bats, is_confirmed, team_id,
+          id, batting_order, position, bats, is_confirmed, source, team_id,
           player:players ( id, mlbam_id, name, position, bats )
         `)
         .eq('game_id', gameId)
