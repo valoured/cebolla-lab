@@ -7,6 +7,7 @@ import BatterTable from '../components/BatterTable.vue'
 import LogBetModal from '../components/LogBetModal.vue'
 import PitcherAllowedStats from '../components/PitcherAllowedStats.vue'
 import InfoTooltip from '../components/InfoTooltip.vue'
+import LoadingBrand from '../components/LoadingBrand.vue'
 import { formatGameTime, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
 
 // Tick to refresh countdowns every 30s
@@ -88,12 +89,7 @@ const modelMeta = computed(() => {
       </router-link>
     </div>
 
-    <div v-if="loading" class="text-center py-32">
-      <div class="inline-flex items-center gap-3 text-fg-500">
-        <span class="w-2 h-2 bg-signal-400 animate-pulse"></span>
-        <span class="display-text text-lg italic">Loading matchup…</span>
-      </div>
-    </div>
+    <LoadingBrand v-if="loading" text="Loading matchup…" />
 
     <div v-else-if="error" class="px-6 pb-8">
       <div class="border border-signal-400/30 bg-signal-400/5 p-5">

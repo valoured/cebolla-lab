@@ -28,6 +28,7 @@ import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { formatGameTime, formatCountdown } from '../utils/timeHelpers.js'
 import InfoTooltip from '../components/InfoTooltip.vue'
+import LoadingBrand from '../components/LoadingBrand.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -350,12 +351,7 @@ function hrPctTone(pct) {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="px-6 py-20 text-center">
-      <div class="inline-flex items-center gap-3 text-fg-500">
-        <span class="w-2 h-2 bg-signal-400 animate-pulse"></span>
-        <span class="display-text text-lg italic">Loading player&hellip;</span>
-      </div>
-    </div>
+    <LoadingBrand v-if="loading" text="Loading player…" />
 
     <!-- Error -->
     <div v-else-if="error" class="px-6 py-10">

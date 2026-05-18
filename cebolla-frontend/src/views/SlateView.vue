@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { useSlate } from '../composables/useSlate.js'
 import GameCard from '../components/GameCard.vue'
+import LoadingBrand from '../components/LoadingBrand.vue'
 
 const { games, loading, error, activeDate } = useSlate()
 
@@ -120,17 +121,7 @@ const filterChips = [
 
     <!-- Content -->
     <section class="px-4 sm:px-6 py-5 sm:py-6">
-      <div v-if="loading" class="text-center py-20">
-        <img
-          src="/cebolla-wordmark.png"
-          alt="Cebolla · Every Layer Reveals an Edge"
-          class="cebolla-wordmark-loading mx-auto mb-6"
-        />
-        <div class="inline-flex items-center gap-3 text-fg-500">
-          <span class="w-2 h-2 bg-signal-400 animate-pulse"></span>
-          <span class="display-text text-lg italic">Peeling layers…</span>
-        </div>
-      </div>
+      <LoadingBrand v-if="loading" text="Peeling layers…" />
 
       <div v-else-if="error" class="border border-signal-400/30 bg-signal-400/5 p-5">
         <div class="label-bracket text-signal-400 mb-2">connection error</div>
@@ -179,15 +170,6 @@ const filterChips = [
 </template>
 
 <style scoped>
-/* Loading state: wordmark with breathing glow */
-.cebolla-wordmark-loading {
-  display: block;
-  width: clamp(220px, 50%, 360px);   /* responsive: 220 mobile → 360 desktop */
-  height: auto;
-  filter: drop-shadow(0 0 14px rgba(255, 42, 42, 0.35));
-  animation: cebolla-breathe 2.4s ease-in-out infinite;
-}
-
 /* Empty state: dimmer wordmark */
 .cebolla-wordmark-empty {
   display: block;
@@ -195,16 +177,5 @@ const filterChips = [
   height: auto;
   opacity: 0.55;
   filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.20));
-}
-
-@keyframes cebolla-breathe {
-  0%, 100% {
-    transform: scale(1);
-    filter: drop-shadow(0 0 10px rgba(255, 42, 42, 0.30));
-  }
-  50% {
-    transform: scale(1.02);
-    filter: drop-shadow(0 0 22px rgba(255, 42, 42, 0.60));
-  }
 }
 </style>
