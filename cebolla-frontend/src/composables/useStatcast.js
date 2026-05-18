@@ -9,7 +9,7 @@
  */
 
 import { ref, computed, watch } from 'vue'
-import { supabase } from '../lib/supabase.js'
+import { supabase } from '../supabase.js'
 
 /**
  * For batter Statcast (vs_hand = 'A' for rolling windows; season can be L/R/A).
