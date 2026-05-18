@@ -1,10 +1,17 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useGame } from '../composables/useGame.js'
 import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
 import LogBetModal from '../components/LogBetModal.vue'
+import { formatGameTime, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
+
+// Tick to refresh countdowns every 30s
+const tickKey = ref(0)
+let tickTimer = null
+onMounted(() => { tickTimer = setInterval(() => tickKey.value++, 30_000) })
+onUnmounted(() => { if (tickTimer) clearInterval(tickTimer) })
 
 const route = useRoute()
 const gameId = Number(route.params.gameId)
@@ -32,10 +39,14 @@ function onBetLogged() {
 }
 
 const gameTime = computed(() => {
-  if (!game.value?.game_time_utc) return ''
-  return new Date(game.value.game_time_utc).toLocaleTimeString('en-US', {
-    hour: 'numeric', minute: '2-digit',
-  })
+  return formatGameTime(game.value?.game_time_utc)
+})
+
+const gameCountdown = computed(() => {
+  const mins = minutesUntil(game.value?.game_time_utc)
+  if (mins == null) return null
+  if (mins <= 0 || mins > 240) return null
+  return formatCountdown(game.value?.game_time_utc)
 })
 
 const statusBadge = computed(() => {
@@ -110,6 +121,9 @@ const modelMeta = computed(() => {
                 {{ game.home_team?.abbrev }}
               </h1>
               <span class="display-num text-sm text-fg-500">{{ gameTime }}</span>
+              <span v-if="gameCountdown" class="display-num text-xs text-signal-200">
+                ({{ gameCountdown }})
+              </span>
               <span class="label-caps">{{ game.venue }}</span>
             </div>
           </div>
@@ -189,6 +203,7 @@ const modelMeta = computed(() => {
             :team-label="`${game.away_team?.abbrev} BATTERS`"
             market-mode="hr"
             :game-id="gameId"
+            :game-time-utc="game.game_time_utc"
             @log-bet="onLogBet"
           />
           <BatterTable
@@ -201,6 +216,7 @@ const modelMeta = computed(() => {
             :team-label="`${game.home_team?.abbrev} BATTERS`"
             market-mode="hr"
             :game-id="gameId"
+            :game-time-utc="game.game_time_utc"
             @log-bet="onLogBet"
           />
         </div>
@@ -243,6 +259,7 @@ const modelMeta = computed(() => {
               :team-label="`${game.away_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
               :game-id="gameId"
+              :game-time-utc="game.game_time_utc"
               @log-bet="onLogBet"
             />
             <BatterTable
@@ -255,6 +272,7 @@ const modelMeta = computed(() => {
               :team-label="`${game.home_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
               :game-id="gameId"
+              :game-time-utc="game.game_time_utc"
               @log-bet="onLogBet"
             />
           </div>

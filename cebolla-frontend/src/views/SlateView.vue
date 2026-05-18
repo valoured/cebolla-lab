@@ -134,7 +134,7 @@ const filterChips = [
       </div>
 
       <div v-else-if="!games.length" class="text-center py-20">
-        <div class="display-text text-2xl text-fg-500 italic mb-3">Sin partidos activos</div>
+        <div class="display-text text-2xl text-fg-500 italic mb-3">No active slate</div>
         <div class="text-fg-500 text-sm max-w-md mx-auto leading-relaxed">
           No upcoming non-final games in the database.<br>
           <span class="text-fg-400">The next slate will appear here as soon as MLB publishes it.</span>

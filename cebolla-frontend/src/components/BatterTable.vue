@@ -1,17 +1,19 @@
 <script setup>
 import { computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
+import { formatLineupETA } from '../utils/timeHelpers.js'
 
 const props = defineProps({
-  lineup:      { type: Array,  required: true },
-  batterStats: { type: Object, required: true },
-  odds:        { type: Object, required: true },
-  bvp:         { type: Object, required: true },
-  projections: { type: Object, default: () => ({}) },   // new
-  pitcherId:   { type: Number, default: null },
-  teamLabel:   { type: String, required: true },
-  marketMode:  { type: String, default: 'hr' },
-  gameId:      { type: Number, default: null },
+  lineup:        { type: Array,  required: true },
+  batterStats:   { type: Object, required: true },
+  odds:          { type: Object, required: true },
+  bvp:           { type: Object, required: true },
+  projections:   { type: Object, default: () => ({}) },
+  pitcherId:     { type: Number, default: null },
+  teamLabel:     { type: String, required: true },
+  marketMode:    { type: String, default: 'hr' },
+  gameId:        { type: Number, default: null },
+  gameTimeUtc:   { type: String, default: null },
 })
 const emit = defineEmits(['log-bet'])
 
@@ -47,6 +49,8 @@ function hrPctTone(pct) {
   if (pct >= 2) return 'text-fg-600'
   return 'text-edge-cold-1'
 }
+
+const lineupETA = computed(() => formatLineupETA(props.gameTimeUtc))
 
 // Edge formatting: returns pill class + display text
 function edgeDisplay(edge) {
@@ -121,8 +125,15 @@ const isConfirmed = computed(() => {
     </div>
 
     <div v-if="!rows.length" class="px-4 py-12 text-center">
-      <div class="display-text text-lg text-fg-500 italic mb-1">Sin alineación</div>
-      <p class="text-fg-500 text-xs">Lineup not posted yet. Check back closer to first pitch.</p>
+      <div class="display-text text-lg text-fg-500 italic mb-1">No lineup yet</div>
+      <p class="text-fg-500 text-xs">
+        <template v-if="lineupETA">
+          Lineups typically post around <span class="text-fg-700">{{ lineupETA }}</span>
+        </template>
+        <template v-else>
+          Lineup not posted yet. Check back closer to first pitch.
+        </template>
+      </p>
     </div>
 
     <div v-else class="overflow-x-auto">

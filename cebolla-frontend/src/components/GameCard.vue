@@ -1,18 +1,31 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
+import { formatGameTimeShort, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
 
 const props = defineProps({
   game: { type: Object, required: true },
 })
 
+// Refresh the clock state every 30s so countdowns tick without page reload
+const tickKey = ref(0)
+let tickTimer = null
+onMounted(() => { tickTimer = setInterval(() => tickKey.value++, 30_000) })
+onUnmounted(() => { if (tickTimer) clearInterval(tickTimer) })
+
 const time = computed(() => {
-  if (!props.game.game_time_utc) return '—'
-  const d = new Date(props.game.game_time_utc)
-  return d.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  // tickKey reactivity prevents this from going stale; explicit reference:
+  tickKey.value
+  return formatGameTimeShort(props.game.game_time_utc)
+})
+
+// Show countdown when game starts within the next 2 hours
+const countdown = computed(() => {
+  tickKey.value
+  const mins = minutesUntil(props.game.game_time_utc)
+  if (mins == null) return null
+  if (mins <= 0 || mins > 120) return null
+  return formatCountdown(props.game.game_time_utc)
 })
 
 const hrFactor = computed(() => {
@@ -119,6 +132,9 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
       <div class="px-3 py-2 border-b border-bg-200 flex items-center justify-between gap-2">
         <div class="flex items-center gap-2">
           <span class="display-num text-[11px] text-fg-500">{{ time }}</span>
+          <span v-if="countdown" class="display-num text-[10px] text-signal-200 ml-0.5">
+            ({{ countdown }})
+          </span>
           <span
             v-if="statusBadge"
             class="text-[9px] uppercase tracking-wide2 font-mono px-1.5 py-0.5 rounded-sm"
