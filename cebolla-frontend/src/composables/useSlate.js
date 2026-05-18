@@ -1,10 +1,14 @@
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../supabase.js'
+import { ping } from './useRealtimePulse.js'
 
 export function useSlate(dateStr) {
   const games = ref([])
   const loading = ref(true)
   const error = ref(null)
+
+  let reloadTimer = null
+  let channel = null
 
   async function load() {
     loading.value = true
@@ -12,7 +16,6 @@ export function useSlate(dateStr) {
 
     const today = dateStr || new Date().toISOString().slice(0, 10)
 
-    // Pull the slate with all the joins we need
     const { data, error: dbErr } = await supabase
       .from('games')
       .select(`
@@ -50,7 +53,34 @@ export function useSlate(dateStr) {
     loading.value = false
   }
 
-  onMounted(load)
+  // Debounced reload — batch bursts so we don't hammer the DB
+  function scheduleReload() {
+    if (reloadTimer) clearTimeout(reloadTimer)
+    reloadTimer = setTimeout(() => {
+      load()
+      ping()
+    }, 1500)
+  }
+
+  onMounted(() => {
+    load()
+
+    // Realtime: subscribe to games changes (scores, status, inning state)
+    channel = supabase
+      .channel('slate-changes')
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'games' },
+          () => scheduleReload())
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'projections' },
+          () => scheduleReload())
+      .subscribe()
+  })
+
+  onUnmounted(() => {
+    if (reloadTimer) clearTimeout(reloadTimer)
+    if (channel) supabase.removeChannel(channel)
+  })
 
   return { games, loading, error, reload: load }
 }

@@ -1,9 +1,11 @@
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../supabase.js'
+import { ping } from './useRealtimePulse.js'
 
 /**
  * Loads everything the HR Report needs for one game.
  * Now also pulls projections rows so the Edge column can render real values.
+ * Subscribes to realtime changes for this game_id and reloads on burst.
  */
 export function useGame(gameId) {
   const game        = ref(null)
@@ -17,6 +19,9 @@ export function useGame(gameId) {
   const projections = ref({})   // {`${player_id}_${market}`: row}
   const loading     = ref(true)
   const error       = ref(null)
+
+  let reloadTimer = null
+  let channel = null
 
   async function load() {
     loading.value = true
@@ -154,7 +159,44 @@ export function useGame(gameId) {
     }
   }
 
-  load()
+  // Debounced reload — batch bursts during e.g. odds/projections write cycles
+  function scheduleReload() {
+    if (reloadTimer) clearTimeout(reloadTimer)
+    reloadTimer = setTimeout(() => {
+      load()
+      ping()
+    }, 1500)
+  }
+
+  onMounted(() => {
+    load()
+
+    // Realtime: subscribe to relevant tables, filtered to this game_id where applicable.
+    // game_id is an integer; Supabase Realtime filter syntax: `column=eq.value`
+    const filter = `game_id=eq.${gameId}`
+
+    channel = supabase
+      .channel(`game-${gameId}-changes`)
+      // The `games` table uses `id` not `game_id`, so different filter
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
+          () => scheduleReload())
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'lineups', filter },
+          () => scheduleReload())
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'odds_snapshots', filter },
+          () => scheduleReload())
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'projections', filter },
+          () => scheduleReload())
+      .subscribe()
+  })
+
+  onUnmounted(() => {
+    if (reloadTimer) clearTimeout(reloadTimer)
+    if (channel) supabase.removeChannel(channel)
+  })
 
   return {
     game, awayLineup, homeLineup,

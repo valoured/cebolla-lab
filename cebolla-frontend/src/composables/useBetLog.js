@@ -4,11 +4,14 @@
 
 import { ref, computed } from 'vue'
 import { supabase } from '../supabase'
+import { ping } from './useRealtimePulse.js'
 
 const _bets = ref([])
 const _loading = ref(false)
 const _error = ref(null)
 const _initialized = ref(false)
+let _realtimeChannel = null
+let _reloadTimer = null
 
 async function fetchBets({ limit = 200 } = {}) {
   _loading.value = true
@@ -30,9 +33,25 @@ async function fetchBets({ limit = 200 } = {}) {
   }
 }
 
+function scheduleReload() {
+  if (_reloadTimer) clearTimeout(_reloadTimer)
+  _reloadTimer = setTimeout(() => {
+    fetchBets()
+    ping()
+  }, 1500)
+}
+
+function ensureRealtimeSubscription() {
+  if (_realtimeChannel) return
+  _realtimeChannel = supabase
+    .channel('bet-log-changes')
+    .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'bet_log' },
+        () => scheduleReload())
+    .subscribe()
+}
+
 async function insertBet(row) {
-  // Required: game_id, player_id, market, side, american_odds, stake
-  // Optional: line, book, edge_at_placement, projected_prob, model_version, notes, parlay_id, parlay_legs
   const payload = {
     placed_at: new Date().toISOString(),
     result: 'pending',
@@ -45,7 +64,6 @@ async function insertBet(row) {
     .select()
     .single()
   if (error) throw error
-  // Refresh local list
   await fetchBets()
   return data
 }
@@ -121,6 +139,9 @@ const winRate = computed(() => {
 })
 
 export function useBetLog() {
+  // Set up realtime subscription on first use (idempotent)
+  ensureRealtimeSubscription()
+
   return {
     bets: _bets,
     loading: _loading,

@@ -1,9 +1,10 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { refreshSlate } from '../utils/githubDispatch.js'
+import { useRealtimePulse } from '../composables/useRealtimePulse.js'
 
 const route = useRoute()
+const { isPulsing, lastPingAt } = useRealtimePulse()
 
 const navItems = [
   { name: 'slate',  label: 'Slate',    code: 'M.01' },
@@ -22,40 +23,14 @@ const now = computed(() => {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
 })
 
-// ── Manual refresh ──
-const refreshState = ref('idle')   // 'idle' | 'firing' | 'pulling' | 'done' | 'error'
-const refreshError = ref(null)
-
-async function handleRefresh() {
-  if (refreshState.value !== 'idle' && refreshState.value !== 'done' && refreshState.value !== 'error') return
-  refreshState.value = 'firing'
-  refreshError.value = null
-
-  const result = await refreshSlate()
-  if (!result.ok) {
-    refreshState.value = 'error'
-    refreshError.value = result.error || 'dispatch failed'
-    setTimeout(() => { refreshState.value = 'idle' }, 5000)
-    return
-  }
-
-  // Workflows are now running on GH. Give them ~45s to write fresh data,
-  // then auto-reload the page so the user sees the new state.
-  refreshState.value = 'pulling'
-  setTimeout(() => {
-    refreshState.value = 'done'
-    setTimeout(() => window.location.reload(), 800)
-  }, 45000)
-}
-
-const refreshLabel = computed(() => {
-  switch (refreshState.value) {
-    case 'firing':  return 'sending…'
-    case 'pulling': return 'pulling…'
-    case 'done':    return 'refreshed ✓'
-    case 'error':   return 'failed'
-    default:        return 'refresh'
-  }
+// "5s ago" / "2m ago" — how long since last realtime event
+const sinceLastPing = computed(() => {
+  if (!lastPingAt.value) return 'idle'
+  const ms = Date.now() - lastPingAt.value
+  if (ms < 5000) return 'just now'
+  if (ms < 60000) return Math.floor(ms / 1000) + 's ago'
+  if (ms < 3600000) return Math.floor(ms / 60000) + 'm ago'
+  return Math.floor(ms / 3600000) + 'h ago'
 })
 </script>
 
@@ -100,23 +75,12 @@ const refreshLabel = computed(() => {
 
       <!-- Right side -->
       <div class="ml-auto flex items-center gap-6">
-        <div class="hidden md:flex items-center gap-2">
-          <span class="w-1.5 h-1.5 rounded-full bg-signal-400 animate-pulse"></span>
+        <!-- Live status: dot pulses on any realtime ping -->
+        <div class="hidden md:flex items-center gap-2" :title="'Last update: ' + sinceLastPing">
+          <span class="live-dot" :class="{ 'is-pulsing': isPulsing }"></span>
           <span class="label-caps">live</span>
+          <span class="label-bracket !text-[8px] text-fg-500">{{ sinceLastPing }}</span>
         </div>
-
-        <!-- Refresh data button -->
-        <button
-          @click="handleRefresh"
-          :disabled="refreshState !== 'idle' && refreshState !== 'done' && refreshState !== 'error'"
-          class="refresh-btn"
-          :class="`state-${refreshState}`"
-          :title="refreshError || 'Trigger lineups + odds + projections pull'"
-        >
-          <span class="refresh-dot"></span>
-          <span class="label-caps">{{ refreshLabel }}</span>
-        </button>
-
         <div class="flex items-baseline gap-2">
           <span class="label-caps">UTC</span>
           <span class="display-num text-xs text-fg-600">{{ now }}</span>
@@ -127,69 +91,46 @@ const refreshLabel = computed(() => {
 </template>
 
 <style scoped>
-.refresh-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 2px;
-  color: var(--color-fg-500, #888);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.refresh-btn:hover:not(:disabled) {
-  border-color: rgba(255, 42, 42, 0.4);
-  color: rgba(255, 42, 42, 0.85);
-}
-.refresh-btn:disabled {
-  cursor: progress;
-  opacity: 0.7;
-}
-
-.refresh-dot {
-  width: 6px;
-  height: 6px;
+.live-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.3);
-  transition: background 0.15s;
-}
-.refresh-btn:hover:not(:disabled) .refresh-dot {
-  background: rgba(255, 42, 42, 0.85);
+  background: rgba(255, 42, 42, 0.35);
+  transition: background 0.2s, box-shadow 0.2s;
 }
 
-.state-firing .refresh-dot,
-.state-pulling .refresh-dot {
-  background: rgba(255, 42, 42, 0.85);
-  animation: pulse-dot 1s ease-in-out infinite;
+/* Slow ambient pulse when idle */
+.live-dot:not(.is-pulsing) {
+  animation: ambient-pulse 3s ease-in-out infinite;
 }
-.state-firing,
-.state-pulling {
-  border-color: rgba(255, 42, 42, 0.4) !important;
-  color: rgba(255, 42, 42, 0.85) !important;
-}
-.state-done .refresh-dot {
-  background: rgba(95, 158, 160, 1);
-}
-.state-done {
-  border-color: rgba(95, 158, 160, 0.5) !important;
-  color: rgba(95, 158, 160, 1) !important;
-}
-.state-error .refresh-dot {
+
+/* Burst pulse when data arrives */
+.live-dot.is-pulsing {
   background: rgba(255, 42, 42, 1);
-}
-.state-error {
-  border-color: rgba(255, 42, 42, 0.6) !important;
-  color: rgba(255, 42, 42, 1) !important;
+  box-shadow: 0 0 0 3px rgba(255, 42, 42, 0.25),
+              0 0 12px rgba(255, 42, 42, 0.6);
+  animation: data-burst 1.5s ease-out;
 }
 
-@keyframes pulse-dot {
-  0%, 100% { opacity: 0.5; transform: scale(0.85); }
-  50%      { opacity: 1;   transform: scale(1.2);  }
+@keyframes ambient-pulse {
+  0%, 100% { background: rgba(255, 42, 42, 0.35); }
+  50%      { background: rgba(255, 42, 42, 0.75); }
+}
+
+@keyframes data-burst {
+  0% {
+    transform: scale(0.7);
+    box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.8);
+  }
+  40% {
+    transform: scale(1.2);
+    box-shadow: 0 0 0 6px rgba(255, 42, 42, 0.3),
+                0 0 18px rgba(255, 42, 42, 0.7);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 3px rgba(255, 42, 42, 0.25),
+                0 0 12px rgba(255, 42, 42, 0.6);
+  }
 }
 </style>
