@@ -307,21 +307,181 @@ def filter_window(df: pd.DataFrame, days: int | None, today: date) -> tuple[pd.D
     return df[df["game_date"] >= cutoff_ts], cutoff
 
 
+# ────────────────────────────────────────────────────────────────
+# PITCHER STATCAST AGGREGATION
+# ────────────────────────────────────────────────────────────────
+
+def get_known_pitchers() -> dict[int, int]:
+    """{mlbam_id: players.id} for everyone we've registered as a pitcher."""
+    res = sb.table("players").select("id, mlbam_id, is_pitcher").execute()
+    return {p["mlbam_id"]: p["id"] for p in res.data if p["is_pitcher"]}
+
+
+def aggregate_pitcher(group: pd.DataFrame,
+                      pitcher_id: int,
+                      window_type: str,
+                      window_start: date | None,
+                      window_end: date,
+                      throws: str | None = None) -> dict | None:
+    """
+    Aggregate pitches a pitcher threw into pitcher-allowed Statcast stats.
+
+    Note: we ONLY write the Statcast columns + identifiers + window metadata.
+    Traditional stats (era, fip, whip, k_per_9, etc.) are populated by
+    pull_pitcher_stats.py from MLB Stats API season totals — leaving those
+    untouched preserves their values.
+
+    The upsert key is (pitcher_id, season, window_type), and the upsert only
+    overwrites the columns we explicitly include in the payload.
+    """
+    pa_rows = group[group["events"].notna()]
+    pa = len(pa_rows)
+
+    if window_type != "season" and pa < MIN_PA_FOR_WINDOW:
+        return None
+
+    bip = group[group["type"] == "X"] if "type" in group.columns else group.iloc[0:0]
+    bbe = int(len(bip))
+
+    # ── Barrel% allowed ──
+    barrel_pct = None
+    if not bip.empty and "launch_speed_angle" in bip.columns and bbe > 0:
+        barrels = (bip["launch_speed_angle"] == 6).sum()
+        barrel_pct = barrels / bbe * 100
+
+    # ── EV / Hard-Hit / Sweet Spot allowed ──
+    hh_pct = ev_avg = ev_max = sweet_spot_pct = None
+    if not bip.empty and "launch_speed" in bip.columns:
+        ev_clean = bip["launch_speed"].dropna()
+        if len(ev_clean):
+            hh = (ev_clean >= 95).sum()
+            hh_pct = hh / len(ev_clean) * 100
+            ev_avg = float(ev_clean.mean())
+            ev_max = float(ev_clean.max())
+        if "launch_angle" in bip.columns:
+            la_clean = bip["launch_angle"].dropna()
+            if len(la_clean):
+                sweet_balls = la_clean.between(8, 32).sum()
+                sweet_spot_pct = sweet_balls / len(la_clean) * 100
+
+    # ── xStats allowed ──
+    xba = xslg = xwoba = None
+    if not bip.empty:
+        if "estimated_ba_using_speedangle" in bip.columns:
+            x = bip["estimated_ba_using_speedangle"].dropna()
+            if len(x): xba = float(x.mean())
+        if "estimated_slg_using_speedangle" in bip.columns:
+            x = bip["estimated_slg_using_speedangle"].dropna()
+            if len(x): xslg = float(x.mean())
+        if "estimated_woba_using_speedangle" in bip.columns:
+            x = bip["estimated_woba_using_speedangle"].dropna()
+            if len(x): xwoba = float(x.mean())
+
+    return {
+        "pitcher_id":     pitcher_id,
+        "season":         CURRENT_SEASON,
+        "window_type":    window_type,
+        "barrel_pct":     round(barrel_pct, 2)     if barrel_pct     is not None else None,
+        "hard_hit_pct":   round(hh_pct, 2)         if hh_pct         is not None else None,
+        "sweet_spot_pct": round(sweet_spot_pct, 2) if sweet_spot_pct is not None else None,
+        "ev_avg":         round(ev_avg, 1)         if ev_avg         is not None else None,
+        "ev_max":         round(ev_max, 1)         if ev_max         is not None else None,
+        "xba":            round(xba, 3)            if xba            is not None else None,
+        "xslg":           round(xslg, 3)           if xslg            is not None else None,
+        "xwoba":          round(xwoba, 3)          if xwoba          is not None else None,
+        "bbe":            bbe,
+        "window_start":   window_start.isoformat() if window_start else None,
+        "window_end":     window_end.isoformat(),
+        "updated_at":     datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def process_pitchers(df: pd.DataFrame, today_date: date) -> int:
+    """
+    Aggregate pitcher-allowed Statcast for all 4 windows.
+    Returns number of rows written.
+    """
+    if "pitcher" not in df.columns:
+        log.warning("Statcast data missing 'pitcher' column — skipping pitcher aggregation")
+        return 0
+
+    known = get_known_pitchers()
+    pitcher_ids = df["pitcher"].dropna().unique()
+    log.info("Found %d unique pitchers in Statcast", len(pitcher_ids))
+
+    # Pre-compute windowed dataframes
+    pitcher_windows = []
+    for window_type, days in WINDOWS:
+        sub, w_start = filter_window(df, days, today_date)
+        by_pitcher = sub.groupby("pitcher", sort=False)
+        pitcher_windows.append((window_type, w_start, by_pitcher))
+
+    rows = []
+    skipped = 0
+    unknown = 0
+    for pitcher_mlbam in pitcher_ids:
+        try:
+            mlbam_int = int(pitcher_mlbam)
+        except (ValueError, TypeError):
+            continue
+
+        if mlbam_int not in known:
+            # Pitcher isn't in our players table — they don't have a starting
+            # role on our slate, so we skip rather than backfill randomly.
+            unknown += 1
+            continue
+        pitcher_id = known[mlbam_int]
+
+        for window_type, w_start, grouped in pitcher_windows:
+            try:
+                group = grouped.get_group(pitcher_mlbam)
+            except KeyError:
+                continue
+            row = aggregate_pitcher(group, pitcher_id, window_type,
+                                    w_start, today_date)
+            if row:
+                rows.append(row)
+            else:
+                skipped += 1
+
+    log.info("Prepared %d pitcher rows (%d unknown pitcher mlbam ids skipped, %d small-sample windows skipped)",
+             len(rows), unknown, skipped)
+
+    if not rows:
+        return 0
+
+    written = 0
+    for i in range(0, len(rows), 100):
+        chunk = rows[i:i + 100]
+        sb.table("pitcher_stats").upsert(
+            chunk,
+            on_conflict="pitcher_id,season,window_type",
+        ).execute()
+        written += len(chunk)
+        if i % 500 == 0:
+            log.info("  Wrote %d / %d pitcher rows", written, len(rows))
+
+    log.info("✓ Wrote %d pitcher rows", written)
+    return written
+
+
 def main():
-    log.info("🧅 Cebolla Lab — Savant batter sync starting (Phase 7: 4 windows + xStats)")
+    log.info("🧅 Cebolla Lab — Savant sync starting (Phase 7: batters + pitchers, 4 windows + xStats)")
 
     df = fetch_all_statcast()
     if df is None:
         log.error("No Statcast data; aborting")
         sys.exit(1)
 
+    today_date = date.today()
+
+    # ──────────────── BATTER PROCESSING ────────────────
     known = get_known_batters()
 
     if "batter" not in df.columns:
         log.error("Statcast data missing 'batter' column")
         sys.exit(1)
 
-    today_date = date.today()
     batter_ids = df["batter"].dropna().unique()
     log.info("Found %d unique batters in season Statcast", len(batter_ids))
 
@@ -411,8 +571,15 @@ def main():
         if i % 500 == 0:
             log.info("  Wrote %d / %d", written, len(rows))
 
-    log.info("✓ Wrote %d total rows", written)
-    log.info("🧅 Savant batter sync complete")
+    log.info("✓ Wrote %d total batter rows", written)
+
+    # ──────────────── PITCHER PROCESSING ────────────────
+    log.info("─── Starting pitcher Statcast aggregation ───")
+    pitcher_written = process_pitchers(df, today_date)
+    log.info("✓ Wrote %d total pitcher rows", pitcher_written)
+
+    log.info("🧅 Savant sync complete (%d batter + %d pitcher rows)",
+             written, pitcher_written)
 
 
 if __name__ == "__main__":
