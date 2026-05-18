@@ -50,6 +50,55 @@ CF_BEARING_BY_TEAM_ABBREV = {
 }
 
 
+# ────────────────────────────────────────────────────────────────
+# Defense-in-depth dome detection.
+#
+# Primary source: teams.is_dome flag in Supabase. But that flag has
+# historically gone stale (e.g. Tampa Bay played 2025 at outdoor
+# Steinbrenner Field then returned to Tropicana for 2026, but the
+# is_dome flag wasn't flipped back when they came home).
+#
+# As a backstop we hard-code venues with FIXED roofs that cannot open.
+# We only override here for stadiums that are *physically incapable*
+# of opening — retractable roofs (HOU, MIL, MIA, TOR, ARI, TEX, SEA)
+# are left to teams.is_dome since they open often enough that defaulting
+# them to dome would produce wrong HR factors on roof-open days.
+# ────────────────────────────────────────────────────────────────
+ALWAYS_DOME_VENUES = {
+    "Tropicana Field",            # Tampa Bay Rays — nonretractable fixed roof
+}
+
+# Backup: team-level fallback for the same reason — if the Rays show
+# up at home and the venue field is missing or differently spelled,
+# still treat as dome.
+ALWAYS_DOME_TEAMS = {
+    "TB",                          # Tampa Bay Rays
+}
+
+
+def is_dome_game(game: dict, team: dict) -> bool:
+    """
+    Return True if this game should be treated as indoor (no weather).
+
+    Order of checks:
+      1. teams.is_dome flag (primary, authoritative source)
+      2. venue name in ALWAYS_DOME_VENUES (backstop for stale flag)
+      3. team abbrev in ALWAYS_DOME_TEAMS (backstop for missing venue)
+    """
+    if team.get("is_dome"):
+        return True
+    venue = (game.get("venue") or "").strip()
+    if venue in ALWAYS_DOME_VENUES:
+        log.info("  Game %s: venue '%s' matched ALWAYS_DOME_VENUES, forcing dome",
+                 game.get("id"), venue)
+        return True
+    if team.get("abbrev") in ALWAYS_DOME_TEAMS:
+        log.info("  Game %s: team '%s' in ALWAYS_DOME_TEAMS, forcing dome",
+                 game.get("id"), team.get("abbrev"))
+        return True
+    return False
+
+
 def wind_relative_to_cf(wind_from_deg: int, cf_bearing: int) -> tuple[str, float]:
     """
     wind_from_deg = direction wind is coming FROM (Open-Meteo convention).
@@ -126,7 +175,7 @@ def fetch_weather(lat: float, lng: float, game_time_utc: str) -> dict | None:
 
 def update_game_weather(game: dict, team: dict) -> bool:
     """Pull weather + compute HR factors, write back to the games row."""
-    if team["is_dome"]:
+    if is_dome_game(game, team):
         # Dome: no weather impact, just park factors
         sb.table("games").update({
             "temp_f": 72,
@@ -185,11 +234,16 @@ def update_game_weather(game: dict, team: dict) -> bool:
 def main():
     log.info("🧅 Cebolla Lab — Weather sync starting")
 
-    today = date.today().isoformat()
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    # ET-relative "today" — GitHub Actions runs in UTC, but baseball
+    # operates in ET. Subtract 4 hours (EDT) so that early-morning UTC
+    # runs (still nighttime ET) don't skip the previous day's late games.
+    # Same fix pattern as pull_schedule.py.
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    today = et_now.date().isoformat()
+    tomorrow = (et_now.date() + timedelta(days=1)).isoformat()
 
     games = sb.table("games") \
-        .select("id, mlb_game_pk, game_date, game_time_utc, home_team_id, status") \
+        .select("id, mlb_game_pk, game_date, game_time_utc, venue, home_team_id, status") \
         .gte("game_date", today) \
         .lte("game_date", tomorrow) \
         .not_.in_("status", ["Final", "Game Over"]) \
