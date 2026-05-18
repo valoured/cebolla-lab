@@ -33,6 +33,7 @@ const isOpen = ref(false)
 const popupRef = ref(null)
 const buttonRef = ref(null)
 const popupPosition = ref('top') // resolved position
+const popupOffset = ref(0)        // px shift to keep popup on-screen horizontally
 
 // Touch-device detection. On touch devices, mouseenter/mouseleave events
 // fire alongside click events from a single tap, causing the popup to
@@ -55,14 +56,33 @@ function open() {
   nextTick(() => {
     if (props.position !== 'auto') {
       popupPosition.value = props.position
-      return
-    }
-    // Auto-position: if button is in top half of viewport, put popup below;
-    // otherwise above. Prevents tooltips from being cut off at top of screen.
-    if (buttonRef.value) {
+    } else if (buttonRef.value) {
+      // Auto-position vertically: if button is in top half of viewport,
+      // put popup below; otherwise above.
       const rect = buttonRef.value.getBoundingClientRect()
       const viewportHeight = window.innerHeight
       popupPosition.value = rect.top < viewportHeight / 2 ? 'bottom' : 'top'
+    }
+
+    // Auto-clamp horizontal: if popup would extend past viewport edges,
+    // shift it horizontally so it stays on-screen.
+    if (buttonRef.value && popupRef.value) {
+      const margin = 8
+      const buttonRect = buttonRef.value.getBoundingClientRect()
+      const popupRect = popupRef.value.getBoundingClientRect()
+      const buttonCenterX = buttonRect.left + buttonRect.width / 2
+      const popupHalfWidth = popupRect.width / 2
+
+      const leftEdge = buttonCenterX - popupHalfWidth
+      const rightEdge = buttonCenterX + popupHalfWidth
+
+      let offset = 0
+      if (leftEdge < margin) {
+        offset = margin - leftEdge
+      } else if (rightEdge > window.innerWidth - margin) {
+        offset = (window.innerWidth - margin) - rightEdge
+      }
+      popupOffset.value = offset
     }
   })
 }
@@ -125,6 +145,7 @@ onUnmounted(() => {
         ref="popupRef"
         class="tt-popup"
         :class="popupPosition === 'top' ? 'tt-popup-top' : 'tt-popup-bottom'"
+        :style="{ '--tt-offset': `${popupOffset}px` }"
         @click.stop
         @mouseenter="handleHoverOpen"
         @mouseleave="handleHoverClose"
@@ -191,7 +212,7 @@ onUnmounted(() => {
 .tt-popup {
   position: absolute;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(calc(-50% + var(--tt-offset, 0px)));
   min-width: 220px;
   max-width: 280px;
   background: rgba(8, 8, 10, 0.97);
@@ -223,7 +244,9 @@ onUnmounted(() => {
 .tt-popup::after {
   content: '';
   position: absolute;
-  left: 50%;
+  /* Arrow stays anchored to the icon's center, ignoring the popup's
+     horizontal offset so it always points at the trigger button. */
+  left: calc(50% - var(--tt-offset, 0px));
   transform: translateX(-50%) rotate(45deg);
   width: 8px;
   height: 8px;

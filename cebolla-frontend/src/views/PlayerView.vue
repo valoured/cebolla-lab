@@ -30,6 +30,15 @@ import { formatGameTime, formatCountdown } from '../utils/timeHelpers.js'
 import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
 
+/**
+ * Hi-res MLB headshot URL builder. We override mlbImages.js's default
+ * size (likely 213w) to request 480w — looks sharp on 96px display @ 2x DPI.
+ */
+function hiResHeadshotUrl(mlbamId) {
+  if (!mlbamId) return ''
+  return `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_480,q_auto:best/v1/people/${mlbamId}/headshot/67/current`
+}
+
 const route = useRoute()
 const router = useRouter()
 
@@ -339,6 +348,8 @@ function hrPctTone(pct) {
 
 <template>
   <div class="min-h-screen">
+    <div class="max-w-4xl mx-auto">
+
     <!-- ← back -->
     <div class="px-4 sm:px-6 pt-4 sm:pt-5 pb-2 flex items-center gap-4">
       <button
@@ -363,17 +374,17 @@ function hrPctTone(pct) {
 
     <template v-else-if="player">
       <!-- ── HEADER ───────────────────────────────────────── -->
-      <header class="px-4 sm:px-6 pb-5 border-b border-bg-200">
-        <div class="flex items-center gap-3 sm:gap-5">
+      <header class="px-4 sm:px-6 pb-4 border-b border-bg-200">
+        <div class="flex items-center gap-3 sm:gap-4">
           <img
             v-if="player.mlbam_id"
-            :src="playerHeadshotUrl(player.mlbam_id)"
+            :src="hiResHeadshotUrl(player.mlbam_id)"
             :alt="player.name"
             class="player-headshot-xl"
             @error="hideOnError"
           />
           <div class="flex-1 min-w-0">
-            <h1 class="display-text text-3xl sm:text-4xl text-fg-800 tracking-tight leading-none mb-1.5 truncate">
+            <h1 class="display-text text-2xl sm:text-3xl text-fg-800 tracking-tight leading-none mb-1.5 truncate">
               {{ player.name }}
             </h1>
             <div class="flex items-baseline gap-2 sm:gap-3 flex-wrap">
@@ -496,7 +507,7 @@ function hrPctTone(pct) {
       </section>
 
       <!-- ── SEASON QUICK STATS ──────────────────────────── -->
-      <section v-if="season" class="px-4 sm:px-6 py-5 border-b border-bg-200">
+      <section v-if="season" class="px-4 sm:px-6 py-4 border-b border-bg-200">
         <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">season {{ CURRENT_SEASON }}</h2>
           <span class="label-caps !text-[8px]">{{ season.pa }} PA</span>
@@ -542,7 +553,7 @@ function hrPctTone(pct) {
       </section>
 
       <!-- ── STATCAST TRAJECTORY ─────────────────────────── -->
-      <section class="px-4 sm:px-6 py-5 border-b border-bg-200">
+      <section class="px-4 sm:px-6 py-4 border-b border-bg-200">
         <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
           <h2 class="label-bracket text-signal-400">statcast trajectory</h2>
           <span class="label-caps !text-[8px] opacity-70">
@@ -554,34 +565,34 @@ function hrPctTone(pct) {
           No Statcast data available yet for this player this season.
         </div>
 
-        <div v-else class="space-y-3">
+        <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <div
             v-for="m in trajectory"
             :key="m.key"
-            class="bg-bg-50 border border-bg-200 px-3 sm:px-4 py-3"
+            class="bg-bg-50 border border-bg-200 px-3 py-2.5"
           >
-            <div class="flex items-baseline justify-between mb-2">
+            <div class="flex items-baseline justify-between mb-1.5">
               <span class="label-caps inline-flex items-center">
                 {{ m.label }} <InfoTooltip :term="m.term" />
               </span>
               <span
                 v-if="m.trend"
-                class="display-num text-xs"
+                class="display-num text-[10px]"
                 :class="m.trend === 'up'   ? 'text-signal-400'
                       : m.trend === 'down' ? 'text-edge-cold-1'
                       :                      'text-fg-500'"
               >
-                {{ m.trend === 'up' ? '↗ rising' : m.trend === 'down' ? '↘ falling' : '→ stable' }}
+                {{ m.trend === 'up' ? '↗' : m.trend === 'down' ? '↘' : '→' }}
               </span>
             </div>
-            <div class="space-y-1.5">
+            <div class="space-y-1">
               <div
                 v-for="pt in m.points"
                 :key="pt.window"
-                class="grid grid-cols-[40px_1fr_56px] sm:grid-cols-[55px_1fr_60px] gap-2 sm:gap-3 items-center"
+                class="grid grid-cols-[36px_1fr_44px] gap-2 items-center"
               >
-                <span class="label-caps !text-[9px]">{{ pt.label }}</span>
-                <div class="h-2 bg-bg-200 relative overflow-hidden">
+                <span class="label-caps !text-[8px]">{{ pt.label }}</span>
+                <div class="h-1.5 bg-bg-200 relative overflow-hidden">
                   <div
                     class="absolute inset-y-0 left-0 transition-all duration-300"
                     :class="pt.value == null
@@ -591,7 +602,7 @@ function hrPctTone(pct) {
                   ></div>
                 </div>
                 <span
-                  class="display-num text-xs text-right"
+                  class="display-num text-[11px] text-right"
                   :class="statColor(pt.value, m.key, 'batter')"
                 >
                   {{ fmtStat(pt.value, m.key) }}
@@ -605,7 +616,7 @@ function hrPctTone(pct) {
       <!-- ── VS LHP / VS RHP SPLITS ──────────────────────── -->
       <section
         v-if="splitVsL || splitVsR"
-        class="px-4 sm:px-6 py-5 border-b border-bg-200"
+        class="px-4 sm:px-6 py-4 border-b border-bg-200"
       >
         <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">handedness splits</h2>
@@ -679,7 +690,7 @@ function hrPctTone(pct) {
       </section>
 
       <!-- ── PITCH TYPE BREAKDOWN ───────────────────────── -->
-      <section v-if="pitchBreakdown.length" class="px-4 sm:px-6 py-5 pb-10">
+      <section v-if="pitchBreakdown.length" class="px-4 sm:px-6 py-4 pb-8">
         <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
           <h2 class="label-bracket text-signal-400">pitch-type breakdown</h2>
           <span class="label-caps !text-[8px] opacity-70">
@@ -732,7 +743,7 @@ function hrPctTone(pct) {
       </section>
 
       <!-- Empty state for pitch breakdown -->
-      <section v-else-if="season" class="px-4 sm:px-6 py-5 pb-10">
+      <section v-else-if="season" class="px-4 sm:px-6 py-4 pb-8">
         <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">pitch-type breakdown</h2>
         </div>
@@ -754,24 +765,26 @@ function hrPctTone(pct) {
         ← back to slate
       </router-link>
     </div>
+
+    </div><!-- /max-w-4xl -->
   </div>
 </template>
 
 <style scoped>
 .player-headshot-xl {
-  width: 72px;
-  height: 72px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.04);
-  filter: grayscale(0.2) brightness(0.95);
+  filter: grayscale(0.15) brightness(0.97);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 @media (min-width: 640px) {
   .player-headshot-xl {
-    width: 96px;
-    height: 96px;
+    width: 72px;
+    height: 72px;
   }
 }
 </style>
