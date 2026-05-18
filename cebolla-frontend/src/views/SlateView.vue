@@ -27,13 +27,25 @@ const filteredGames = computed(() => {
   })
 })
 
-const today = new Date()
-const dateLong = today.toLocaleDateString('en-US', {
+// Derive the displayed date from the actual games being shown.
+// (At late hours when today's games are over and tomorrow's slate is loaded,
+// useSlate may return tomorrow's games — header should reflect what's actually shown.)
+const displayedDate = computed(() => {
+  if (games.value.length > 0 && games.value[0].game_date) {
+    // game_date comes as 'YYYY-MM-DD' from Supabase
+    // Parse explicitly to avoid timezone shifts
+    const [y, m, d] = games.value[0].game_date.split('-').map(Number)
+    return new Date(y, m - 1, d)
+  }
+  return new Date()
+})
+
+const dateLong = computed(() => displayedDate.value.toLocaleDateString('en-US', {
   weekday: 'long', month: 'long', day: 'numeric',
-})
-const dateShort = today.toLocaleDateString('en-US', {
+}))
+const dateShort = computed(() => displayedDate.value.toLocaleDateString('en-US', {
   weekday: 'short', month: 'short', day: 'numeric',
-})
+}))
 
 const lastUpdate = computed(() => {
   return new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
