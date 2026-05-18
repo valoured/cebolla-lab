@@ -2,10 +2,12 @@
 import { computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { formatLineupETA } from '../utils/timeHelpers.js'
+import { statColor, fmtStat } from '../utils/percentileColors.js'
+import { useStatcastBatters } from '../composables/useStatcast.js'
+import StatcastWindowToggle from './StatcastWindowToggle.vue'
 
 const props = defineProps({
   lineup:        { type: Array,  required: true },
-  batterStats:   { type: Object, required: true },
   odds:          { type: Object, required: true },
   bvp:           { type: Object, required: true },
   projections:   { type: Object, default: () => ({}) },
@@ -14,9 +16,30 @@ const props = defineProps({
   marketMode:    { type: String, default: 'hr' },
   gameId:        { type: Number, default: null },
   gameTimeUtc:   { type: String, default: null },
+  // batterStats prop now optional — used as fallback while Statcast loads,
+  // or for legacy callers that don't need window-switching.
+  batterStats:   { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['log-bet'])
 
+// ── Statcast fetch via composable ───────────────────────────────
+const playerIds = computed(() =>
+  props.lineup.map(l => l.player?.id).filter(Boolean)
+)
+const {
+  stats: statcastStats,
+  windowType,
+  setWindow,
+  loading: statcastLoading,
+} = useStatcastBatters(playerIds, 'l14')
+
+// Bound to the toggle's v-model
+const currentWindow = computed({
+  get: () => windowType.value,
+  set: (v) => setWindow(v),
+})
+
+// ── Helpers ─────────────────────────────────────────────────────
 function fmtAmerican(n) {
   if (n == null) return null
   return n > 0 ? `+${n}` : `${n}`
@@ -52,7 +75,6 @@ function hrPctTone(pct) {
 
 const lineupETA = computed(() => formatLineupETA(props.gameTimeUtc))
 
-// Edge formatting: returns pill class + display text
 function edgeDisplay(edge) {
   if (edge == null) return { text: '—', cls: 'text-fg-400' }
   const pct = edge * 100
@@ -66,11 +88,17 @@ function edgeDisplay(edge) {
   return { text: `${sign}${pct.toFixed(1)}%`, cls }
 }
 
+// ── Row construction ────────────────────────────────────────────
 const rows = computed(() => {
   return props.lineup.map(l => {
     const player = l.player
     if (!player) return null
-    const stats = props.batterStats[player.id] || {}
+
+    // Prefer Statcast row (window-aware); fall back to legacy prop if not yet loaded
+    const statcastRow = statcastStats.value[player.id]
+    const legacyStats = props.batterStats[player.id] || {}
+    const stats = statcastRow || legacyStats
+
     const o = getOdds(player.id)
     const proj = getProjection(player.id)
     const bvpRow = props.pitcherId
@@ -91,9 +119,10 @@ const rows = computed(() => {
       hr: stats.hr,
       hr_pct: hrPerPa,
       hits_per_pa: stats.hit_per_pa != null ? Number(stats.hit_per_pa) * 100 : null,
-      barrel_pct: stats.barrel_pct,
-      hard_hit_pct: stats.hard_hit_pct,
-      ev_avg: stats.ev_avg,
+      barrel_pct: stats.barrel_pct != null ? Number(stats.barrel_pct) : null,
+      hard_hit_pct: stats.hard_hit_pct != null ? Number(stats.hard_hit_pct) : null,
+      xba:  stats.xba  != null ? Number(stats.xba)  : null,
+      xslg: stats.xslg != null ? Number(stats.xslg) : null,
       odds: o,
       proj,
       bvp: bvpRow,
@@ -109,7 +138,8 @@ const isConfirmed = computed(() => {
 
 <template>
   <div class="bg-bg-50 border border-bg-200">
-    <div class="px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2">
+    <!-- Header row -->
+    <div class="px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2 flex-wrap">
       <div class="flex items-baseline gap-3">
         <span class="label-bracket text-signal-400">{{ teamLabel }}</span>
         <span class="display-text text-base text-fg-700">vs Pitcher</span>
@@ -124,6 +154,16 @@ const isConfirmed = computed(() => {
       </span>
     </div>
 
+    <!-- Statcast window toggle (only when there's a lineup to filter) -->
+    <div v-if="rows.length" class="px-4 py-2 border-b border-bg-200 flex items-center justify-between gap-3">
+      <span class="label-caps">Statcast Window</span>
+      <div class="flex items-center gap-2">
+        <span v-if="statcastLoading" class="label-caps !text-[8px] text-fg-400 italic">loading…</span>
+        <StatcastWindowToggle v-model="currentWindow" />
+      </div>
+    </div>
+
+    <!-- Empty state -->
     <div v-if="!rows.length" class="px-4 py-12 text-center">
       <div class="display-text text-lg text-fg-500 italic mb-1">No lineup yet</div>
       <p class="text-fg-500 text-xs">
@@ -136,6 +176,7 @@ const isConfirmed = computed(() => {
       </p>
     </div>
 
+    <!-- Table -->
     <div v-else class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
@@ -148,9 +189,10 @@ const isConfirmed = computed(() => {
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Proj%</th>
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Edge</th>
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">BvP HR/PA</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Brl%</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">HH%</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">EV</th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Hard-Hit % (exit velo ≥ 95 mph)">HH%</th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Barrel %">Brl%</th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Expected Slugging">xSLG</th>
+            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right" title="Expected Batting Average">xBA</th>
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-center w-10"></th>
           </tr>
         </thead>
@@ -215,7 +257,7 @@ const isConfirmed = computed(() => {
                 }}
               </span>
             </td>
-            <!-- Edge (real value when available) -->
+            <!-- Edge -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <template v-if="row.proj?.edge != null">
                 <span
@@ -237,27 +279,50 @@ const isConfirmed = computed(() => {
                 {{ marketMode === 'hr' ? 'no data' : 'pending' }}
               </span>
             </td>
+            <!-- BvP -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span v-if="row.bvp" class="display-num text-xs text-fg-600">
                 {{ row.bvp.hr }}/{{ row.bvp.pa }}
               </span>
               <span v-else class="display-num text-xs text-fg-400">—</span>
             </td>
+            <!-- HH% -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
-              <span class="display-num text-xs text-fg-600">
-                {{ row.barrel_pct != null ? Number(row.barrel_pct).toFixed(1) : '—' }}
+              <span
+                class="display-num text-xs"
+                :class="statColor(row.hard_hit_pct, 'hard_hit_pct', 'batter')"
+              >
+                {{ fmtStat(row.hard_hit_pct, 'hard_hit_pct') }}
               </span>
             </td>
+            <!-- Barrel% -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
-              <span class="display-num text-xs text-fg-600">
-                {{ row.hard_hit_pct != null ? Number(row.hard_hit_pct).toFixed(1) : '—' }}
+              <span
+                class="display-num text-xs"
+                :class="statColor(row.barrel_pct, 'barrel_pct', 'batter')"
+              >
+                {{ fmtStat(row.barrel_pct, 'barrel_pct') }}
               </span>
             </td>
+            <!-- xSLG -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
-              <span class="display-num text-xs text-fg-600">
-                {{ row.ev_avg != null ? Number(row.ev_avg).toFixed(1) : '—' }}
+              <span
+                class="display-num text-xs"
+                :class="statColor(row.xslg, 'xslg', 'batter')"
+              >
+                {{ fmtStat(row.xslg, 'xslg') }}
               </span>
             </td>
+            <!-- xBA -->
+            <td class="py-2 px-2 border-b border-bg-200/40 text-right">
+              <span
+                class="display-num text-xs"
+                :class="statColor(row.xba, 'xba', 'batter')"
+              >
+                {{ fmtStat(row.xba, 'xba') }}
+              </span>
+            </td>
+            <!-- Log button -->
             <td class="py-2 px-2 border-b border-bg-200/40 text-center">
               <button
                 @click="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode })"
@@ -273,7 +338,6 @@ const isConfirmed = computed(() => {
 </template>
 
 <style scoped>
-/* ── Player headshot: 24px circular, muted ── */
 .player-headshot {
   width: 24px;
   height: 24px;
