@@ -1,10 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useRealtimePulse } from '../composables/useRealtimePulse.js'
 
 const route = useRoute()
-const { isPulsing, lastPingAt } = useRealtimePulse()
+const { isPulsing } = useRealtimePulse()
 
 const navItems = [
   { name: 'slate',  label: 'Slate',    code: 'M.01' },
@@ -23,14 +23,11 @@ const now = computed(() => {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
 })
 
-// "5s ago" / "2m ago" — how long since last realtime event
-const sinceLastPing = computed(() => {
-  if (!lastPingAt.value) return 'idle'
-  const ms = Date.now() - lastPingAt.value
-  if (ms < 5000) return 'just now'
-  if (ms < 60000) return Math.floor(ms / 1000) + 's ago'
-  if (ms < 3600000) return Math.floor(ms / 60000) + 'm ago'
-  return Math.floor(ms / 3600000) + 'h ago'
+// Force the burst animation to retrigger each time isPulsing flips true.
+// Without this, CSS won't replay the keyframe if the class is already there.
+const burstKey = ref(0)
+watch(isPulsing, (v) => {
+  if (v) burstKey.value++
 })
 </script>
 
@@ -75,11 +72,10 @@ const sinceLastPing = computed(() => {
 
       <!-- Right side -->
       <div class="ml-auto flex items-center gap-6">
-        <!-- Live status: dot pulses on any realtime ping -->
-        <div class="hidden md:flex items-center gap-2" :title="'Last update: ' + sinceLastPing">
-          <span class="live-dot" :class="{ 'is-pulsing': isPulsing }"></span>
+        <!-- Live status: ambient pulse + burst on every realtime event -->
+        <div class="hidden md:flex items-center gap-2">
+          <span :key="burstKey" class="live-dot" :class="{ 'is-burst': isPulsing }"></span>
           <span class="label-caps">live</span>
-          <span class="label-bracket !text-[8px] text-fg-500">{{ sinceLastPing }}</span>
         </div>
         <div class="flex items-baseline gap-2">
           <span class="label-caps">UTC</span>
@@ -95,42 +91,42 @@ const sinceLastPing = computed(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: rgba(255, 42, 42, 0.35);
-  transition: background 0.2s, box-shadow 0.2s;
-}
-
-/* Slow ambient pulse when idle */
-.live-dot:not(.is-pulsing) {
+  background: rgba(255, 42, 42, 0.4);
   animation: ambient-pulse 3s ease-in-out infinite;
 }
 
-/* Burst pulse when data arrives */
-.live-dot.is-pulsing {
-  background: rgba(255, 42, 42, 1);
-  box-shadow: 0 0 0 3px rgba(255, 42, 42, 0.25),
-              0 0 12px rgba(255, 42, 42, 0.6);
+.live-dot.is-burst {
   animation: data-burst 1.5s ease-out;
+  background: rgba(255, 42, 42, 1);
 }
 
 @keyframes ambient-pulse {
-  0%, 100% { background: rgba(255, 42, 42, 0.35); }
-  50%      { background: rgba(255, 42, 42, 0.75); }
+  0%, 100% {
+    background: rgba(255, 42, 42, 0.35);
+    box-shadow: 0 0 0 0 rgba(255, 42, 42, 0);
+  }
+  50% {
+    background: rgba(255, 42, 42, 0.75);
+    box-shadow: 0 0 6px 1px rgba(255, 42, 42, 0.3);
+  }
 }
 
 @keyframes data-burst {
   0% {
     transform: scale(0.7);
-    box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.8);
+    box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.9);
+    background: rgba(255, 42, 42, 1);
   }
   40% {
-    transform: scale(1.2);
-    box-shadow: 0 0 0 6px rgba(255, 42, 42, 0.3),
-                0 0 18px rgba(255, 42, 42, 0.7);
+    transform: scale(1.35);
+    box-shadow: 0 0 0 7px rgba(255, 42, 42, 0.35),
+                0 0 22px rgba(255, 42, 42, 0.85);
+    background: rgba(255, 80, 80, 1);
   }
   100% {
     transform: scale(1);
-    box-shadow: 0 0 0 3px rgba(255, 42, 42, 0.25),
-                0 0 12px rgba(255, 42, 42, 0.6);
+    box-shadow: 0 0 6px 1px rgba(255, 42, 42, 0.3);
+    background: rgba(255, 42, 42, 0.6);
   }
 }
 </style>
