@@ -51,15 +51,31 @@ const windTone = computed(() => {
 
 const statusBadge = computed(() => {
   const s = (props.game.status || '').toLowerCase()
-  if (s.includes('progress')) return { text: 'live', color: 'text-signal-400 bg-signal-400/10' }
-  if (s.includes('final') || s.includes('game over')) return { text: 'final', color: 'text-fg-400 bg-bg-200/40' }
-  if (s.includes('pre')) return { text: 'soon', color: 'text-fg-500 bg-bg-200/40' }
+  if (s.includes('progress') || s.includes('manager challenge') || s.includes('replay')) {
+    return { text: 'live', color: 'text-signal-400 bg-signal-400/10' }
+  }
+  if (s.includes('delayed') || s.includes('suspended')) {
+    return { text: s.split(' ')[0].slice(0, 7), color: 'text-amber-400 bg-amber-400/10' }
+  }
+  if (s.includes('final') || s.includes('game over')) {
+    return { text: 'final', color: 'text-fg-400 bg-bg-200/40' }
+  }
+  if (s.includes('postpone') || s.includes('cancel')) {
+    return { text: 'ppd', color: 'text-fg-400 bg-bg-200/40' }
+  }
+  if (s.includes('pre') || s.includes('warmup')) {
+    return { text: 'soon', color: 'text-fg-500 bg-bg-200/40' }
+  }
   return null
 })
 
 const isLive = computed(() => {
   const s = (props.game.status || '').toLowerCase()
-  return s.includes('progress')
+  return s.includes('progress') ||
+         s.includes('manager challenge') ||
+         s.includes('replay') ||
+         s.includes('delayed') ||
+         s.includes('suspended')
 })
 
 const isFinal = computed(() => {

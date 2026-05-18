@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { useSlate } from '../composables/useSlate.js'
 import GameCard from '../components/GameCard.vue'
 
-const { games, loading, error } = useSlate()
+const { games, loading, error, activeDate } = useSlate()
 
 // Single active filter (null = show all)
 const activeFilter = ref(null)
@@ -27,13 +27,15 @@ const filteredGames = computed(() => {
   })
 })
 
-// Derive the displayed date from the actual games being shown.
-// (At late hours when today's games are over and tomorrow's slate is loaded,
-// useSlate may return tomorrow's games — header should reflect what's actually shown.)
+// Use the date useSlate decided to load.
+// (When no dateStr is passed, useSlate picks the next active slate's date
+// automatically. So this is correct even when today's games are all done.)
 const displayedDate = computed(() => {
+  if (activeDate.value) {
+    const [y, m, d] = activeDate.value.split('-').map(Number)
+    return new Date(y, m - 1, d)
+  }
   if (games.value.length > 0 && games.value[0].game_date) {
-    // game_date comes as 'YYYY-MM-DD' from Supabase
-    // Parse explicitly to avoid timezone shifts
     const [y, m, d] = games.value[0].game_date.split('-').map(Number)
     return new Date(y, m - 1, d)
   }
@@ -132,8 +134,14 @@ const filterChips = [
       </div>
 
       <div v-else-if="!games.length" class="text-center py-20">
-        <div class="display-text text-2xl text-fg-500 italic mb-2">Sin partidos</div>
-        <div class="text-fg-500 text-sm">No games today, or the slate hasn't loaded.</div>
+        <div class="display-text text-2xl text-fg-500 italic mb-3">Sin partidos activos</div>
+        <div class="text-fg-500 text-sm max-w-md mx-auto leading-relaxed">
+          No upcoming non-final games in the database.<br>
+          <span class="text-fg-400">The next slate will appear here as soon as MLB publishes it.</span>
+        </div>
+        <div class="label-bracket !text-[9px] text-fg-500 mt-6">
+          checked {{ lastUpdate }}
+        </div>
       </div>
 
       <div v-else-if="!filteredGames.length" class="text-center py-20">
