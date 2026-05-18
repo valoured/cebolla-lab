@@ -33,7 +33,7 @@ watch(isPulsing, (v) => {
   <header class="sticky top-0 z-50 bg-bg-0/95 backdrop-blur border-b border-bg-200">
     <!-- px-3 mobile / px-6 desktop. Gap collapses on mobile. -->
     <div class="px-3 sm:px-6 h-14 flex items-center gap-3 sm:gap-8">
-      <!-- Brand: logo + wordmark. Wordmark hides below sm. -->
+      <!-- Brand: icon + wordmark. Wordmark hides below sm to save mobile space. -->
       <router-link to="/" class="flex items-center gap-2 sm:gap-3 group shrink-0">
         <img
           src="/cebolla-icon-64-transparent.png"
@@ -42,10 +42,11 @@ watch(isPulsing, (v) => {
           width="28"
           height="28"
         />
-        <div class="hidden sm:flex flex-col leading-none">
-          <span class="display-text text-base text-fg-700 tracking-tight">cebolla</span>
-          <span class="label-bracket !text-[8px] mt-0.5 text-signal-400/80">lab v0.3</span>
-        </div>
+        <img
+          src="/cebolla-wordmark.png"
+          alt="Cebolla · Every Layer Reveals an Edge"
+          class="cebolla-wordmark-nav hidden sm:block"
+        />
       </router-link>
 
       <!-- Nav tabs -->
@@ -105,6 +106,19 @@ watch(isPulsing, (v) => {
   filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.7))
           drop-shadow(0 0 16px rgba(255, 42, 42, 0.25));
   transform: scale(1.06);
+}
+
+.cebolla-wordmark-nav {
+  /* Wordmark image is 4:1 (1024x254). At ~30px tall = ~120px wide. */
+  height: 30px;
+  width: auto;
+  filter: drop-shadow(0 0 4px rgba(255, 42, 42, 0.20));
+  transition: filter 0.3s ease;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.group:hover .cebolla-wordmark-nav {
+  filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.55));
 }
 
 .live-dot {
