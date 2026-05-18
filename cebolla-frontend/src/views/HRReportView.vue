@@ -9,6 +9,7 @@ import PitcherAllowedStats from '../components/PitcherAllowedStats.vue'
 import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
 import { formatGameTime, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
+import { teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
 
 // Tick to refresh countdowns every 30s
 const tickKey = ref(0)
@@ -50,6 +51,53 @@ const gameCountdown = computed(() => {
   if (mins == null) return null
   if (mins <= 0 || mins > 240) return null
   return formatCountdown(game.value?.game_time_utc)
+})
+
+// ── Team logos (matches SlateView GameCard treatment) ──
+const awayLogo = computed(() => teamLogoUrl(game.value?.away_team?.mlb_id))
+const homeLogo = computed(() => teamLogoUrl(game.value?.home_team?.mlb_id))
+
+// ── Live / final score display ──
+const isInProgress = computed(() => {
+  const s = (game.value?.status || '').toLowerCase()
+  return s.includes('progress') ||
+         s.includes('manager challenge') ||
+         s.includes('replay') ||
+         s.includes('delayed') ||
+         s.includes('suspended')
+})
+
+const isFinal = computed(() => {
+  const s = (game.value?.status || '').toLowerCase()
+  return s.includes('final') || s.includes('game over')
+})
+
+const showScores = computed(() => {
+  return (isInProgress.value || isFinal.value) &&
+         game.value?.away_score != null &&
+         game.value?.home_score != null
+})
+
+const awayScoreLeading = computed(() => {
+  if (!showScores.value) return false
+  return (game.value?.away_score || 0) > (game.value?.home_score || 0)
+})
+
+const homeScoreLeading = computed(() => {
+  if (!showScores.value) return false
+  return (game.value?.home_score || 0) > (game.value?.away_score || 0)
+})
+
+// ── Inning indicator when live ──
+const inningDisplay = computed(() => {
+  if (!isInProgress.value) return null
+  const inning = game.value?.current_inning
+  const state = (game.value?.inning_state || '').toLowerCase()
+  if (!inning) return null
+  const arrow = state.startsWith('top') ? '↑' :
+                state.startsWith('bot') ? '↓' :
+                state.startsWith('mid') ? '·' : ''
+  return `${arrow}${inning}`
 })
 
 const statusBadge = computed(() => {
@@ -113,14 +161,48 @@ const modelMeta = computed(() => {
                     class="label-bracket !text-[9px] opacity-60">model {{ modelMeta }}</span>
             </div>
             <!-- Teams + time/venue: row on desktop, wraps tighter on mobile -->
-            <div class="flex items-baseline gap-2 sm:gap-4 flex-wrap">
-              <h1 class="display-text text-3xl sm:text-4xl text-fg-800 tracking-tight leading-none">
-                {{ game.away_team?.abbrev }}
-                <span class="text-fg-400 italic mx-1">@</span>
-                {{ game.home_team?.abbrev }}
+            <div class="flex items-center gap-2 sm:gap-4 flex-wrap">
+              <h1 class="flex items-center gap-2 sm:gap-3 display-text text-3xl sm:text-4xl text-fg-800 tracking-tight leading-none">
+                <img
+                  v-if="awayLogo"
+                  :src="awayLogo"
+                  :alt="game.away_team?.abbrev"
+                  class="hr-team-logo"
+                  @error="hideOnError"
+                />
+                <span>{{ game.away_team?.abbrev }}</span>
+                <!-- Live/final scoreboard, or @ separator -->
+                <template v-if="showScores">
+                  <span
+                    class="display-num text-2xl sm:text-3xl mx-1 sm:mx-2"
+                    :class="awayScoreLeading ? 'text-fg-800' : 'text-fg-500'"
+                  >{{ game.away_score }}</span>
+                  <span class="text-fg-400 italic text-2xl sm:text-3xl">@</span>
+                  <span
+                    class="display-num text-2xl sm:text-3xl mx-1 sm:mx-2"
+                    :class="homeScoreLeading ? 'text-fg-800' : 'text-fg-500'"
+                  >{{ game.home_score }}</span>
+                </template>
+                <span v-else class="text-fg-400 italic mx-1">@</span>
+                <span>{{ game.home_team?.abbrev }}</span>
+                <img
+                  v-if="homeLogo"
+                  :src="homeLogo"
+                  :alt="game.home_team?.abbrev"
+                  class="hr-team-logo"
+                  @error="hideOnError"
+                />
               </h1>
+              <!-- Inning display when live -->
+              <span
+                v-if="inningDisplay"
+                class="label-bracket text-signal-400 !text-[11px] inline-flex items-center gap-1.5"
+              >
+                <span class="live-mini-pulse"></span>
+                {{ inningDisplay }}
+              </span>
               <span class="display-num text-sm text-fg-500">{{ gameTime }}</span>
-              <span v-if="gameCountdown" class="display-num text-xs text-signal-200">
+              <span v-if="gameCountdown && !showScores" class="display-num text-xs text-signal-200">
                 ({{ gameCountdown }})
               </span>
               <span class="label-caps">{{ game.venue }}</span>
@@ -311,3 +393,37 @@ const modelMeta = computed(() => {
     />
   </div>
 </template>
+
+<style scoped>
+/* Team logos in the HR Report header */
+.hr-team-logo {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: grayscale(0.12) brightness(1.05) contrast(1.05);
+  opacity: 0.95;
+  vertical-align: middle;
+}
+@media (min-width: 640px) {
+  .hr-team-logo {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Small pulsing dot next to inning display when live */
+.live-mini-pulse {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 42, 42, 0.9);
+  box-shadow: 0 0 6px rgba(255, 42, 42, 0.6);
+  animation: live-mini-blink 1.4s ease-in-out infinite;
+}
+@keyframes live-mini-blink {
+  0%, 100% { opacity: 0.6; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1.15); }
+}
+</style>

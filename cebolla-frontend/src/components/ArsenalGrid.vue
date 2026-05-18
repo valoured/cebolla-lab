@@ -1,10 +1,16 @@
 <script setup>
 import { computed } from 'vue'
+import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 
 const props = defineProps({
   pitcher: { type: Object, default: null },
   arsenal: { type: Array, default: () => [] },
   label:   { type: String, default: 'PITCHER' },
+})
+
+const pitcherHeadshot = computed(() => {
+  if (!props.pitcher?.mlbam_id) return null
+  return playerHeadshotUrl(props.pitcher.mlbam_id)
 })
 
 const pitchRows = computed(() => {
@@ -70,12 +76,26 @@ function hrTone(pct) {
 <template>
   <div>
     <!-- Header -->
-    <div class="px-3 sm:px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2">
-      <div class="flex items-baseline gap-2 sm:gap-3 min-w-0">
+    <div class="px-3 sm:px-4 py-3 border-b border-bg-200 flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2 sm:gap-3 min-w-0">
         <span class="label-bracket text-signal-400 shrink-0">{{ label }}</span>
-        <span v-if="pitcher" class="display-text text-sm sm:text-base text-fg-700 truncate">
-          {{ pitcher.name }}
-        </span>
+        <template v-if="pitcher">
+          <router-link
+            :to="{ name: 'player', params: { playerId: pitcher.id } }"
+            class="flex items-center gap-2 min-w-0 group hover:text-signal-400 transition"
+          >
+            <img
+              v-if="pitcherHeadshot"
+              :src="pitcherHeadshot"
+              :alt="pitcher.name"
+              class="pitcher-headshot"
+              @error="hideOnError"
+            />
+            <span class="display-text text-sm sm:text-base text-fg-700 group-hover:text-signal-400 truncate transition">
+              {{ pitcher.name }}
+            </span>
+          </router-link>
+        </template>
         <span v-else class="text-fg-500 text-sm italic">TBD</span>
       </div>
       <span v-if="pitcher?.throws" class="label-caps !text-[9px] shrink-0">
@@ -127,3 +147,22 @@ function hrTone(pct) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.pitcher-headshot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.04);
+  filter: grayscale(0.18) brightness(0.97);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: filter 0.2s, border-color 0.2s, transform 0.2s;
+}
+.group:hover .pitcher-headshot {
+  filter: grayscale(0) brightness(1.05);
+  border-color: rgba(255, 42, 42, 0.4);
+  transform: scale(1.05);
+}
+</style>
