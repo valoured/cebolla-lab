@@ -3,8 +3,17 @@ import { ref, computed } from 'vue'
 import { useSlate } from '../composables/useSlate.js'
 import GameCard from '../components/GameCard.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
+import DateNav from '../components/DateNav.vue'
 
-const { games, loading, error, activeDate } = useSlate()
+const {
+  games,
+  loading,
+  error,
+  activeDate,
+  availableDates,
+  targetDate,
+  setTargetDate,
+} = useSlate()
 
 const activeFilter = ref(null)
 
@@ -56,6 +65,10 @@ const filterChips = [
   { key: 'dome', label: 'Domes',     hint: 'No weather' },
   { key: 'live', label: 'Live',      hint: 'In progress' },
 ]
+
+// Show DateNav only when there's more than one option to pick from.
+// Otherwise it's just visual noise.
+const showDateNav = computed(() => (availableDates.value?.length || 0) > 1)
 </script>
 
 <template>
@@ -92,6 +105,16 @@ const filterChips = [
           </div>
         </div>
       </div>
+
+      <!-- Date nav: only shown when there's more than one slate date available -->
+      <DateNav
+        v-if="showDateNav"
+        :dates="availableDates"
+        :active-date="activeDate"
+        :target-date="targetDate"
+        @update:target-date="setTargetDate"
+        class="mb-4"
+      />
 
       <!-- Filter chips: wrap nicely on mobile -->
       <div class="flex items-center gap-2 flex-wrap">

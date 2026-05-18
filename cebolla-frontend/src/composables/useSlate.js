@@ -6,24 +6,36 @@ import { ping } from './useRealtimePulse.js'
  * Loads the active slate for display.
  *
  * Smart date selection:
- * - If `dateStr` is passed, uses that exact date
- * - Otherwise: picks the EARLIEST upcoming date that has at least one non-final game
- *   (so when today's slate is all over, the slate auto-advances to tomorrow's games)
+ * - If `initialDateStr` is passed at composition time, uses that exact date as the starting target.
+ * - Otherwise: auto-picks the EARLIEST upcoming date that has at least one non-final game
+ *   (so when today's slate is all over, the slate auto-advances to tomorrow's games).
+ *
+ * Multi-day nav:
+ * - `availableDates` is the list of distinct game_dates >= today found in the DB.
+ * - `setTargetDate(dateStr | null)` overrides the auto-pick. Pass `null` to return to auto mode.
+ * - `isAutoPicked` is true when no override is active (the date shown was chosen by the system).
  */
-export function useSlate(dateStr) {
+export function useSlate(initialDateStr) {
   const games = ref([])
   const loading = ref(true)
   const error = ref(null)
-  const activeDate = ref(null)   // 'YYYY-MM-DD' string of the date currently being shown
+  const activeDate = ref(null)         // 'YYYY-MM-DD' string of the date currently being shown
+  const availableDates = ref([])       // distinct upcoming game_dates in the DB
+  const targetDate = ref(initialDateStr || null)  // user override; null = auto-pick
 
   let reloadTimer = null
+  let datesReloadTimer = null
   let channel = null
+
+  function todayStr() {
+    return new Date().toISOString().slice(0, 10)
+  }
 
   // Step 1: figure out which date to load
   async function pickActiveDate() {
-    if (dateStr) return dateStr
+    if (targetDate.value) return targetDate.value
 
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayStr()
 
     // Find the earliest date >= today that has at least one non-final game
     const { data, error: e } = await supabase
@@ -41,12 +53,46 @@ export function useSlate(dateStr) {
     return data[0].game_date
   }
 
+  // Pull the list of upcoming distinct dates for the DateNav.
+  // We grab today + future, sorted ascending. Capped at 14 days out to keep it sane.
+  async function loadAvailableDates() {
+    const today = todayStr()
+    const { data, error: e } = await supabase
+      .from('games')
+      .select('game_date')
+      .gte('game_date', today)
+      .order('game_date', { ascending: true })
+
+    if (e || !data) {
+      availableDates.value = [today]
+      return
+    }
+
+    // distinct + cap
+    const seen = new Set()
+    const dates = []
+    for (const row of data) {
+      if (row.game_date && !seen.has(row.game_date)) {
+        seen.add(row.game_date)
+        dates.push(row.game_date)
+        if (dates.length >= 14) break
+      }
+    }
+
+    // Always make sure today is in the list, even if no games scheduled
+    if (!seen.has(today)) {
+      dates.unshift(today)
+    }
+
+    availableDates.value = dates
+  }
+
   async function load() {
     loading.value = true
     error.value = null
 
-    const targetDate = await pickActiveDate()
-    activeDate.value = targetDate
+    const dateToLoad = await pickActiveDate()
+    activeDate.value = dateToLoad
 
     const { data, error: dbErr } = await supabase
       .from('games')
@@ -73,7 +119,7 @@ export function useSlate(dateStr) {
         away_pitcher:players!games_away_pitcher_id_fkey ( id, name ),
         home_pitcher:players!games_home_pitcher_id_fkey ( id, name )
       `)
-      .eq('game_date', targetDate)
+      .eq('game_date', dateToLoad)
       .order('game_time_utc', { ascending: true })
 
     if (dbErr) {
@@ -85,6 +131,12 @@ export function useSlate(dateStr) {
     loading.value = false
   }
 
+  // Public setter for DateNav. Pass null to clear and return to auto-pick.
+  function setTargetDate(dateStr) {
+    targetDate.value = dateStr || null
+    load()
+  }
+
   // Debounced reload — batch bursts so we don't hammer the DB
   function scheduleReload() {
     if (reloadTimer) clearTimeout(reloadTimer)
@@ -94,14 +146,27 @@ export function useSlate(dateStr) {
     }, 1500)
   }
 
-  onMounted(() => {
-    load()
+  // Separate debounce for the dates list — it doesn't need to refresh as often
+  function scheduleDatesReload() {
+    if (datesReloadTimer) clearTimeout(datesReloadTimer)
+    datesReloadTimer = setTimeout(() => {
+      loadAvailableDates()
+    }, 5000)
+  }
+
+  onMounted(async () => {
+    // Load dates first so DateNav has something to render alongside the slate
+    await loadAvailableDates()
+    await load()
 
     channel = supabase
       .channel('slate-changes')
       .on('postgres_changes',
           { event: '*', schema: 'public', table: 'games' },
-          () => scheduleReload())
+          () => {
+            scheduleReload()
+            scheduleDatesReload()
+          })
       .on('postgres_changes',
           { event: '*', schema: 'public', table: 'projections' },
           () => scheduleReload())
@@ -110,8 +175,18 @@ export function useSlate(dateStr) {
 
   onUnmounted(() => {
     if (reloadTimer) clearTimeout(reloadTimer)
+    if (datesReloadTimer) clearTimeout(datesReloadTimer)
     if (channel) supabase.removeChannel(channel)
   })
 
-  return { games, loading, error, activeDate, reload: load }
+  return {
+    games,
+    loading,
+    error,
+    activeDate,
+    availableDates,
+    targetDate,        // exposed read-only-ish; mutate via setTargetDate
+    setTargetDate,
+    reload: load,
+  }
 }
