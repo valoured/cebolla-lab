@@ -33,12 +33,15 @@ watch(isPulsing, (v) => {
   <header class="sticky top-0 z-50 bg-bg-0/95 backdrop-blur border-b border-bg-200">
     <!-- px-3 mobile / px-6 desktop. Gap collapses on mobile. -->
     <div class="px-3 sm:px-6 h-14 flex items-center gap-3 sm:gap-8">
-      <!-- Brand: Red Onion. Text-stack hides at < 360px-ish but always shows from sm up. -->
+      <!-- Brand: logo + wordmark. Wordmark hides below sm. -->
       <router-link to="/" class="flex items-center gap-2 sm:gap-3 group shrink-0">
-        <span
-          class="text-2xl leading-none select-none transition-transform duration-500 group-hover:rotate-12 inline-block"
-          style="filter: hue-rotate(-40deg) saturate(2.5) brightness(1.05) drop-shadow(0 0 6px rgba(255,42,42,0.55));"
-        >🧅</span>
+        <img
+          src="/cebolla-icon-64-transparent.png"
+          alt="Cebolla"
+          class="cebolla-logo-nav"
+          width="28"
+          height="28"
+        />
         <div class="hidden sm:flex flex-col leading-none">
           <span class="display-text text-base text-fg-700 tracking-tight">cebolla</span>
           <span class="label-bracket !text-[8px] mt-0.5 text-signal-400/80">lab v0.3</span>
@@ -90,6 +93,20 @@ watch(isPulsing, (v) => {
 </template>
 
 <style scoped>
+.cebolla-logo-nav {
+  width: 28px;
+  height: 28px;
+  filter: drop-shadow(0 0 4px rgba(255, 42, 42, 0.25));
+  transition: filter 0.3s ease, transform 0.3s ease;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.group:hover .cebolla-logo-nav {
+  filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.7))
+          drop-shadow(0 0 16px rgba(255, 42, 42, 0.25));
+  transform: scale(1.06);
+}
+
 .live-dot {
   width: 8px;
   height: 8px;
