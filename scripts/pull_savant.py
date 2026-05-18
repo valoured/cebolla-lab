@@ -1,12 +1,13 @@
 """
 pull_savant.py — Pull batter season stats from Baseball Savant raw Statcast.
 
-Now also computes per-pitch-type batter performance for the
-`batter_stats.by_pitch_type` JSONB column — needed for the Phase 4
-arsenal-weighted projection model.
+PHASE 7 (FanGraphs replication):
+- Adds xBA, xSLG, xwOBA, sweet_spot_pct, ev_max columns
+- Computes 4 rolling windows: season, l30, l14, l7
+- Season window keeps vs-hand splits AND by_pitch_type breakdown
+- Rolling windows (L30/L14/L7) write a single 'A' (all) row each — no splits
 
-Strategy: one big Statcast pull → groupby batter for season totals →
-groupby (batter, pitch_type) for per-pitch breakdown.
+Strategy: one big Statcast pull → groupby batter for each window.
 
 Runs twice daily via GitHub Actions.
 """
@@ -14,7 +15,7 @@ Runs twice daily via GitHub Actions.
 import os
 import sys
 import logging
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 
 import pandas as pd
 from supabase import create_client
@@ -32,13 +33,23 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 CURRENT_SEASON = 2026
 SEASON_START = f"{CURRENT_SEASON}-03-15"
 
+# Rolling windows in days. None = full season.
+WINDOWS = [
+    ("season", None),
+    ("l30", 30),
+    ("l14", 14),
+    ("l7",  7),
+]
+
+# Minimum PAs we'll bother writing for a non-season window. Below this it's noise.
+MIN_PA_FOR_WINDOW = 5
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
 
-# Pitch type normalization (Statcast 'pitch_type' code → our label)
 PITCH_TYPE_MAP = {
     "FF": "4SM", "FA": "4SM",
     "SI": "SI",  "FT": "SI",
@@ -80,17 +91,31 @@ def fetch_all_statcast() -> pd.DataFrame | None:
             log.warning("Empty Statcast response")
             return None
         log.info("  Got %d pitches", len(df))
+        # Coerce game_date once for window filtering
+        if "game_date" in df.columns:
+            df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
         return df
     except Exception as e:
         log.exception("Statcast pull failed: %s", e)
         return None
 
 
-def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str,
-                     by_pitch: dict | None = None) -> dict:
-    """Aggregate one batter's pitches into season totals. Includes by_pitch_type JSON."""
+def aggregate_batter(group: pd.DataFrame,
+                     batter_id: int,
+                     vs_hand: str,
+                     window_type: str,
+                     window_start: date | None,
+                     window_end: date,
+                     by_pitch: dict | None = None) -> dict | None:
+    """
+    Aggregate one batter's pitches into a stats row.
+    Returns None if the sample is too small to be meaningful for a non-season window.
+    """
     pa_rows = group[group["events"].notna()]
     pa = len(pa_rows)
+
+    if window_type != "season" and pa < MIN_PA_FOR_WINDOW:
+        return None
 
     non_ab_events = {
         "walk", "hit_by_pitch", "sac_fly", "sac_bunt",
@@ -117,25 +142,32 @@ def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str,
     iso = (slg - avg) if (slg is not None and avg is not None) else None
 
     bip = group[group["type"] == "X"] if "type" in group.columns else group.iloc[0:0]
+    bbe = int(len(bip))
 
+    # ── Barrel% ──
     barrel_pct = None
-    if not bip.empty and "launch_speed_angle" in bip.columns:
+    if not bip.empty and "launch_speed_angle" in bip.columns and bbe > 0:
         barrels = (bip["launch_speed_angle"] == 6).sum()
-        if len(bip):
-            barrel_pct = barrels / len(bip) * 100
+        barrel_pct = barrels / bbe * 100
 
-    hh_pct = ev_avg = la_avg = None
+    # ── EV / LA / Hard-Hit / Sweet Spot ──
+    hh_pct = ev_avg = ev_max = la_avg = sweet_spot_pct = None
     if not bip.empty and "launch_speed" in bip.columns:
         ev_clean = bip["launch_speed"].dropna()
         if len(ev_clean):
             hh = (ev_clean >= 95).sum()
             hh_pct = hh / len(ev_clean) * 100
             ev_avg = float(ev_clean.mean())
+            ev_max = float(ev_clean.max())
         if "launch_angle" in bip.columns:
             la_clean = bip["launch_angle"].dropna()
             if len(la_clean):
                 la_avg = float(la_clean.mean())
+                # Sweet spot = launch_angle 8-32 degrees, per MLB Statcast definition
+                sweet_balls = la_clean.between(8, 32).sum()
+                sweet_spot_pct = sweet_balls / len(la_clean) * 100
 
+    # ── Pull% ──
     pull_pct = None
     if not bip.empty and "hc_x" in bip.columns and "stand" in bip.columns:
         bip_clean = bip.dropna(subset=["hc_x", "stand"])
@@ -146,10 +178,27 @@ def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str,
             ]
             pull_pct = len(pulled) / len(bip_clean) * 100
 
-    return {
+    # ── xStats (mean of Statcast estimated metrics across the window) ──
+    # These columns exist for every batted ball with sufficient data.
+    xba = xslg = xwoba = None
+    if not bip.empty:
+        if "estimated_ba_using_speedangle" in bip.columns:
+            xba_clean = bip["estimated_ba_using_speedangle"].dropna()
+            if len(xba_clean):
+                xba = float(xba_clean.mean())
+        if "estimated_slg_using_speedangle" in bip.columns:
+            xslg_clean = bip["estimated_slg_using_speedangle"].dropna()
+            if len(xslg_clean):
+                xslg = float(xslg_clean.mean())
+        if "estimated_woba_using_speedangle" in bip.columns:
+            xwoba_clean = bip["estimated_woba_using_speedangle"].dropna()
+            if len(xwoba_clean):
+                xwoba = float(xwoba_clean.mean())
+
+    row = {
         "batter_id": batter_id,
         "season": CURRENT_SEASON,
-        "window_type": "season",
+        "window_type": window_type,
         "vs_hand": vs_hand,
         "pa": int(pa),
         "ab": int(ab),
@@ -161,22 +210,27 @@ def aggregate_batter(group: pd.DataFrame, batter_id: int, vs_hand: str,
         "iso": round(iso, 3) if iso is not None else None,
         "hr_per_pa": round(hr / pa, 4) if pa > 0 else None,
         "hit_per_pa": round(hits / pa, 4) if pa > 0 else None,
-        "barrel_pct": round(barrel_pct, 2) if barrel_pct is not None else None,
-        "hard_hit_pct": round(hh_pct, 2) if hh_pct is not None else None,
-        "ev_avg": round(ev_avg, 1) if ev_avg is not None else None,
-        "la_avg": round(la_avg, 1) if la_avg is not None else None,
-        "pull_pct": round(pull_pct, 2) if pull_pct is not None else None,
-        "by_pitch_type": by_pitch,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "barrel_pct":     round(barrel_pct, 2)     if barrel_pct     is not None else None,
+        "hard_hit_pct":   round(hh_pct, 2)         if hh_pct         is not None else None,
+        "sweet_spot_pct": round(sweet_spot_pct, 2) if sweet_spot_pct is not None else None,
+        "ev_avg":         round(ev_avg, 1)         if ev_avg         is not None else None,
+        "ev_max":         round(ev_max, 1)         if ev_max         is not None else None,
+        "la_avg":         round(la_avg, 1)         if la_avg         is not None else None,
+        "pull_pct":       round(pull_pct, 2)       if pull_pct       is not None else None,
+        "xba":            round(xba, 3)            if xba            is not None else None,
+        "xslg":           round(xslg, 3)           if xslg           is not None else None,
+        "xwoba":          round(xwoba, 3)          if xwoba          is not None else None,
+        "bbe":            bbe,
+        "by_pitch_type":  by_pitch,
+        "window_start":   window_start.isoformat() if window_start else None,
+        "window_end":     window_end.isoformat(),
+        "updated_at":     datetime.now(timezone.utc).isoformat(),
     }
+    return row
 
 
 def aggregate_by_pitch_type(group: pd.DataFrame) -> dict:
-    """
-    Group one batter's pitches by pitch_type and compute key metrics.
-    Returns {pitch_label: {pa, hr, hr_pct, ev_avg, brl_pct}}.
-    Pitch labels match our pitcher_arsenals table.
-    """
+    """Per-pitch-type breakdown for the season window. Unchanged from before."""
     if "pitch_type" not in group.columns or group.empty:
         return {}
 
@@ -191,7 +245,7 @@ def aggregate_by_pitch_type(group: pd.DataFrame) -> dict:
         pa_rows = sub[sub["events"].notna()]
         pa = int(len(pa_rows))
         if pa < 5:
-            continue  # too few PAs to be meaningful
+            continue
 
         hr = int((pa_rows["events"] == "home_run").sum())
         bip = sub[sub["type"] == "X"] if "type" in sub.columns else sub.iloc[0:0]
@@ -244,8 +298,17 @@ def lookup_player_name(mlbam_id: int) -> str:
     return f"Player {mlbam_id}"
 
 
+def filter_window(df: pd.DataFrame, days: int | None, today: date) -> tuple[pd.DataFrame, date | None]:
+    """Return (filtered_df, window_start_date)."""
+    if days is None or "game_date" not in df.columns:
+        return df, None
+    cutoff = today - timedelta(days=days)
+    cutoff_ts = pd.Timestamp(cutoff)
+    return df[df["game_date"] >= cutoff_ts], cutoff
+
+
 def main():
-    log.info("🧅 Cebolla Lab — Savant batter sync starting (with pitch-type breakdown)")
+    log.info("🧅 Cebolla Lab — Savant batter sync starting (Phase 7: 4 windows + xStats)")
 
     df = fetch_all_statcast()
     if df is None:
@@ -258,16 +321,27 @@ def main():
         log.error("Statcast data missing 'batter' column")
         sys.exit(1)
 
+    today_date = date.today()
     batter_ids = df["batter"].dropna().unique()
     log.info("Found %d unique batters in season Statcast", len(batter_ids))
-
-    by_batter = df.groupby("batter", sort=False)
-    by_batter_hand = df.groupby(["batter", "p_throws"], sort=False) \
-        if "p_throws" in df.columns else None
 
     rows = []
     new_count = 0
     processed = 0
+    skipped_windows = 0
+
+    # Pre-group season data once
+    df_season = df  # already covers full season
+    by_batter_season = df_season.groupby("batter", sort=False)
+    by_batter_hand_season = df_season.groupby(["batter", "p_throws"], sort=False) \
+        if "p_throws" in df_season.columns else None
+
+    # Pre-compute the windowed dataframes once for all batters
+    window_data = []
+    for window_type, days in WINDOWS:
+        sub, w_start = filter_window(df, days, today_date)
+        by_batter_window = sub.groupby("batter", sort=False)
+        window_data.append((window_type, days, w_start, by_batter_window))
 
     for batter_mlbam in batter_ids:
         try:
@@ -283,37 +357,48 @@ def main():
             known[batter_mlbam_int] = player_id
             new_count += 1
 
-        group_all = by_batter.get_group(batter_mlbam)
-
-        # by_pitch_type breakdown (used for arsenal-weighted projection)
-        by_pitch = aggregate_by_pitch_type(group_all)
-
-        # Season totals vs ALL pitchers
-        rows.append(aggregate_batter(group_all, player_id, "A", by_pitch=by_pitch))
-
-        # Splits vs L and R
-        if by_batter_hand is not None:
+        for window_type, days, w_start, grouped in window_data:
             try:
-                group_l = by_batter_hand.get_group((batter_mlbam, "L"))
-                if len(group_l) >= 10:
-                    by_pitch_l = aggregate_by_pitch_type(group_l)
-                    rows.append(aggregate_batter(group_l, player_id, "L", by_pitch=by_pitch_l))
+                group = grouped.get_group(batter_mlbam)
             except KeyError:
-                pass
-            try:
-                group_r = by_batter_hand.get_group((batter_mlbam, "R"))
-                if len(group_r) >= 10:
-                    by_pitch_r = aggregate_by_pitch_type(group_r)
-                    rows.append(aggregate_batter(group_r, player_id, "R", by_pitch=by_pitch_r))
-            except KeyError:
-                pass
+                continue
+
+            if window_type == "season":
+                # Season: vs-hand splits + by_pitch_type
+                by_pitch = aggregate_by_pitch_type(group)
+                row = aggregate_batter(group, player_id, "A", "season",
+                                        w_start, today_date, by_pitch=by_pitch)
+                if row:
+                    rows.append(row)
+
+                if by_batter_hand_season is not None:
+                    for hand in ("L", "R"):
+                        try:
+                            sub = by_batter_hand_season.get_group((batter_mlbam, hand))
+                            if len(sub) >= 10:
+                                by_pitch_h = aggregate_by_pitch_type(sub)
+                                row_h = aggregate_batter(sub, player_id, hand, "season",
+                                                          w_start, today_date,
+                                                          by_pitch=by_pitch_h)
+                                if row_h:
+                                    rows.append(row_h)
+                        except KeyError:
+                            pass
+            else:
+                # Rolling windows: single A row, no by_pitch
+                row = aggregate_batter(group, player_id, "A", window_type,
+                                        w_start, today_date, by_pitch=None)
+                if row:
+                    rows.append(row)
+                else:
+                    skipped_windows += 1
 
         processed += 1
         if processed % 100 == 0:
             log.info("  Processed %d / %d batters…", processed, len(batter_ids))
 
-    log.info("Prepared %d batter stat rows (%d new batter records)",
-             len(rows), new_count)
+    log.info("Prepared %d rows (%d new batter records, %d window rows skipped for small samples)",
+             len(rows), new_count, skipped_windows)
 
     written = 0
     for i in range(0, len(rows), 100):
@@ -326,7 +411,7 @@ def main():
         if i % 500 == 0:
             log.info("  Wrote %d / %d", written, len(rows))
 
-    log.info("✓ Wrote %d total", written)
+    log.info("✓ Wrote %d total rows", written)
     log.info("🧅 Savant batter sync complete")
 
 
