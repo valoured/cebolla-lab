@@ -70,21 +70,20 @@ export function useGame(gameId) {
         arsenalHome.value = (ars || []).filter(a => a.pitcher_id === g.home_pitcher?.id)
       }
 
-      // 4) Batter stats
+      // 4) Batter stats — REMOVED in Phase 7
+      //
+      // BatterTable now fetches its own Statcast via useStatcastBatters
+      // composable for window-aware (Season / L30 / L14 / L7) data.
+      // Keeping batterStats fetch here would have caused duplicate queries.
+      //
+      // If a future view needs batter season stats outside of BatterTable,
+      // consider extracting useStatcastBatters or building a small
+      // useBatterSeasonStats helper instead.
+
+      // Player IDs are still needed for odds / BvP / projections queries below.
       const batterIds = [...awayLineup.value, ...homeLineup.value]
         .map(l => l.player?.id)
         .filter(Boolean)
-      if (batterIds.length) {
-        const { data: bs } = await supabase
-          .from('batter_stats')
-          .select('*')
-          .in('batter_id', batterIds)
-          .eq('window_type', 'season')
-          .eq('vs_hand', 'A')
-        const map = {}
-        for (const r of (bs || [])) map[r.batter_id] = r
-        batterStats.value = map
-      }
 
       // 5) Odds (latest snapshot per player+market)
       if (batterIds.length) {
