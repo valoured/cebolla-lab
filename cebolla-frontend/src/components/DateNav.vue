@@ -42,7 +42,6 @@ const pills = computed(() => {
     const d = parseLocalDate(dateStr)
     const isToday    = dateStr === today
     const isActive   = dateStr === props.activeDate
-    const isAuto     = isActive && !props.targetDate
 
     // Day-of-week relative label: TODAY / TMRW / WED
     let topLabel
@@ -59,7 +58,6 @@ const pills = computed(() => {
       bottomLabel,
       isToday,
       isActive,
-      isAuto,
     }
   })
 })
@@ -108,11 +106,6 @@ const showClear = computed(() => !!props.targetDate)
           {{ pill.topLabel }}
         </span>
         <span class="date-pill__bottom">{{ pill.bottomLabel }}</span>
-        <span
-          v-if="pill.isAuto"
-          class="date-pill__auto"
-          title="Auto-picked: earliest date with a non-final game"
-        >auto</span>
       </button>
     </div>
   </div>
@@ -182,20 +175,6 @@ const showClear = computed(() => !!props.targetDate)
 }
 .date-pill--active .date-pill__top {
   opacity: 1;
-}
-
-.date-pill__auto {
-  position: absolute;
-  top: -7px;
-  right: 4px;
-  font-size: 8px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 1px 4px;
-  background: var(--bg-0, #08080A);
-  border: 1px solid rgba(255, 42, 42, 0.45);
-  color: #FF6B6B;
-  line-height: 1;
 }
 
 @media (max-width: 640px) {
