@@ -27,7 +27,25 @@ MLB_API = "https://statsapi.mlb.com/api/v1"
 
 
 def get_today_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """
+    Return today's date as ET (America/New_York), not UTC.
+
+    MLB's schedule API takes a date param and returns games with that
+    officialDate. The official date follows the team's local clock, with ET
+    being a reasonable proxy for "the baseball day" — games in PT can run
+    until ~1 AM ET but still count as the same baseball day.
+
+    Using UTC here would miss late-night Pacific games or pick up tomorrow's
+    games when the cron runs after 8 PM ET.
+    """
+    from datetime import timedelta
+    # ET is UTC-4 during DST (summer), UTC-5 standard time.
+    # Approximate by using UTC-5 as a baseline that works year-round —
+    # the only edge case is between midnight ET and 5 AM UTC, which is
+    # ~7 PM-12 AM ET, where we'd still want yesterday's games.
+    # Using UTC-5 (EST) as a conservative offset handles this.
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    return et_now.strftime("%Y-%m-%d")
 
 
 def fetch_schedule(date_str: str) -> list[dict]:
@@ -91,9 +109,26 @@ def process_game(game: dict) -> dict | None:
             home_pp["id"], home_pp["fullName"], home_team_id
         )
 
+    # CRITICAL: use officialDate, NOT gameDate[:10].
+    #
+    # gameDate is a UTC timestamp; slicing the first 10 chars gives the UTC
+    # calendar date, which is WRONG for West Coast night games (their start
+    # time falls after midnight UTC but they belong to the previous calendar
+    # day per MLB and per common sense).
+    #
+    # officialDate is MLB's authoritative single-date assignment for the game
+    # and always returns the correct value (e.g. a 9:40 PM PT game in San Diego
+    # has officialDate=2026-05-18 even though gameDate is 2026-05-19T04:40:00Z).
+    #
+    # Falls back to gameDate slice only if officialDate is missing (shouldn't
+    # happen but be defensive).
+    official_date = game.get("officialDate")
+    if not official_date:
+        official_date = game["gameDate"][:10]
+
     return {
         "mlb_game_pk": game["gamePk"],
-        "game_date": game["gameDate"][:10],
+        "game_date": official_date,
         "game_time_utc": game["gameDate"],
         "away_team_id": away_team_id,
         "home_team_id": home_team_id,
@@ -106,23 +141,43 @@ def process_game(game: dict) -> dict | None:
 
 
 def main():
-    date_str = get_today_iso()
-    print(f"🧅 Cebolla Lab — pulling schedule for {date_str}")
+    """
+    Pull a 3-day window centered on today.
 
-    games = fetch_schedule(date_str)
-    print(f"   Found {len(games)} games")
+    Why 3 days: handles UTC <-> local-time edge cases.
+    - "Today" by our reckoning is yesterday or tomorrow depending on cron time.
+    - West Coast night games span the UTC date line.
+    - This way we ALWAYS have the next 24-36 hours of games loaded, regardless
+      of when the cron fires.
 
-    rows = []
-    for g in games:
-        row = process_game(g)
-        if row:
-            rows.append(row)
+    officialDate handles the day-assignment correctly; we just need to make
+    sure we fetch all relevant days.
+    """
+    from datetime import timedelta as _td
 
-    if rows:
-        sb.table("games").upsert(rows, on_conflict="mlb_game_pk").execute()
-        print(f"   ✓ Upserted {len(rows)} games")
+    today_et = datetime.now(timezone.utc) - _td(hours=4)
+    dates_to_pull = [
+        (today_et - _td(days=1)).strftime("%Y-%m-%d"),
+        today_et.strftime("%Y-%m-%d"),
+        (today_et + _td(days=1)).strftime("%Y-%m-%d"),
+    ]
+
+    print(f"🧅 Cebolla Lab — pulling schedule for {dates_to_pull}")
+
+    all_rows = []
+    for date_str in dates_to_pull:
+        games = fetch_schedule(date_str)
+        print(f"   {date_str}: {len(games)} games from MLB")
+        for g in games:
+            row = process_game(g)
+            if row:
+                all_rows.append(row)
+
+    if all_rows:
+        sb.table("games").upsert(all_rows, on_conflict="mlb_game_pk").execute()
+        print(f"   ✓ Upserted {len(all_rows)} games across {len(dates_to_pull)} dates")
     else:
-        print("   (no games today)")
+        print("   (no games found in window)")
 
 
 if __name__ == "__main__":

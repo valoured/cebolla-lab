@@ -73,10 +73,23 @@ def get_team_map() -> dict[int, int]:
 
 
 def get_todays_games() -> list[dict]:
-    today = date.today().isoformat()
+    """
+    Fetch games whose official baseball date is today OR tomorrow in ET.
+
+    Rationale: same as pull_schedule.py — we want to cover the full slate
+    regardless of when the cron fires. A 9:40 PM PT game has officialDate
+    of today even though its game_time_utc is tomorrow.
+
+    Using ET-relative "today" instead of UTC "today" so the window matches
+    MLB's officialDate logic.
+    """
+    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
+    today_et = et_now.date().isoformat()
+    tomorrow_et = (et_now + timedelta(days=1)).date().isoformat()
+
     res = sb.table("games").select(
-        "id, mlb_game_pk, away_team_id, home_team_id"
-    ).eq("game_date", today).execute()
+        "id, mlb_game_pk, away_team_id, home_team_id, game_date"
+    ).in_("game_date", [today_et, tomorrow_et]).execute()
     return res.data
 
 
