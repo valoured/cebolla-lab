@@ -34,6 +34,17 @@ const popupRef = ref(null)
 const buttonRef = ref(null)
 const popupPosition = ref('top') // resolved position
 
+// Touch-device detection. On touch devices, mouseenter/mouseleave events
+// fire alongside click events from a single tap, causing the popup to
+// open-close-open in a "twitch" loop. We disable hover handlers entirely
+// on touch and rely purely on tap-to-toggle + tap-outside-to-close.
+const isTouchDevice = ref(false)
+onMounted(() => {
+  isTouchDevice.value =
+    'ontouchstart' in window ||
+    (navigator.maxTouchPoints && navigator.maxTouchPoints > 0)
+})
+
 const entry = computed(() => {
   if (!props.term) return null
   return glossary[props.term] || null
@@ -64,6 +75,16 @@ function toggle() {
   isOpen.value ? close() : open()
 }
 
+// Hover handlers — desktop only, disabled on touch devices
+function handleHoverOpen() {
+  if (isTouchDevice.value) return
+  open()
+}
+function handleHoverClose() {
+  if (isTouchDevice.value) return
+  close()
+}
+
 function handleClickOutside(e) {
   if (!isOpen.value) return
   if (popupRef.value?.contains(e.target)) return
@@ -91,8 +112,8 @@ onUnmounted(() => {
       ref="buttonRef"
       type="button"
       @click.stop="toggle"
-      @mouseenter="open"
-      @mouseleave="close"
+      @mouseenter="handleHoverOpen"
+      @mouseleave="handleHoverClose"
       class="info-icon"
       :class="size === 'md' ? 'info-icon-md' : 'info-icon-sm'"
       :aria-label="entry?.label ? `What is ${entry.label}?` : 'More info'"
@@ -105,8 +126,8 @@ onUnmounted(() => {
         class="tt-popup"
         :class="popupPosition === 'top' ? 'tt-popup-top' : 'tt-popup-bottom'"
         @click.stop
-        @mouseenter="open"
-        @mouseleave="close"
+        @mouseenter="handleHoverOpen"
+        @mouseleave="handleHoverClose"
       >
         <slot name="content">
           <template v-if="entry">
