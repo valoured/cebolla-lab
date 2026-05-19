@@ -5,7 +5,9 @@ PHASE 7 (FanGraphs replication):
 - Adds xBA, xSLG, xwOBA, sweet_spot_pct, ev_max columns
 - Computes 4 rolling windows: season, l30, l14, l7
 - Season window keeps vs-hand splits AND by_pitch_type breakdown
-- Rolling windows (L30/L14/L7) write a single 'A' (all) row each — no splits
+- Rolling windows (L30/L14/L7) write a single 'A' (all) row each, with their
+  own by_pitch_type breakdown so the UI can switch windows on the pitch table.
+  No vs-hand splits on rolling windows — sample too small to be reliable.
 
 Strategy: one big Statcast pull → groupby batter for each window.
 
@@ -545,9 +547,12 @@ def main():
                         except KeyError:
                             pass
             else:
-                # Rolling windows: single A row, no by_pitch
+                # Rolling windows: single A row.
+                # Pitch-type breakdown is now written for these too so the
+                # PlayerView pitch table can switch between Season/L30/L14/L7.
+                by_pitch_w = aggregate_by_pitch_type(group)
                 row = aggregate_batter(group, player_id, "A", window_type,
-                                        w_start, today_date, by_pitch=None)
+                                        w_start, today_date, by_pitch=by_pitch_w)
                 if row:
                     rows.append(row)
                 else:

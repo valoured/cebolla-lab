@@ -30,6 +30,7 @@ import { formatGameTime, formatCountdown } from '../utils/timeHelpers.js'
 import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
 import PitcherDeepDive from '../components/PitcherDeepDive.vue'
+import StatcastWindowToggle from '../components/StatcastWindowToggle.vue'
 
 /**
  * Hi-res MLB headshot URL builder. We override mlbImages.js's default
@@ -316,12 +317,26 @@ const season = computed(() => {
 })
 
 // ── Pitch type breakdown ───────────────────────────────────────
-// season.by_pitch_type is a JSONB object like:
+// Each window's row has a by_pitch_type JSONB column shaped like:
 // { "4SM": {pa, hr, hr_pct, ev_avg, brl_pct}, "SL": {...}, ... }
-const pitchBreakdown = computed(() => {
-  const bp = season.value?.by_pitch_type
-  if (!bp || typeof bp !== 'object') return []
+//
+// We support a user-selectable window with auto-fallback: if the chosen
+// window has no qualifying pitches, we walk up to larger windows until
+// we find data. This handles early-season cases and players returning
+// from IL where L7 has nothing but L30 has plenty.
 
+const pitchWindow = ref('l14')  // user-selected window for the pitch table
+
+// Fallback order: try requested window first, then walk to larger ones.
+const PITCH_WINDOW_FALLBACK = {
+  l7:     ['l7', 'l14', 'l30', 'season'],
+  l14:    ['l14', 'l30', 'season'],
+  l30:    ['l30', 'season'],
+  season: ['season'],
+}
+
+function buildPitchRows(bp) {
+  if (!bp || typeof bp !== 'object') return []
   return Object.entries(bp)
     .map(([code, stats]) => ({
       pitch: code,
@@ -333,7 +348,33 @@ const pitchBreakdown = computed(() => {
     }))
     .filter(p => p.pa && p.pa >= 5)
     .sort((a, b) => (b.pa || 0) - (a.pa || 0))
+}
+
+// Returns { rows, effectiveWindow, fellBack }
+// - effectiveWindow: the window we actually used (may differ from request)
+// - fellBack: true if effectiveWindow !== requested
+const pitchBreakdownResult = computed(() => {
+  const requested = pitchWindow.value
+  const order = PITCH_WINDOW_FALLBACK[requested] || ['season']
+
+  for (const wt of order) {
+    const w = windows.value.find(x => x.window_type === wt)
+    if (!w) continue
+    const rows = buildPitchRows(w.by_pitch_type)
+    if (rows.length > 0) {
+      return {
+        rows,
+        effectiveWindow: wt,
+        fellBack: wt !== requested,
+      }
+    }
+  }
+
+  return { rows: [], effectiveWindow: requested, fellBack: false }
 })
+
+// Convenience for the existing template references
+const pitchBreakdown = computed(() => pitchBreakdownResult.value.rows)
 
 // ── Helpers ────────────────────────────────────────────────────
 function fmtSeasonStat(value, kind) {
@@ -731,9 +772,16 @@ function hrPctTone(pct) {
       <section v-if="pitchBreakdown.length" class="px-4 sm:px-6 py-4 pb-8">
         <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
           <h2 class="label-bracket text-signal-400">pitch-type breakdown</h2>
-          <span class="label-caps !text-[8px] opacity-70">
-            season only · rolling-window breakdowns coming soon
-          </span>
+          <div class="flex items-baseline gap-3 flex-wrap">
+            <span
+              v-if="pitchBreakdownResult.fellBack"
+              class="label-caps !text-[8px] text-amber-300"
+              :title="`No qualifying pitches in ${pitchWindow.toUpperCase()} — falling back to ${pitchBreakdownResult.effectiveWindow.toUpperCase()}`"
+            >
+              ↳ showing {{ pitchBreakdownResult.effectiveWindow.toUpperCase() }}
+            </span>
+            <StatcastWindowToggle v-model="pitchWindow" />
+          </div>
         </div>
 
         <div class="bg-bg-50 border border-bg-200 overflow-x-auto">
@@ -782,12 +830,13 @@ function hrPctTone(pct) {
 
       <!-- Empty state for pitch breakdown -->
       <section v-else-if="season" class="px-4 sm:px-6 py-4 pb-8">
-        <div class="flex items-baseline justify-between mb-3">
+        <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
           <h2 class="label-bracket text-signal-400">pitch-type breakdown</h2>
+          <StatcastWindowToggle v-model="pitchWindow" />
         </div>
         <div class="bg-bg-50 border border-bg-200 px-4 py-6 text-center">
           <div class="text-fg-500 text-xs italic">
-            Not enough at-bats yet to break down by pitch type.
+            Not enough at-bats in {{ pitchWindow.toUpperCase() }} to break down by pitch type.
           </div>
         </div>
       </section>
