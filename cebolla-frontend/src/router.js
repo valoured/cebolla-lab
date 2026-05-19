@@ -28,6 +28,12 @@ const routes = [
     component: () => import('./views/BetTrackerView.vue'),
     meta: { title: 'Bet Log · Cebolla Lab' },
   },
+  {
+    path: '/methodology',
+    name: 'methodology',
+    component: () => import('./views/MethodologyView.vue'),
+    meta: { title: 'Methodology · Cebolla Lab' },
+  },
   // Fallback → slate
   {
     path: '/:pathMatch(.*)*',

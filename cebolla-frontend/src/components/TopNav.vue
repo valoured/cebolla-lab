@@ -7,8 +7,9 @@ const route = useRoute()
 const { isPulsing } = useRealtimePulse()
 
 const navItems = [
-  { name: 'slate',  label: 'Slate',    code: 'M.01' },
-  { name: 'bets',   label: 'Bet Log',  code: 'M.02' },
+  { name: 'slate',        label: 'Slate',        code: 'M.01' },
+  { name: 'bets',         label: 'Bet Log',      code: 'M.02' },
+  { name: 'methodology',  label: 'Methodology',  code: 'M.03' },
 ]
 
 function isActive(name) {
