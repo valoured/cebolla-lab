@@ -54,7 +54,13 @@ if not (SUPABASE_URL and SUPABASE_KEY):
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HR_MARKET = "hr_anytime"
-MIN_PROJECTED_PROB = 0.30
+# Projection floor: a batter must have at least this projected HR probability
+# to qualify for POD consideration. Empirically calibrated against the actual
+# distribution of HR projections — typical slates produce ~8-12 batters above
+# 20% projected_prob, giving the combined-score logic a real candidate pool to
+# rank within. Higher floors (25%+) produce too few candidates on weaker slates;
+# lower floors (15%-) dilute the bar past "this is plausibly going to happen."
+MIN_PROJECTED_PROB = 0.20
 
 # Contact-score constants — keep in sync with useContactScore.js
 CONTACT_MIN_PA = 20

@@ -602,7 +602,7 @@ function scrollTo(id) {
           <p class="text-fg-600 text-sm leading-relaxed mt-4 mb-3">
             <span class="text-fg-700">Play of the Day (POD):</span>
             The daily public-scoreboard pick is the highest-combined-score HR
-            prop in the slate, gated by <span class="text-fg-700">projected_prob ≥ 30%</span>
+            prop in the slate, gated by <span class="text-fg-700">projected_prob ≥ 20%</span>
             so we don't pick wild longshots. The pick locks at ~10:30 AM ET
             after the morning projections run, and settles automatically
             after games end. The combined score AND contact score at lock

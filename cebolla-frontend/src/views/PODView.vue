@@ -3,11 +3,12 @@
  * PODView.vue — Cebolla's Play of the Day scoreboard.
  *
  * What this is:
- *   Every day, the model algorithmically picks ONE bet — the highest-edge
- *   HR prop with projected win probability >= 30%. That pick is locked
- *   BEFORE first pitch (cron at 10:13 AM ET via pick_pod.py). After
- *   games finish, it's settled. The cumulative P&L of every settled
- *   POD is the public scoreboard for "is this model actually good."
+ *   Every day, the model algorithmically picks ONE bet — the HR prop with
+ *   the highest combined score (normalized edge × normalized contact), gated
+ *   to picks with projected_prob >= 20%. That pick is locked BEFORE first
+ *   pitch (cron at 10:13 AM ET via pick_pod.py). After games finish, it's
+ *   settled. The cumulative P&L of every settled POD is the public scoreboard
+ *   for "is this model actually good."
  *
  * Stake interpretation:
  *   The DB stores a canonical $10 stake for every POD. This page lets
@@ -234,9 +235,10 @@ function marketLabel(m) {
           <span class="label-bracket text-signal-400">M.02</span>
         </div>
         <p class="text-fg-500 text-xs mt-2 max-w-2xl">
-          Every morning, Cebolla automatically picks one HR prop — the highest-edge bet
-          with a projected win probability of at least 30%. Locked in before first pitch,
-          settled after games end. This is the public scoreboard.
+          Every morning, Cebolla automatically picks one HR prop — the bet with the highest
+          combined edge × contact score, gated to picks with at least a 20% projected win
+          probability. Locked in before first pitch, settled after games end. This is the
+          public scoreboard.
         </p>
       </header>
 
