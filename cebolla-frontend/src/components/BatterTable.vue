@@ -268,7 +268,12 @@ const badgeLabel = computed(() => {
         ↺ showing last-known lineup
       </span>
       <span class="text-fg-500 text-[10px]">
-        Official lineup typically posts <span class="text-fg-700">~3:40 PM ET</span>
+        <template v-if="lineupETA">
+          Official lineup typically posts <span class="text-fg-700">~{{ lineupETA }}</span>
+        </template>
+        <template v-else>
+          Official lineup typically posts ~3 hours before first pitch
+        </template>
       </span>
     </div>
 
