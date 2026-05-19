@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
 import { formatGameTimeShort, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
 import { useFavorites } from '../composables/useFavorites.js'
+import WindGauge from './WindGauge.vue'
 
 const { isTeamFav } = useFavorites()
 
@@ -253,8 +254,24 @@ const favTeamPlaying = computed(() => {
           </div>
           <div class="flex flex-col min-w-0">
             <span class="label-caps !text-[10px]">Wind</span>
-            <span class="display-num text-base mt-1.5 leading-tight truncate" :class="windTone" :title="windDisplay">
-              {{ windDisplay }}
+            <!-- Gauge on top (visual direction + mph). wind_label text below
+                 as the human-readable caption ("out to CF", "cross", etc).
+                 If dome, both adapt: gauge dims and shows 'x', label says 'dome'. -->
+            <div class="mt-1.5">
+              <WindGauge
+                :team-abbrev="game.home_team?.abbrev"
+                :wind-dir-deg="game.wind_dir_deg"
+                :wind-mph="game.wind_mph"
+                :is-dome="game.wind_label === 'dome'"
+              />
+            </div>
+            <span
+              v-if="game.wind_label && game.wind_label !== 'dome'"
+              class="label-caps !text-[9px] mt-1.5 truncate"
+              :class="windTone"
+              :title="windDisplay"
+            >
+              {{ game.wind_label }}
             </span>
           </div>
         </div>
