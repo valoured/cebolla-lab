@@ -46,6 +46,8 @@ const WINDOW_LABEL = {
 const windows = ref([])           // pitcher_stats rows, one per window_type
 const arsenal = ref([])           // pitcher_arsenals rows (season, both stances)
 const tonightGame = ref(null)     // { game, opponentTeam, isHomePitcher }
+const tonightLineup = ref([])     // opposing lineup rows for tonight's start
+const tonightBatterStats = ref({}) // {player_id: l14 batter_stats row}
 const loading = ref(true)
 const error = ref(null)
 
@@ -127,6 +129,40 @@ async function loadTonightStart() {
     opponentTeam,
     isHomePitcher,
   }
+
+  // Load the opposing lineup for tonight's start so we can build the
+  // "vs tonight's lineup" weighted arsenal view. Opposing team = whoever
+  // isn't ours. If the game lineup hasn't been posted yet, this may
+  // return an empty array or last_known fallback rows (tagged accordingly).
+  const opposingTeamId = isHomePitcher ? g.away_team_id : g.home_team_id
+  const { data: lineupRows } = await supabase
+    .from('lineups')
+    .select(`
+      id, batting_order, position, bats, is_confirmed, source, player_id,
+      player:players ( id, mlbam_id, name, bats, position )
+    `)
+    .eq('game_id', g.id)
+    .eq('team_id', opposingTeamId)
+    .order('batting_order', { ascending: true })
+
+  tonightLineup.value = lineupRows || []
+
+  // Fetch L14 batter_stats for each batter in the lineup in one batch.
+  const batterIds = (lineupRows || [])
+    .map(l => l.player?.id ?? l.player_id)
+    .filter(Boolean)
+  if (batterIds.length) {
+    const { data: bStats } = await supabase
+      .from('batter_stats')
+      .select('*')
+      .in('batter_id', batterIds)
+      .eq('season', CURRENT_SEASON)
+      .eq('window_type', 'l14')
+      .eq('vs_hand', 'A')
+    const map = {}
+    for (const r of (bStats || [])) map[r.batter_id] = r
+    tonightBatterStats.value = map
+  }
 }
 
 onMounted(load)
@@ -137,6 +173,8 @@ watch(() => props.player?.id, (newId, oldId) => {
     windows.value = []
     arsenal.value = []
     tonightGame.value = null
+    tonightLineup.value = []
+    tonightBatterStats.value = {}
     load()
   }
 })
@@ -256,6 +294,120 @@ function whiffTone(pct) {
   if (pct >= 20) return 'text-fg-600'
   return 'text-edge-cold-1'
 }
+
+// ── Tonight's lineup analysis ──────────────────────────────────
+// Builds the data the "vs Tonight" view needs:
+//   - lineupBatters:        enriched lineup rows with L14 stats
+//   - lineupHandSplit:      { L, R, total, mix } — count of each stance + L/R fractions
+//   - lineupSource:         'confirmed' | 'last_known' | 'projected' (for the badge)
+//   - concentratedHotCount: # of batters with elite-band Brl% in L14
+//   - weightedPitch(p):     enriches a pitch row with stance-mix-weighted composite stats
+
+// Switch hitters are credited to whichever side gives the pitcher the
+// platoon disadvantage — i.e. a switch hitter always bats with the
+// platoon advantage. This is the worst-case for the pitcher and what
+// you should plan for when card-building.
+function effectiveBatterHand(batter, pitcherThrows) {
+  const b = (batter.bats || '').toUpperCase()
+  if (b === 'S') {
+    return pitcherThrows === 'L' ? 'R' : 'L'
+  }
+  return b === 'L' || b === 'R' ? b : null
+}
+
+const lineupBatters = computed(() => {
+  return tonightLineup.value
+    .map(l => {
+      const p = l.player || {}
+      const stats = tonightBatterStats.value[p.id ?? l.player_id] || null
+      return {
+        lineupId: l.id,
+        player_id: p.id ?? l.player_id,
+        mlbam_id: p.mlbam_id,
+        name: p.name || '(unknown)',
+        batting_order: l.batting_order,
+        position: l.position || p.position,
+        bats: l.bats || p.bats,
+        is_confirmed: l.is_confirmed,
+        source: l.source,
+        stats,
+      }
+    })
+    .filter(b => b.player_id)
+})
+
+const lineupHandSplit = computed(() => {
+  const pitcherThrows = props.player?.throws || 'R'
+  let L = 0, R = 0
+  for (const b of lineupBatters.value) {
+    const hand = effectiveBatterHand(b, pitcherThrows)
+    if (hand === 'L') L++
+    else if (hand === 'R') R++
+  }
+  const total = L + R
+  return {
+    L, R, total,
+    mixL: total ? L / total : 0,
+    mixR: total ? R / total : 0,
+  }
+})
+
+const lineupSource = computed(() => {
+  if (!lineupBatters.value.length) return null
+  if (lineupBatters.value.every(b => b.is_confirmed)) return 'confirmed'
+  const sources = new Set(lineupBatters.value.map(b => b.source).filter(Boolean))
+  if (sources.has('last_known')) return 'last_known'
+  return 'projected'
+})
+
+// Hot-batter concentration: L14 Brl% ≥ 9% is the elite band per
+// percentileColors.js batter thresholds. ≥3 in a lineup fires the flag.
+const HOT_BRL_THRESHOLD = 9
+const HOT_LINEUP_FLAG_MIN = 3
+
+const concentratedHotBatters = computed(() => {
+  return lineupBatters.value.filter(b =>
+    b.stats?.barrel_pct != null && Number(b.stats.barrel_pct) >= HOT_BRL_THRESHOLD
+  )
+})
+
+const isHotLineup = computed(() =>
+  concentratedHotBatters.value.length >= HOT_LINEUP_FLAG_MIN
+)
+
+// Weighted composite: for a given pitch row {vsL, vsR}, compute the
+// stance-mix-weighted version of a stat. Returns null if neither side
+// has data. Falls back gracefully when only one side has data.
+function weightedStat(pitchRow, statKey) {
+  const split = lineupHandSplit.value
+  if (split.total === 0) return null
+  const vL = pitchRow.vsL?.[statKey]
+  const vR = pitchRow.vsR?.[statKey]
+  // If one side is missing, just return the other (we don't pretend the
+  // missing side equals zero — that would skew badly).
+  if (vL == null && vR == null) return null
+  if (vL == null) return vR != null ? Number(vR) : null
+  if (vR == null) return vL != null ? Number(vL) : null
+  return Number(vL) * split.mixL + Number(vR) * split.mixR
+}
+
+// Pre-enriched per-pitch row with weighted composites for the columns
+// we want in the "vs Tonight" view. Computed once so the template
+// doesn't recompute for each cell.
+const pitchTableTonight = computed(() => {
+  if (!lineupHandSplit.value.total) return []
+  return pitchTable.value.map(p => ({
+    ...p,
+    tonight_usage:     weightedStat(p, 'usage_pct'),
+    tonight_brl:       weightedStat(p, 'barrel_pct'),
+    tonight_hh:        weightedStat(p, 'hard_hit_pct'),
+    tonight_whf:       weightedStat(p, 'whiff_pct'),
+  }))
+})
+
+const hasTonightView = computed(() =>
+  tonightGame.value && lineupBatters.value.length > 0 && lineupHandSplit.value.total > 0
+)
 
 // ── Helpers ────────────────────────────────────────────────────
 function fmtSeasonStat(value, kind) {
@@ -632,6 +784,182 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
       </div>
     </section>
 
+    <!-- ── VS TONIGHT'S LINEUP ──────────────────────────── -->
+    <section v-if="hasTonightView" class="px-4 sm:px-6 py-4 border-b border-bg-200">
+      <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+        <h2 class="label-bracket text-signal-400">
+          vs tonight · {{ tonightGame.opponentTeam?.abbrev || 'opp' }} lineup
+        </h2>
+        <div class="flex items-baseline gap-2 flex-wrap">
+          <span
+            v-if="isHotLineup"
+            class="hot-lineup-flag"
+            :title="`${concentratedHotBatters.length} batters with L14 Brl% ≥ ${HOT_BRL_THRESHOLD}%`"
+          >🔥 {{ concentratedHotBatters.length }} hot bats</span>
+          <span
+            v-if="lineupSource === 'last_known'"
+            class="!text-[8px] px-1.5 py-0.5 rounded-sm text-amber-300 bg-amber-500/10 label-caps"
+          >projected · last lineup</span>
+          <span
+            v-else-if="lineupSource === 'confirmed'"
+            class="!text-[8px] px-1.5 py-0.5 rounded-sm text-signal-400 bg-signal-400/10 label-caps"
+          >confirmed</span>
+          <span
+            v-else-if="lineupSource === 'projected'"
+            class="!text-[8px] px-1.5 py-0.5 rounded-sm text-fg-500 bg-bg-200/60 label-caps"
+          >projected</span>
+        </div>
+      </div>
+
+      <!-- Hand-split summary strip -->
+      <div class="bg-bg-50 border border-bg-200 px-3 py-2 mb-3 flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-3 sm:gap-5">
+          <div>
+            <div class="label-caps !text-[8px]">vs LHB</div>
+            <div class="display-num text-base text-fg-700 mt-0.5 leading-none">
+              {{ lineupHandSplit.L }}<span class="text-fg-500 text-xs">/{{ lineupHandSplit.total }}</span>
+            </div>
+          </div>
+          <div class="w-px h-7 bg-bg-200"></div>
+          <div>
+            <div class="label-caps !text-[8px]">vs RHB</div>
+            <div class="display-num text-base text-fg-700 mt-0.5 leading-none">
+              {{ lineupHandSplit.R }}<span class="text-fg-500 text-xs">/{{ lineupHandSplit.total }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="label-caps !text-[8px] opacity-70 text-right max-w-[180px]">
+          stats below weight each pitch by the L/R mix in tonight's lineup
+        </div>
+      </div>
+
+      <!-- Weighted composite arsenal table -->
+      <div v-if="pitchTableTonight.length" class="bg-bg-50 border border-bg-200">
+        <!-- column headers -->
+        <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_44px_44px_44px] gap-1.5 border-b border-bg-200/60">
+          <span class="label-caps !text-[8px]">Pitch</span>
+          <span class="label-caps !text-[8px]">Usage</span>
+          <span class="label-caps !text-[8px] text-right">Brl%</span>
+          <span class="label-caps !text-[8px] text-right">HH%</span>
+          <span class="label-caps !text-[8px] text-right">Whf%</span>
+        </div>
+
+        <div
+          v-for="p in pitchTableTonight"
+          :key="`tonight-${p.pitch_type}`"
+          class="px-3 py-1.5 grid grid-cols-[44px_1fr_44px_44px_44px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
+        >
+          <span class="display-num text-xs text-fg-700 font-medium">{{ p.pitch_type }}</span>
+
+          <div class="flex items-center gap-2 min-w-0">
+            <div class="flex-1 h-1.5 bg-bg-200 relative overflow-hidden">
+              <div
+                class="absolute inset-y-0 left-0 bg-signal-400/70"
+                :style="{ width: `${Math.min(p.tonight_usage || 0, 100)}%` }"
+              ></div>
+            </div>
+            <span class="display-num text-[10px] text-fg-500 w-8 text-right">
+              {{ p.tonight_usage != null ? p.tonight_usage.toFixed(0) + '%' : '—' }}
+            </span>
+          </div>
+
+          <span
+            class="display-num text-[11px] text-right"
+            :class="statColor(p.tonight_brl, 'barrel_pct', 'pitcher')"
+          >
+            {{ p.tonight_brl != null ? p.tonight_brl.toFixed(1) : '—' }}
+          </span>
+          <span
+            class="display-num text-[11px] text-right"
+            :class="statColor(p.tonight_hh, 'hard_hit_pct', 'pitcher')"
+          >
+            {{ p.tonight_hh != null ? p.tonight_hh.toFixed(0) : '—' }}
+          </span>
+          <span
+            class="display-num text-[11px] text-right"
+            :class="whiffTone(p.tonight_whf)"
+          >
+            {{ p.tonight_whf != null ? p.tonight_whf.toFixed(0) : '—' }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Opposing lineup roster strip -->
+      <div class="mt-4">
+        <div class="label-bracket text-fg-500 mb-2 inline-flex">opposing lineup · L14</div>
+        <div class="bg-bg-50 border border-bg-200 overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left">
+                <th class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200 w-8">#</th>
+                <th class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200">Batter</th>
+                <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-center w-8">B</th>
+                <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">PA</th>
+                <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Brl%</th>
+                <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">HH%</th>
+                <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">xSLG</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="b in lineupBatters"
+                :key="b.lineupId"
+                class="group hover:bg-bg-100/50 transition-colors"
+                :class="{ 'is-hot': b.stats?.barrel_pct != null && Number(b.stats.barrel_pct) >= HOT_BRL_THRESHOLD }"
+              >
+                <td class="py-2 px-3 border-b border-bg-200/40 display-num text-xs text-fg-500">
+                  {{ b.batting_order }}
+                </td>
+                <td class="py-2 px-3 border-b border-bg-200/40">
+                  <router-link
+                    :to="{ name: 'player', params: { playerId: b.player_id } }"
+                    class="text-fg-700 text-sm group-hover:text-signal-200 transition inline-flex items-center gap-1.5"
+                  >
+                    <span>{{ b.name }}</span>
+                    <span v-if="b.position" class="font-mono text-[9px] text-fg-500">·{{ b.position }}</span>
+                  </router-link>
+                </td>
+                <td class="py-2 px-2 border-b border-bg-200/40 text-center font-mono text-[10px] text-fg-500">
+                  {{ b.bats || '?' }}
+                </td>
+                <td class="py-2 px-2 border-b border-bg-200/40 text-right display-num text-xs text-fg-700">
+                  {{ b.stats?.pa ?? '—' }}
+                </td>
+                <td
+                  class="py-2 px-2 border-b border-bg-200/40 text-right display-num text-xs"
+                  :class="statColor(b.stats?.barrel_pct, 'barrel_pct', 'batter')"
+                >
+                  {{ b.stats?.barrel_pct != null ? Number(b.stats.barrel_pct).toFixed(1) : '—' }}
+                </td>
+                <td
+                  class="py-2 px-2 border-b border-bg-200/40 text-right display-num text-xs"
+                  :class="statColor(b.stats?.hard_hit_pct, 'hard_hit_pct', 'batter')"
+                >
+                  {{ b.stats?.hard_hit_pct != null ? Number(b.stats.hard_hit_pct).toFixed(0) : '—' }}
+                </td>
+                <td
+                  class="py-2 px-2 border-b border-bg-200/40 text-right display-num text-xs"
+                  :class="statColor(b.stats?.xslg, 'xslg', 'batter')"
+                >
+                  {{ b.stats?.xslg != null ? fmtStat(b.stats.xslg, 'xslg') : '—' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="mt-3 flex items-center gap-3 flex-wrap text-fg-500">
+        <span class="label-caps !text-[8px]">
+          Pitch row · stance-mix weighted (pitcher context)
+        </span>
+        <span class="label-caps !text-[8px]">
+          Switch hitters credited to pitcher's platoon disadvantage
+        </span>
+      </div>
+    </section>
+
     <!-- ── ARSENAL empty state ──────────────────────────── -->
     <section v-else class="px-4 sm:px-6 py-4 pb-8">
       <div class="flex items-baseline justify-between mb-3">
@@ -666,3 +994,32 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Hot-lineup flag — pulses subtly to draw the eye but stays restrained */
+.hot-lineup-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  color: #FF6B35;
+  background: rgba(255, 107, 53, 0.10);
+  border: 1px solid rgba(255, 107, 53, 0.40);
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* Row-level highlight for hot batters in the opposing-lineup table.
+   Subtle red-tinted background so they pop without overpowering the
+   stat-color cells they contain. */
+tr.is-hot {
+  background: rgba(255, 42, 42, 0.04);
+}
+tr.is-hot:hover {
+  background: rgba(255, 42, 42, 0.08);
+}
+</style>
