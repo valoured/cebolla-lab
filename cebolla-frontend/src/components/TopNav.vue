@@ -75,17 +75,19 @@ function openSearch() {
       </nav>
 
       <!-- Right side -->
-      <div class="ml-auto flex items-center gap-3 sm:gap-6">
-        <!-- Search trigger -->
+      <div class="ml-auto flex items-center gap-2 sm:gap-6">
+        <!-- Search trigger.
+             Mobile: just the magnifying glass icon, no Ctrl+K hint (no keyboard).
+             Desktop (sm+): icon + Ctrl+K hint. -->
         <button
           type="button"
           @click="openSearch"
           class="search-trigger"
           aria-label="Search players and teams"
-          title="Search players and teams (Ctrl+K)"
+          title="Search players and teams"
         >
           <span class="search-trigger-icon" aria-hidden="true">⌕</span>
-          <span class="search-trigger-hint hidden md:inline">
+          <span class="search-trigger-hint hidden sm:inline">
             <kbd>Ctrl</kbd><kbd>K</kbd>
           </span>
         </button>
@@ -110,7 +112,8 @@ function openSearch() {
             :class="{ 'is-burst': isPulsing }"
           />
         </div>
-        <div class="flex items-baseline gap-1.5 sm:gap-2">
+        <!-- UTC clock: hidden on mobile (phone already shows time in status bar). -->
+        <div class="hidden sm:flex items-baseline gap-1.5 sm:gap-2">
           <span class="label-caps">UTC</span>
           <span class="display-num text-xs text-fg-600">{{ now }}</span>
         </div>
@@ -120,12 +123,13 @@ function openSearch() {
 </template>
 
 <style scoped>
-/* Search trigger — a thin slot button next to the live indicator. */
+/* Search trigger — a thin slot button next to the live indicator.
+   Compact icon-only target on mobile; expands to icon + Ctrl+K hint at sm+. */
 .search-trigger {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  padding: 6px 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.02);
   color: rgba(255, 255, 255, 0.55);
@@ -133,6 +137,14 @@ function openSearch() {
   transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
   font-family: 'JetBrains Mono', monospace;
   line-height: 1;
+  min-width: 32px;
+  justify-content: center;
+}
+@media (min-width: 640px) {
+  .search-trigger {
+    padding: 4px 10px;
+    min-width: 0;
+  }
 }
 .search-trigger:hover {
   border-color: rgba(255, 42, 42, 0.50);
@@ -140,11 +152,16 @@ function openSearch() {
   background: rgba(255, 42, 42, 0.06);
 }
 .search-trigger-icon {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   line-height: 1;
   display: inline-block;
   transform: translateY(-1px);
+}
+@media (min-width: 640px) {
+  .search-trigger-icon {
+    font-size: 14px;
+  }
 }
 .search-trigger-hint {
   display: inline-flex;
