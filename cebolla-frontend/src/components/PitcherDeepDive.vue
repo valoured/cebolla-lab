@@ -257,17 +257,6 @@ function whiffTone(pct) {
   return 'text-edge-cold-1'
 }
 
-// Tone for krash rating — 0-100, lower = pitch is getting hit hard. The
-// schema comment says "lower = pitcher gets hit hard." So high = good
-// pitcher, low = juicy target for hitters.
-function krashTone(rating) {
-  if (rating == null) return 'text-fg-500'
-  if (rating >= 70) return 'text-signal-400'
-  if (rating >= 55) return 'text-signal-200'
-  if (rating >= 40) return 'text-fg-600'
-  return 'text-edge-cold-1'
-}
-
 // ── Helpers ────────────────────────────────────────────────────
 function fmtSeasonStat(value, kind) {
   if (value == null) return '—'
@@ -515,20 +504,19 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
           </div>
 
           <!-- column headers -->
-          <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 border-b border-bg-200/60">
+          <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px] gap-1.5 border-b border-bg-200/60">
             <span class="label-caps !text-[8px]">Pitch</span>
             <span class="label-caps !text-[8px]">Usage</span>
             <span class="label-caps !text-[8px] text-right">Velo</span>
             <span class="label-caps !text-[8px] text-right">Brl%</span>
             <span class="label-caps !text-[8px] text-right">HH%</span>
             <span class="label-caps !text-[8px] text-right">Whf%</span>
-            <span class="label-caps !text-[8px] text-right">Krash</span>
           </div>
 
           <div
             v-for="p in pitchTable"
             :key="`l-${p.pitch_type}`"
-            class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
+            class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
           >
             <span class="display-num text-xs text-fg-700 font-medium">{{ p.pitch_type }}</span>
 
@@ -567,12 +555,6 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
             >
               {{ p.vsL?.whiff_pct != null ? p.vsL.whiff_pct.toFixed(0) : '—' }}
             </span>
-            <span
-              class="display-num text-[11px] text-right"
-              :class="krashTone(p.vsL?.krash_rating)"
-            >
-              {{ p.vsL?.krash_rating != null ? p.vsL.krash_rating : '—' }}
-            </span>
           </div>
         </div>
 
@@ -585,20 +567,19 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
             </span>
           </div>
 
-          <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 border-b border-bg-200/60">
+          <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px] gap-1.5 border-b border-bg-200/60">
             <span class="label-caps !text-[8px]">Pitch</span>
             <span class="label-caps !text-[8px]">Usage</span>
             <span class="label-caps !text-[8px] text-right">Velo</span>
             <span class="label-caps !text-[8px] text-right">Brl%</span>
             <span class="label-caps !text-[8px] text-right">HH%</span>
             <span class="label-caps !text-[8px] text-right">Whf%</span>
-            <span class="label-caps !text-[8px] text-right">Krash</span>
           </div>
 
           <div
             v-for="p in pitchTable"
             :key="`r-${p.pitch_type}`"
-            class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
+            class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
           >
             <span class="display-num text-xs text-fg-700 font-medium">{{ p.pitch_type }}</span>
 
@@ -636,12 +617,6 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
             >
               {{ p.vsR?.whiff_pct != null ? p.vsR.whiff_pct.toFixed(0) : '—' }}
             </span>
-            <span
-              class="display-num text-[11px] text-right"
-              :class="krashTone(p.vsR?.krash_rating)"
-            >
-              {{ p.vsR?.krash_rating != null ? p.vsR.krash_rating : '—' }}
-            </span>
           </div>
         </div>
       </div>
@@ -652,7 +627,7 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
           Brl% / HH% color · pitcher context (red = elite suppressing)
         </span>
         <span class="label-caps !text-[8px]">
-          Whf% / Krash · higher = better for pitcher
+          Whf% · higher = better for pitcher
         </span>
       </div>
     </section>
