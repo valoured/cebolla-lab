@@ -38,6 +38,7 @@ const CURRENT_SEASON = new Date().getFullYear()
 // All consumers share the same pool. Initialized lazily by first call to
 // loadPool(). Subsequent calls reuse the cached pool until refresh().
 let _poolPromise = null
+let _lastFetchedAt = null         // ms timestamp of last successful fetch
 const _l14Pool = ref(null)        // { barrel_pct: [...], hard_hit_pct: [...], xslg: [...] }
 const _seasonRowsById = ref(new Map())  // for season scores in trend calc
 
@@ -74,6 +75,7 @@ async function fetchPool() {
     if (row && row.batter_id != null) seasonMap.set(row.batter_id, row)
   }
   _seasonRowsById.value = seasonMap
+  _lastFetchedAt = Date.now()
 }
 
 async function loadPool() {
@@ -106,6 +108,15 @@ export function refreshContactPool() {
  *
  *   // For a single batter (l14 stats object from useStatcastBatters):
  *   const { score, trend } = getSnapshot(batterId, l14Stats)
+ *
+ * Auto-refresh policy:
+ *   - First call fetches the pool (~500 rows).
+ *   - Subsequent useContactPool() instances in the same session reuse the
+ *     module-level cache (instant).
+ *   - When the user returns to the tab after being away (visibilitychange),
+ *     the pool is invalidated and re-fetched on next access. This keeps
+ *     scores fresh through the day as pull_savant.py and compute_projections
+ *     update the underlying batter_stats table.
  */
 export function useContactPool() {
   const loadError = ref(null)
@@ -118,6 +129,30 @@ export function useContactPool() {
       console.error('[useContactPool] failed to load pool:', e)
       loadError.value = e.message || 'pool load failed'
     })
+
+  // Refresh on tab focus — handles the case where the user leaves the app
+  // open for hours and the underlying batter_stats refreshes (e.g. after
+  // the 2:13 AM ET pull_savant run). Cheap: ~500-row re-fetch, only when
+  // user actively returns.
+  //
+  // We attach the listener once per useContactPool call. Multiple components
+  // calling useContactPool will each attach a listener but they all share
+  // the same module-level _poolPromise, so only ONE re-fetch happens per
+  // visibility event regardless of listener count.
+  if (typeof document !== 'undefined') {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && _l14Pool.value) {
+        // Only re-fetch if data is at least 5 minutes old. Avoids thrashing
+        // when user is tabbing between this and another tab rapidly.
+        const ageMs = Date.now() - (_lastFetchedAt || 0)
+        if (ageMs > 5 * 60 * 1000) {
+          refreshContactPool()
+          loadPool().then(() => { ready.value = true }).catch(() => {})
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+  }
 
   // Watch for pool changes (rare — only on initial load or refresh)
   // Use a computed that depends on _l14Pool so consumers re-render once it's

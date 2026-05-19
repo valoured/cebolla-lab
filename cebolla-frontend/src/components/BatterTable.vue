@@ -404,7 +404,7 @@ const badgeLabel = computed(() => {
               :title="`Composite contact score (0-100). Min ${CONTACT_MIN_PA} L14 PA. Built from Brl%/HH%/xSLG percentile-ranked vs all qualified MLB batters.`"
             >
               <span class="inline-flex items-center justify-end gap-1">
-                Contact
+                Contact <InfoTooltip term="contact_score" />
                 <span v-if="sortKey === 'contact'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>

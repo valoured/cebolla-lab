@@ -177,6 +177,20 @@ export const glossary = {
     note: 'Most BvP samples are under 20 PA. Treat with caution.',
   },
 
+  contact_score: {
+    label: 'Contact Score',
+    description:
+      "A 0–100 composite score showing how a batter's recent (L14) contact quality ranks against all qualified MLB batters. Blends Barrel% (40%), Hard-Hit% (30%), and xSLG (30%) by percentile rank. Higher = better contact quality. The trend arrow (▲/▼N) shows how the L14 score compares to the batter's season baseline — flags hot and cold streaks.",
+    guide: [
+      { label: 'Elite',         value: '90+',   tone: 'tone-elite' },
+      { label: 'Strong',        value: '75–89', tone: 'tone-good'  },
+      { label: 'Average',       value: '50–74', tone: 'tone-avg'   },
+      { label: 'Below Average', value: '30–49', tone: 'tone-poor'  },
+      { label: 'Poor',          value: 'Under 30', tone: 'tone-poor' },
+    ],
+    note: 'Minimum 20 L14 PA to qualify. Trend arrow shows only when L14 differs from season by 5+ points.',
+  },
+
   longshot: {
     label: 'Longshot',
     description:
