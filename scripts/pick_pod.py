@@ -1,35 +1,38 @@
 """
-pick_pod.py — Daily Play of the Day selection.
+pick_pod.py — Daily Play of the Day selection (HR + HRR markets).
 
-Picks ONE HR prop per slate using a multiplicative composite of market edge
-AND L14 contact quality. The winner is the batter where BOTH signals agree:
-strong market edge AND elite recent contact.
+Selects ONE pick per market_class per slate:
+  - HR Anytime  (market_class='hr',  market='hr_anytime')
+  - H+R+RBI     (market_class='hrr', market='h_r_rbi_<line>', line chosen by edge)
 
-Selection criteria (all must hold):
-  - market = HR_MARKET
-  - projected_prob >= MIN_PROJECTED_PROB   (sanity floor)
-  - edge IS NOT NULL                       (need a market price)
-  - american_odds IS NOT NULL              (need a number to log)
-
-Among qualifying candidates, ranks by:
+For each market_class, ranks batters by:
   combined_score = normalize_edge(edge) * normalize_contact(score)
 
   where:
     - normalize_edge clamps edge to ±10% and maps to 0–100
     - normalize_contact uses the L14 contact score (0–100) directly,
       computed exactly like the frontend useContactScore.js helper
-    - missing contact_score falls back to neutral 50 (so a batter with
-      strong edge but no L14 data still ranks reasonably)
+    - missing contact_score falls back to neutral 50
+
+HR market (unchanged from v1):
+  - market = 'hr_anytime'
+  - floor: projected_prob >= 0.20
+
+HRR market (new in v2 — Phase 2B):
+  - markets = ['h_r_rbi_1.5', 'h_r_rbi_2.5', 'h_r_rbi_3.5']
+  - For each batter, pick the line with the highest edge above its floor
+  - Per-line floors (mirroring observed projected_prob distributions):
+      h_r_rbi_1.5 → 0.40   (avg slate prob ~0.46)
+      h_r_rbi_2.5 → 0.20   (avg slate prob ~0.21)
+      h_r_rbi_3.5 → 0.07   (avg slate prob ~0.08)
+  - Then rank surviving batters by combined edge × contact, same as HR
 
 Run order:
   pull_schedule → pull_savant → compute_projections → pick_pod
 
-The morning cron at 14:13 UTC (10:13 AM ET) is the right window — after
-projections have been computed but before any games start.
-
 Math kept in lockstep with cebolla-frontend/src/composables/useContactScore.js
 and BatterTable.vue's combinedScore(). Any change to one MUST be mirrored
-in the other or the POD pick won't match what the UI surfaces.
+in the other or POD picks won't match what the UI surfaces.
 """
 
 import os
@@ -53,16 +56,24 @@ if not (SUPABASE_URL and SUPABASE_KEY):
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-HR_MARKET = "hr_anytime"
-# Projection floor: a batter must have at least this projected HR probability
-# to qualify for POD consideration. Empirically calibrated against the actual
-# distribution of HR projections — typical slates produce ~8-12 batters above
-# 20% projected_prob, giving the combined-score logic a real candidate pool to
-# rank within. Higher floors (25%+) produce too few candidates on weaker slates;
-# lower floors (15%-) dilute the bar past "this is plausibly going to happen."
-MIN_PROJECTED_PROB = 0.20
+# ─── Market definitions ───────────────────────────────────────────────────────
 
-# Contact-score constants — keep in sync with useContactScore.js
+HR_MARKET = "hr_anytime"
+HR_MIN_PROJECTED_PROB = 0.20
+
+# HRR lines and per-line floors.
+# Floors calibrated against May-2026 slate distributions:
+#   1.5 avg=0.46 → floor 0.40 keeps top ~30% as candidates
+#   2.5 avg=0.21 → floor 0.20 keeps top ~50% as candidates
+#   3.5 avg=0.08 → floor 0.07 keeps top ~50% as candidates (rare hits only)
+HRR_LINE_FLOORS = {
+    "h_r_rbi_1.5": 0.40,
+    "h_r_rbi_2.5": 0.20,
+    "h_r_rbi_3.5": 0.07,
+}
+HRR_MARKETS = list(HRR_LINE_FLOORS.keys())
+
+# ─── Contact-score constants — keep in sync with useContactScore.js ──────────
 CONTACT_MIN_PA = 20
 CONTACT_WEIGHTS = {"barrel_pct": 0.40, "hard_hit_pct": 0.30, "xslg": 0.30}
 NEUTRAL_PERCENTILE = 50
@@ -77,8 +88,12 @@ def get_today_iso():
     return (datetime.now(timezone.utc) + et_offset).date().isoformat()
 
 
-def existing_pod_for(date_iso):
-    res = sb.table("pods").select("id").eq("pod_date", date_iso).limit(1).execute()
+def existing_pod_for(date_iso, market_class):
+    """Check if a POD already exists for a (date, market_class) tuple."""
+    res = sb.table("pods").select("id") \
+        .eq("pod_date", date_iso) \
+        .eq("market_class", market_class) \
+        .limit(1).execute()
     return bool(res.data)
 
 
@@ -220,10 +235,10 @@ def _combined_score(edge, contact):
     return _normalize_edge(edge) * _normalize_contact(contact)
 
 
-# ─── Candidate fetch ──────────────────────────────────────────────────────────
+# ─── Shared helpers ───────────────────────────────────────────────────────────
 
-def fetch_candidates(date_iso):
-    """Fetch HR projections for today's games above the prob floor."""
+def fetch_today_games(date_iso):
+    """Today's games not yet started/final, with team abbrevs."""
     games_res = sb.table("games") \
         .select("id, away_team_id, home_team_id, "
                 "away_team:teams!games_away_team_id_fkey(abbrev), "
@@ -231,7 +246,43 @@ def fetch_candidates(date_iso):
         .eq("game_date", date_iso) \
         .not_.in_("status", ["Final", "Game Over", "Completed Early", "In Progress"]) \
         .execute()
-    games = games_res.data or []
+    return games_res.data or []
+
+
+def enrich_projection(p, games_by_id, players_by_id, contact_by_player):
+    """Common enrichment to attach player/game/contact context."""
+    game = games_by_id.get(p["game_id"])
+    player = players_by_id.get(p["player_id"])
+    if not game or not player:
+        return None
+    is_home = player.get("team_id") == game.get("home_team_id")
+    own_abbrev = (game["home_team"] if is_home else game["away_team"])["abbrev"]
+    opp_abbrev = (game["away_team"] if is_home else game["home_team"])["abbrev"]
+    contact = contact_by_player.get(p["player_id"])
+    combined = _combined_score(p["edge"], contact)
+    return {
+        "game_id": p["game_id"],
+        "player_id": p["player_id"],
+        "player_mlbam_id": player.get("mlbam_id"),
+        "player_name": player["name"],
+        "team_abbrev": own_abbrev,
+        "opponent_abbrev": opp_abbrev,
+        "market": p["market"],
+        "projected_prob": p["projected_prob"],
+        "no_vig_prob": p["no_vig_prob"],
+        "edge": p["edge"],
+        "american_odds": p["best_american_odds"],
+        "book": p["best_book"],
+        "model_version": p["model_version"],
+        "contact_score": contact,
+        "combined_score": round(combined, 1),
+    }
+
+
+# ─── HR market candidate fetch ────────────────────────────────────────────────
+
+def fetch_hr_candidates(date_iso, games, players_by_id, contact_by_player):
+    """Fetch HR projections for today's games above the prob floor."""
     if not games:
         return []
     game_ids = [g["id"] for g in games]
@@ -242,83 +293,76 @@ def fetch_candidates(date_iso):
                 "best_american_odds, best_book, model_version") \
         .in_("game_id", game_ids) \
         .eq("market", HR_MARKET) \
-        .gte("projected_prob", MIN_PROJECTED_PROB) \
+        .gte("projected_prob", HR_MIN_PROJECTED_PROB) \
         .not_.is_("edge", "null") \
         .not_.is_("best_american_odds", "null") \
         .execute()
     projections = proj_res.data or []
-    if not projections:
-        return []
-
-    player_ids = list({p["player_id"] for p in projections})
-    player_res = sb.table("players") \
-        .select("id, mlbam_id, name, team_id") \
-        .in_("id", player_ids) \
-        .execute()
-    players_by_id = {p["id"]: p for p in (player_res.data or [])}
-
-    season = datetime.now(timezone.utc).year
-    contact_by_player = fetch_contact_scores(player_ids, season)
 
     enriched = []
     for p in projections:
-        game = games_by_id.get(p["game_id"])
-        player = players_by_id.get(p["player_id"])
-        if not game or not player:
-            continue
-        is_home = player.get("team_id") == game.get("home_team_id")
-        own_abbrev = (game["home_team"] if is_home else game["away_team"])["abbrev"]
-        opp_abbrev = (game["away_team"] if is_home else game["home_team"])["abbrev"]
-        contact = contact_by_player.get(p["player_id"])
-        combined = _combined_score(p["edge"], contact)
-        enriched.append({
-            "game_id": p["game_id"],
-            "player_id": p["player_id"],
-            "player_mlbam_id": player.get("mlbam_id"),
-            "player_name": player["name"],
-            "team_abbrev": own_abbrev,
-            "opponent_abbrev": opp_abbrev,
-            "market": p["market"],
-            "projected_prob": p["projected_prob"],
-            "no_vig_prob": p["no_vig_prob"],
-            "edge": p["edge"],
-            "american_odds": p["best_american_odds"],
-            "book": p["best_book"],
-            "model_version": p["model_version"],
-            "contact_score": contact,
-            "combined_score": round(combined, 1),
-        })
+        e = enrich_projection(p, games_by_id, players_by_id, contact_by_player)
+        if e:
+            enriched.append(e)
     enriched.sort(key=lambda x: x["combined_score"], reverse=True)
     return enriched
 
 
-def main():
-    today = get_today_iso()
-    log.info("🧅 POD picker — slate %s", today)
+# ─── HRR market candidate fetch ───────────────────────────────────────────────
 
-    if existing_pod_for(today):
-        log.info("POD already exists for %s. Nothing to do.", today)
-        return
+def fetch_hrr_candidates(date_iso, games, players_by_id, contact_by_player):
+    """Fetch HRR projections across all 3 lines, pick best-edge line per batter.
 
-    candidates = fetch_candidates(today)
-    if not candidates:
-        log.warning("No qualifying HR projections for %s (need >= %.2f projected_prob with odds).",
-                    today, MIN_PROJECTED_PROB)
-        return
+    Returns one candidate per batter (the line they have the strongest edge on,
+    provided it clears that line's projected-prob floor).
+    """
+    if not games:
+        return []
+    game_ids = [g["id"] for g in games]
+    games_by_id = {g["id"]: g for g in games}
 
-    # Log top 3 candidates so we have audit visibility into close calls
-    log.info("Top candidates by combined edge × contact:")
-    for i, c in enumerate(candidates[:3], 1):
-        cs = c["contact_score"]
-        cs_str = f"{cs:.0f}" if cs is not None else "—"
-        log.info("  #%d  %s (%s vs %s)  proj %.1f%%  odds %+d  edge %.3f  contact %s  combined %.1f",
-                 i, c["player_name"], c["team_abbrev"], c["opponent_abbrev"],
-                 100 * float(c["projected_prob"]), c["american_odds"], float(c["edge"]),
-                 cs_str, c["combined_score"])
+    # Pull all 3 HRR lines in one shot
+    proj_res = sb.table("projections") \
+        .select("id, game_id, player_id, market, projected_prob, no_vig_prob, edge, "
+                "best_american_odds, best_book, model_version") \
+        .in_("game_id", game_ids) \
+        .in_("market", HRR_MARKETS) \
+        .not_.is_("edge", "null") \
+        .not_.is_("best_american_odds", "null") \
+        .execute()
+    projections = proj_res.data or []
 
-    pick = candidates[0]
+    # Apply per-line floors, then bucket by batter
+    by_batter: dict[int, list[dict]] = {}
+    for p in projections:
+        floor = HRR_LINE_FLOORS.get(p["market"])
+        if floor is None:
+            continue
+        if (p.get("projected_prob") or 0) < floor:
+            continue
+        by_batter.setdefault(p["player_id"], []).append(p)
+
+    # For each batter, keep the projection with highest edge.
+    # Tiebreak on higher projected_prob (favorite preferred when edge ties).
+    enriched = []
+    for player_id, projs in by_batter.items():
+        best = max(projs, key=lambda x: (float(x["edge"] or 0),
+                                         float(x["projected_prob"] or 0)))
+        e = enrich_projection(best, games_by_id, players_by_id, contact_by_player)
+        if e:
+            enriched.append(e)
+
+    enriched.sort(key=lambda x: x["combined_score"], reverse=True)
+    return enriched
+
+
+# ─── POD insertion ────────────────────────────────────────────────────────────
+
+def insert_pod(pick, date_iso, market_class):
+    """Insert a POD row with the chosen pick + market_class."""
     sb.table("pods").insert({
-        "pod_date": today,
+        "pod_date": date_iso,
+        "market_class": market_class,
         "game_id": pick["game_id"],
         "player_id": pick["player_id"],
         "player_mlbam_id": pick["player_mlbam_id"],
@@ -337,7 +381,82 @@ def main():
         "stake": 10.00,
         "status": "pending",
     }).execute()
-    log.info("✓ POD locked for %s", today)
+
+
+def log_top3(label, candidates):
+    """Audit log: top 3 candidates with their numbers."""
+    log.info("Top %s candidates by combined edge × contact:", label)
+    for i, c in enumerate(candidates[:3], 1):
+        cs = c["contact_score"]
+        cs_str = f"{cs:.0f}" if cs is not None else "—"
+        log.info("  #%d  %s (%s vs %s)  market=%s  proj %.1f%%  odds %+d  edge %.3f  contact %s  combined %.1f",
+                 i, c["player_name"], c["team_abbrev"], c["opponent_abbrev"],
+                 c["market"],
+                 100 * float(c["projected_prob"]), c["american_odds"], float(c["edge"]),
+                 cs_str, c["combined_score"])
+
+
+def pick_for_market(date_iso, market_class, candidates):
+    """Insert top candidate as POD for given market_class, or log no-pick."""
+    if existing_pod_for(date_iso, market_class):
+        log.info("[%s] POD already exists for %s. Skipping.", market_class.upper(), date_iso)
+        return
+    if not candidates:
+        log.warning("[%s] No qualifying candidates for %s.", market_class.upper(), date_iso)
+        return
+    pick = candidates[0]
+    insert_pod(pick, date_iso, market_class)
+    log.info("[%s] ✓ POD locked for %s: %s @ %+d (edge %.3f, combined %.1f)",
+             market_class.upper(), date_iso, pick["player_name"],
+             pick["american_odds"], float(pick["edge"]), pick["combined_score"])
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    today = get_today_iso()
+    log.info("🧅 POD picker — slate %s (HR + HRR)", today)
+
+    games = fetch_today_games(today)
+    if not games:
+        log.warning("No games scheduled for %s.", today)
+        return
+
+    # ── Shared pre-fetch: players + contact scores ──
+    # Pull projections for both markets in parallel to compute the union of
+    # player_ids, then look up players + contact pool ONCE for both pickers.
+    game_ids = [g["id"] for g in games]
+    proj_ids_res = sb.table("projections") \
+        .select("player_id, market, projected_prob, edge, best_american_odds") \
+        .in_("game_id", game_ids) \
+        .in_("market", [HR_MARKET] + HRR_MARKETS) \
+        .not_.is_("edge", "null") \
+        .execute()
+    all_proj_player_ids = list({p["player_id"] for p in (proj_ids_res.data or [])})
+    if not all_proj_player_ids:
+        log.warning("No projections with edge data for %s.", today)
+        return
+
+    player_res = sb.table("players") \
+        .select("id, mlbam_id, name, team_id") \
+        .in_("id", all_proj_player_ids) \
+        .execute()
+    players_by_id = {p["id"]: p for p in (player_res.data or [])}
+
+    season = datetime.now(timezone.utc).year
+    contact_by_player = fetch_contact_scores(all_proj_player_ids, season)
+
+    # ── HR POD ──
+    hr_candidates = fetch_hr_candidates(today, games, players_by_id, contact_by_player)
+    log_top3("HR", hr_candidates)
+    pick_for_market(today, "hr", hr_candidates)
+
+    # ── HRR POD ──
+    hrr_candidates = fetch_hrr_candidates(today, games, players_by_id, contact_by_player)
+    log_top3("HRR", hrr_candidates)
+    pick_for_market(today, "hrr", hrr_candidates)
+
+    log.info("🧅 POD picker complete")
 
 
 if __name__ == "__main__":

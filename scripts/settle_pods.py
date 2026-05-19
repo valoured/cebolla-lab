@@ -5,7 +5,9 @@ For every pending POD:
   1. Check that the underlying game is Final.
   2. Hit MLB Stats API boxscore for the game.
   3. Find the player's batting line.
-  4. For HR market (hr_0.5): win if homeRuns >= 1, loss otherwise.
+  4. Grade based on the POD's market:
+       - hr_anytime          → win if homeRuns >= 1
+       - h_r_rbi_<line>      → win if (hits + runs + RBI) > line
   5. Compute payout from american_odds × stake.
   6. Update pods row with status + payout + settled_at.
 
@@ -111,6 +113,53 @@ def grade_hr_pod(batting: dict | None, stake: float, odds: int) -> tuple[str, fl
     return ("loss", round(-stake, 2))
 
 
+def parse_hrr_line(market: str) -> float | None:
+    """
+    Extract the line from an h_r_rbi market string.
+    'h_r_rbi_2.5' → 2.5
+    'h_r_rbi_yes' → None (legacy, not a POD format)
+    """
+    if not market or not market.startswith("h_r_rbi_"):
+        return None
+    suffix = market[len("h_r_rbi_"):]
+    try:
+        return float(suffix)
+    except (ValueError, TypeError):
+        return None
+
+
+def grade_hrr_pod(batting: dict | None, stake: float, odds: int, line: float) -> tuple[str, float]:
+    """
+    Returns (status, payout) for an HRR-market POD.
+
+    Rules:
+      - No batting line (player didn't appear): VOID → payout 0
+      - PA = 0 but in box (rare defensive sub): VOID → payout 0
+      - (hits + runs + RBI) > line: WIN → +profit
+        (e.g. line=1.5 needs 2 or more; line=2.5 needs 3 or more)
+      - (hits + runs + RBI) <= line: LOSS → -stake
+    """
+    if batting is None:
+        return ("void", 0.0)
+
+    hits = int(batting.get("hits", 0) or 0)
+    runs = int(batting.get("runs", 0) or 0)
+    rbis = int(batting.get("rbi", 0) or 0)
+    ab   = int(batting.get("atBats", 0) or 0)
+    bb   = int(batting.get("baseOnBalls", 0) or 0)
+    sf   = int(batting.get("sacFlies", 0) or 0)
+    hbp  = int(batting.get("hitByPitch", 0) or 0)
+    pa   = ab + bb + sf + hbp
+
+    if pa == 0:
+        return ("void", 0.0)
+
+    total = hits + runs + rbis
+    if total > line:
+        return ("win", round(american_profit(odds, stake), 2))
+    return ("loss", round(-stake, 2))
+
+
 def settle_one(pod: dict) -> bool:
     """Attempt to settle a single pending POD. Returns True if status changed."""
     game_id = pod.get("game_id")
@@ -155,8 +204,15 @@ def settle_one(pod: dict) -> bool:
     odds = int(pod["american_odds"])
     stake = float(pod.get("stake") or 10.00)
 
-    if market == "hr_0.5":
+    if market == "hr_anytime":
         result, payout = grade_hr_pod(batting, stake, odds)
+    elif market.startswith("h_r_rbi_"):
+        line = parse_hrr_line(market)
+        if line is None:
+            log.warning("POD %d: could not parse HRR line from market %r",
+                        pod["id"], market)
+            return False
+        result, payout = grade_hrr_pod(batting, stake, odds, line)
     else:
         log.warning("POD %d: market %r not supported by settler", pod["id"], market)
         return False

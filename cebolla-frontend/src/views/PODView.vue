@@ -118,7 +118,7 @@ const MARKETS = [
     label: 'H + R + RBI',
     short: 'HRR',
     description: 'Hits + Runs + RBIs — does the player produce across the board.',
-    enabled: false,  // flipped on once Phase 1B (HRR projections) ships
+    enabled: true,
   },
 ]
 
