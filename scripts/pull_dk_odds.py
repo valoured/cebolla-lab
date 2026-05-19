@@ -44,10 +44,11 @@ DK_BASE = (
 )
 
 # Subcategory IDs we care about. Verified from live DK page:
-#   17482, 17319, 17320 → some combination of HR/Hits/RBI player props
+#   17319, 17320, 17482 → HR / Hits / RBI player props
+#   17843              → Hits + Runs + RBIs (HRR) combined market
 # We classify by the `name` field on each market in the response so we
 # don't need to know which ID is which upfront. Add more IDs if needed.
-DK_SUBCATEGORY_IDS = [17482, 17319, 17320]
+DK_SUBCATEGORY_IDS = [17482, 17319, 17320, 17843]
 
 # Headers that mirror the real Chrome request from DK's web UI.
 # No auth tokens, but DK checks for x-client-* fingerprints.
@@ -77,7 +78,15 @@ REQUEST_DELAY_SEC = 4
 # We pattern-match on the `name` field of each market.
 # The actual LINE (0.5, 1.5, 2.5) is parsed separately from the market name
 # or selection labels via parse_market_line() below.
+#
+# IMPORTANT: order matters. HRR pattern MUST come before 'hits' and 'rbi'
+# patterns because the HRR market name ("Juan Soto Hits + Runs + RBIs")
+# would otherwise match the 'hits' pattern first and get misclassified.
 MARKET_PATTERNS = [
+    # HRR — name shape: "<Player> Hits + Runs + RBIs"
+    # Match the combined form first. Allow "&" / "and" / "+" between tokens
+    # and optional spaces, tolerating future DK label tweaks.
+    (re.compile(r"hits?\s*[\+&]?\s*(?:and\s+)?runs?\s*[\+&]?\s*(?:and\s+)?rbis?", re.I), "h_r_rbi"),
     (re.compile(r"home\s*runs?|to\s+hit\s+a\s+(?:hr|homer)", re.I), "hr_anytime"),
     (re.compile(r"\bhits?\b|player\s+hits|to\s+record\s+a\s+hit", re.I), "hits"),
     (re.compile(r"\brbis?\b|runs\s+batted\s+in", re.I), "rbi"),
@@ -88,15 +97,18 @@ def parse_selection_line(selection_label: str, market_key: str) -> float | None:
     """
     Determine the line for ONE selection in a multi-line market.
 
-    DK 'Hits' markets ship a single market with multiple selections like
-    ['1+', '2+', '3+', '4+']. Each label maps to a different line:
-        '1+' → 0.5  (at least 1 hit  = Over 0.5)
-        '2+' → 1.5  (at least 2 hits = Over 1.5)
+    DK 'Hits' and 'H+R+RBI' markets ship a single market with multiple
+    selections like ['1+', '2+', '3+', '4+', '5+']. Each label maps to a
+    different over/under line:
+        '1+' → 0.5  (at least 1  = Over 0.5)
+        '2+' → 1.5  (at least 2  = Over 1.5)
         '3+' → 2.5
         '4+' → 3.5
+        '5+' → 4.5
 
     For 'hr_anytime' markets, the only selection that matters is '1+' (or 'Yes').
-    Returns None for selections we can't classify (e.g. '5+' which we don't model).
+    For 'h_r_rbi' markets, all milestone labels are valid lines.
+    Returns None for selections we can't classify.
     """
     if not selection_label:
         return None
@@ -432,7 +444,7 @@ def parse_response(
             sel_label = sel.get("label", "")
             line = parse_selection_line(sel_label, market_key)
             if line is None:
-                # Selection we don't model (e.g. "No", "5+", "Under 0.5")
+                # Selection we don't model (e.g. "No", "Under 0.5")
                 continue
 
             # For HR Anytime we only care about the "1+" / "Yes" line
