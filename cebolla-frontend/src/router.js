@@ -23,17 +23,21 @@ const routes = [
     meta: { title: 'Player · Cebolla Lab' },
   },
   {
+    path: '/bets',
+    redirect: '/pod',
+  },
+  {
+    path: '/pod',
+    name: 'pod',
+    component: () => import('./views/PODView.vue'),
+    meta: { title: 'Play of the Day · Cebolla Lab' },
+  },
+  {
     path: '/team/:abbrev',
     name: 'team',
     component: () => import('./views/TeamView.vue'),
     props: true,
     meta: { title: 'Team · Cebolla Lab' },
-  },
-  {
-    path: '/bets',
-    name: 'bets',
-    component: () => import('./views/BetTrackerView.vue'),
-    meta: { title: 'Bet Log · Cebolla Lab' },
   },
   {
     path: '/methodology',
