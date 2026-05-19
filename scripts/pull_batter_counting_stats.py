@@ -41,7 +41,9 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CURRENT_SEASON = 2026
 MLB_API = "https://statsapi.mlb.com/api/v1"
-REQUEST_DELAY = 0.25  # polite to MLB's free API
+REQUEST_DELAY = 0.5      # base delay between requests (was 0.25 — too aggressive)
+MAX_RETRIES = 3           # retry on rate limit / 5xx
+RETRY_BACKOFF = 2.0       # exponential backoff multiplier
 L14_DAYS = 14
 
 logging.basicConfig(
@@ -65,10 +67,22 @@ def safe_int(v) -> int | None:
 
 
 def get_batters() -> list[dict]:
-    """All known batters (non-pitchers)."""
-    res = sb.table("players").select("id, mlbam_id, name") \
-        .eq("is_pitcher", False).execute()
-    return [r for r in res.data if r.get("mlbam_id")]
+    """All known batters (non-pitchers). Paginated because Supabase
+    silently caps `.select()` at 1000 rows by default."""
+    all_rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        res = sb.table("players").select("id, mlbam_id, name") \
+            .eq("is_pitcher", False) \
+            .range(offset, offset + page_size - 1) \
+            .execute()
+        page = res.data or []
+        all_rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return [r for r in all_rows if r.get("mlbam_id")]
 
 
 # ──────────────────────────────────────────────────────────────
@@ -102,12 +116,51 @@ def fetch_l14(mlbam_id: int) -> dict | None:
 
 
 def _fetch_stat(url: str, params: dict, mlbam_id: int, label: str) -> dict | None:
-    """Shared MLB Stats API call + parse."""
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        if not r.ok:
+    """
+    Shared MLB Stats API call + parse, with retry on rate limits and 5xx errors.
+
+    On 429 (rate limit) or 5xx, retry with exponential backoff.
+    On 404 or other 4xx, return None silently (player not found = expected).
+    On empty splits, return None (player has no stats in this window = expected).
+    On unexpected failure, LOG it so we can see what's happening (the old code
+    silently swallowed everything, which masked rate-limit failures as
+    "no data").
+    """
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+        except Exception as e:
+            log.warning("  fetch_%s network error for mlbam=%d (attempt %d): %s",
+                        label, mlbam_id, attempt + 1, e)
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF ** attempt)
+                continue
             return None
-        data = r.json()
+
+        # Rate limit or server error → retry
+        if r.status_code in (429, 500, 502, 503, 504):
+            if attempt < MAX_RETRIES:
+                backoff = RETRY_BACKOFF ** attempt
+                log.info("  fetch_%s got %d for mlbam=%d, backing off %.1fs",
+                         label, r.status_code, mlbam_id, backoff)
+                time.sleep(backoff)
+                continue
+            log.warning("  fetch_%s gave up on mlbam=%d after %d retries (status %d)",
+                        label, mlbam_id, MAX_RETRIES, r.status_code)
+            return None
+
+        # 4xx (other than 429) → player not found, no point retrying
+        if not r.ok:
+            log.debug("  fetch_%s mlbam=%d returned %d", label, mlbam_id, r.status_code)
+            return None
+
+        # Success — parse
+        try:
+            data = r.json()
+        except Exception as e:
+            log.warning("  fetch_%s mlbam=%d returned non-JSON: %s", label, mlbam_id, e)
+            return None
+
         stats_list = data.get("stats", [])
         if not stats_list:
             return None
@@ -115,9 +168,8 @@ def _fetch_stat(url: str, params: dict, mlbam_id: int, label: str) -> dict | Non
         if not splits:
             return None
         return splits[0].get("stat", {})
-    except Exception as e:
-        log.debug("  fetch_%s failed for mlbam=%d: %s", label, mlbam_id, e)
-        return None
+
+    return None
 
 
 # ──────────────────────────────────────────────────────────────
