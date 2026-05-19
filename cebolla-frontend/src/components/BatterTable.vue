@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { formatLineupETA } from '../utils/timeHelpers.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
@@ -131,6 +131,79 @@ const rows = computed(() => {
   }).filter(Boolean)
 })
 
+// ── Sorting ─────────────────────────────────────────────────────
+// Default: edge descending so the value bets surface at the top.
+// `null` sortKey === lineup order (no sort).
+//
+// Click a column header to sort. Click the same header to toggle direction.
+// Click # column to reset to lineup order.
+//
+// Mobile: a small dropdown above the card list exposes the same controls.
+const sortKey = ref('edge')         // null | 'odds' | 'proj' | 'edge' | 'bvp' | 'hh' | 'brl' | 'xslg' | 'xba'
+const sortDir = ref('desc')         // 'asc' | 'desc'
+
+// Sortable column metadata — single source of truth for headers + the mobile dropdown.
+const SORT_COLUMNS = [
+  { key: 'odds', label: 'Odds' },
+  { key: 'proj', label: 'Proj%' },
+  { key: 'edge', label: 'Edge' },
+  { key: 'bvp',  label: 'BvP HR/PA' },
+  { key: 'hh',   label: 'HH%' },
+  { key: 'brl',  label: 'Brl%' },
+  { key: 'xslg', label: 'xSLG' },
+  { key: 'xba',  label: 'xBA' },
+]
+
+function sortValue(row, key) {
+  if (key === 'odds')  return row.odds?.american_odds ?? null
+  if (key === 'proj')  return row.proj?.pct ?? null
+  if (key === 'edge')  return row.proj?.edge ?? null
+  if (key === 'bvp')   return row.bvp?.hr_per_pa ?? null
+  if (key === 'hh')    return row.hard_hit_pct ?? null
+  if (key === 'brl')   return row.barrel_pct ?? null
+  if (key === 'xslg')  return row.xslg ?? null
+  if (key === 'xba')   return row.xba ?? null
+  return null
+}
+
+function toggleSort(key) {
+  if (sortKey.value === key) {
+    // Same column → flip direction
+    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    // New column → default to descending (high values are usually what we care about)
+    sortKey.value = key
+    sortDir.value = 'desc'
+  }
+}
+
+function resetSort() {
+  sortKey.value = null
+  sortDir.value = 'desc'
+}
+
+const sortedRows = computed(() => {
+  if (!sortKey.value) {
+    // No sort → original lineup order
+    return rows.value
+  }
+  const dir = sortDir.value === 'desc' ? -1 : 1
+  // Make a shallow copy so we don't mutate the source array
+  const arr = rows.value.slice()
+  arr.sort((a, b) => {
+    const av = sortValue(a, sortKey.value)
+    const bv = sortValue(b, sortKey.value)
+    // Nulls always go to the bottom, regardless of direction
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av < bv) return -1 * dir
+    if (av > bv) return  1 * dir
+    return 0
+  })
+  return arr
+})
+
 const isConfirmed = computed(() => {
   return props.lineup.length === 9 &&
          props.lineup.every(l => l.is_confirmed)
@@ -214,8 +287,31 @@ const badgeLabel = computed(() => {
 
     <!-- MOBILE VIEW: card-per-batter, hidden md+ -->
     <div v-else class="md:hidden">
+      <!-- Mobile sort selector -->
+      <div class="px-3 py-2 border-b border-bg-200 flex items-center justify-between gap-2">
+        <span class="label-caps !text-[9px] text-fg-500">sort</span>
+        <div class="flex items-center gap-1.5">
+          <select
+            :value="sortKey || ''"
+            @change="e => e.target.value ? toggleSort(e.target.value) : resetSort()"
+            class="mobile-sort-select"
+          >
+            <option value="">Lineup order</option>
+            <option v-for="c in SORT_COLUMNS" :key="c.key" :value="c.key">{{ c.label }}</option>
+          </select>
+          <button
+            v-if="sortKey"
+            type="button"
+            class="mobile-sort-dir"
+            :title="sortDir === 'desc' ? 'Highest first' : 'Lowest first'"
+            @click="sortDir = sortDir === 'desc' ? 'asc' : 'desc'"
+          >
+            {{ sortDir === 'desc' ? '▼' : '▲' }}
+          </button>
+        </div>
+      </div>
       <BatterCard
-        v-for="row in rows"
+        v-for="row in sortedRows"
         :key="row.lineupId"
         :row="row"
         :market-mode="marketMode"
@@ -228,44 +324,90 @@ const badgeLabel = computed(() => {
       <table class="w-full text-sm">
         <thead>
           <tr class="text-left">
-            <th class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200 w-8">#</th>
+            <th
+              class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200 w-8 cursor-pointer hover:text-fg-700 transition"
+              :title="sortKey ? 'Reset to lineup order' : 'Lineup order'"
+              @click="resetSort"
+            >#</th>
             <th class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200">Batter</th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              {{ marketMode === 'hr' ? 'HR Odds' : marketMode === 'hits' ? 'Hits O0.5' : 'RBI O0.5' }}
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'odds' }"
+              @click="toggleSort('odds')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
+                {{ marketMode === 'hr' ? 'HR Odds' : marketMode === 'hits' ? 'Hits O0.5' : 'RBI O0.5' }}
+                <span v-if="sortKey === 'odds'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
+              </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'proj' }"
+              @click="toggleSort('proj')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 Proj% <InfoTooltip term="proj_pct" />
+                <span v-if="sortKey === 'proj'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'edge' }"
+              @click="toggleSort('edge')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 Edge <InfoTooltip term="edge" />
+                <span v-if="sortKey === 'edge'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'bvp' }"
+              @click="toggleSort('bvp')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 BvP HR/PA <InfoTooltip term="bvp" />
+                <span v-if="sortKey === 'bvp'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'hh' }"
+              @click="toggleSort('hh')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 HH% <InfoTooltip term="hard_hit_pct" />
+                <span v-if="sortKey === 'hh'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'brl' }"
+              @click="toggleSort('brl')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 Brl% <InfoTooltip term="barrel_pct" />
+                <span v-if="sortKey === 'brl'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'xslg' }"
+              @click="toggleSort('xslg')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 xSLG <InfoTooltip term="xslg" />
+                <span v-if="sortKey === 'xslg'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">
-              <span class="inline-flex items-center justify-end">
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'xba' }"
+              @click="toggleSort('xba')"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
                 xBA <InfoTooltip term="xba" />
+                <span v-if="sortKey === 'xba'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
             <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-center w-10"></th>
@@ -273,7 +415,7 @@ const badgeLabel = computed(() => {
         </thead>
         <tbody>
           <tr
-            v-for="row in rows"
+            v-for="row in sortedRows"
             :key="row.lineupId"
             class="group hover:bg-bg-100/50 transition-colors"
           >
@@ -411,6 +553,36 @@ const badgeLabel = computed(() => {
 </template>
 
 <style scoped>
+/* Mobile sort selector — compact native select styled to match the site */
+.mobile-sort-select {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.80);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.mobile-sort-select:focus {
+  border-color: rgba(255, 42, 42, 0.5);
+}
+.mobile-sort-dir {
+  background: rgba(255, 42, 42, 0.10);
+  border: 1px solid rgba(255, 42, 42, 0.4);
+  color: rgba(255, 42, 42, 0.95);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 3px 7px;
+  cursor: pointer;
+  line-height: 1;
+}
+.mobile-sort-dir:hover {
+  background: rgba(255, 42, 42, 0.18);
+}
+
 /* Inline star for favorited players in the row. Subtle gold,
    small enough to not disrupt the table rhythm. */
 .fav-row-marker {
