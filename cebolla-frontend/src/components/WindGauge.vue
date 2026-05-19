@@ -123,64 +123,78 @@ const mphSuffix = computed(() => {
 
 <template>
   <div class="wind-gauge-wrap">
-    <!-- Gauge: 44x44 SVG.
-         Diamond outline drawn with home plate at bottom (cy=34) and
-         CF at the top (cy=10). Arrow rotates from the center. -->
+    <!-- Gauge: 64x64 viewBox SVG, rendered ~48-56px.
+         Diamond corners labeled CF (top), LF (left), RF (right), H (bottom).
+         Small tick marks extend outward from each corner so the wind
+         direction is unambiguous at a glance, no text-reading required.
+         Arrow rotates from the diamond center. -->
     <svg
       class="wind-gauge"
-      viewBox="0 0 44 44"
+      viewBox="0 0 64 64"
       xmlns="http://www.w3.org/2000/svg"
       :class="{ 'is-dome': isDome }"
     >
+      <!-- Outward ticks at each vertex (drawn behind the diamond so
+           the diamond stroke covers any visual overlap). -->
+      <g v-if="!isDome" :stroke="'rgba(255,255,255,0.18)'" stroke-width="1" stroke-linecap="round">
+        <!-- CF tick (up from top vertex) -->
+        <line x1="32" y1="13" x2="32" y2="9" />
+        <!-- H tick (down from bottom vertex) -->
+        <line x1="32" y1="51" x2="32" y2="55" />
+        <!-- LF tick (left from left vertex) -->
+        <line x1="13" y1="32" x2="9" y2="32" />
+        <!-- RF tick (right from right vertex) -->
+        <line x1="51" y1="32" x2="55" y2="32" />
+      </g>
+
       <!-- Diamond (rotated square) — home at bottom, CF at top -->
       <polygon
-        points="22,7 37,22 22,37 7,22"
+        points="32,14 50,32 32,50 14,32"
         fill="none"
-        :stroke="isDome ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.20)'"
+        :stroke="isDome ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.22)'"
         stroke-width="1"
       />
+
       <!-- Home plate marker (small dot at bottom vertex) -->
       <circle
-        cx="22"
-        cy="36"
-        r="1.4"
-        :fill="isDome ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.45)'"
+        cx="32"
+        cy="49"
+        r="1.5"
+        :fill="isDome ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.55)'"
       />
-      <!-- CF marker (small line at top vertex) -->
-      <line
-        x1="20"
-        y1="7"
-        x2="24"
-        y2="7"
-        :stroke="isDome ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.35)'"
-        stroke-width="1"
-        stroke-linecap="round"
-      />
+
+      <!-- Corner labels — small, muted, hidden when dome -->
+      <g v-if="!isDome" class="gauge-labels" fill="rgba(255,255,255,0.50)">
+        <text x="32" y="7"  text-anchor="middle">CF</text>
+        <text x="6"  y="34" text-anchor="start">LF</text>
+        <text x="58" y="34" text-anchor="end">RF</text>
+        <text x="32" y="62" text-anchor="middle">H</text>
+      </g>
 
       <!-- Wind arrow.
            Drawn pointing UP (toward CF) by default at the center, then
            rotated to match the field-relative angle. 0deg = straight out to CF. -->
       <g
         v-if="showArrow"
-        :transform="`rotate(${arrowRotation} 22 22)`"
+        :transform="`rotate(${arrowRotation} 32 32)`"
         :style="{ filter: arrowGlow }"
       >
         <!-- Arrow shaft -->
         <line
-          x1="22"
-          y1="30"
-          x2="22"
-          y2="14"
+          x1="32"
+          y1="42"
+          x2="32"
+          y2="22"
           :stroke="arrowColor"
-          stroke-width="1.8"
+          stroke-width="2"
           stroke-linecap="round"
         />
         <!-- Arrow head -->
         <polyline
-          points="18,18 22,13 26,18"
+          points="27,27 32,21 37,27"
           fill="none"
           :stroke="arrowColor"
-          stroke-width="1.8"
+          stroke-width="2"
           stroke-linejoin="round"
           stroke-linecap="round"
         />
@@ -188,8 +202,8 @@ const mphSuffix = computed(() => {
 
       <!-- Dome marker: small "x" through the diamond -->
       <g v-else-if="isDome" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-linecap="round">
-        <line x1="14" y1="14" x2="30" y2="30" />
-        <line x1="30" y1="14" x2="14" y2="30" />
+        <line x1="20" y1="20" x2="44" y2="44" />
+        <line x1="44" y1="20" x2="20" y2="44" />
       </g>
     </svg>
 
@@ -210,19 +224,29 @@ const mphSuffix = computed(() => {
 }
 
 .wind-gauge {
-  width: 36px;
-  height: 36px;
+  width: 48px;
+  height: 48px;
   display: block;
   flex-shrink: 0;
 }
 @media (min-width: 640px) {
   .wind-gauge {
-    width: 44px;
-    height: 44px;
+    width: 56px;
+    height: 56px;
   }
 }
 .wind-gauge.is-dome {
   opacity: 0.55;
+}
+
+/* Corner labels — small monospace, subtle so they don't fight the arrow */
+.gauge-labels text {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 6.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  dominant-baseline: middle;
+  user-select: none;
 }
 
 .wind-mph {
