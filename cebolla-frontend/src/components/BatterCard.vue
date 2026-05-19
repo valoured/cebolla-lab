@@ -14,6 +14,7 @@ import { ref, computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useFavorites } from '../composables/useFavorites.js'
+import { useTodaysPOD } from '../composables/useTodaysPOD.js'
 import {
   formatScore,
   formatTrend,
@@ -22,6 +23,7 @@ import {
 import InfoTooltip from './InfoTooltip.vue'
 
 const { isPlayerFav } = useFavorites()
+const { isPOD } = useTodaysPOD()
 
 const props = defineProps({
   row:        { type: Object, required: true },
@@ -135,6 +137,12 @@ const marketLabel = computed(() => {
           >
             {{ row.name }}
           </router-link>
+          <span
+            v-if="isPOD(row.player_id)"
+            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none shrink-0"
+            title="Today's Play of the Day"
+            aria-label="Today's Play of the Day"
+          >★ POD</span>
           <span
             v-if="isPlayerFav(row.player_id)"
             class="fav-row-marker shrink-0"

@@ -27,11 +27,9 @@ import { supabase } from '../supabase.js'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { formatGameTime, formatCountdown } from '../utils/timeHelpers.js'
+import { useTodaysPOD } from '../composables/useTodaysPOD.js'
 import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
-import PitcherDeepDive from '../components/PitcherDeepDive.vue'
-import StatcastWindowToggle from '../components/StatcastWindowToggle.vue'
-import FavoriteStar from '../components/FavoriteStar.vue'
 
 /**
  * Hi-res MLB headshot URL builder. We override mlbImages.js's default
@@ -47,6 +45,9 @@ const router = useRouter()
 
 const playerId = computed(() => parseInt(route.params.playerId))
 
+// Today's POD lookup (shared module-level cache)
+const { isPOD } = useTodaysPOD()
+
 const player = ref(null)
 const team = ref(null)
 const windows = ref([])          // [{window_type, ...stats}]
@@ -56,7 +57,6 @@ const tonightGame = ref(null)    // {game, pitcher, pitcher_team, lineup_row}
 const pitcherAllowed = ref(null) // L14 pitcher_stats for tonight's pitcher
 const loading = ref(true)
 const error = ref(null)
-const isPitcher = ref(false)     // routed to PitcherDeepDive when true
 
 const CURRENT_SEASON = new Date().getFullYear()
 
@@ -88,29 +88,6 @@ async function load() {
 
     player.value = p
     team.value = p.team || null
-
-    // ── Pitcher detection ──────────────────────────────────────
-    // Position is the primary signal. If position is missing/ambiguous,
-    // fall back to checking whether a pitcher_stats row exists for this
-    // player this season. PitcherDeepDive owns its own data loading, so
-    // we just flip the flag and skip the batter queries.
-    let pitcherFlag = (p.position === 'P' || p.position === 'SP' || p.position === 'RP')
-    if (!pitcherFlag) {
-      const { count: psCount } = await supabase
-        .from('pitcher_stats')
-        .select('id', { count: 'exact', head: true })
-        .eq('pitcher_id', playerId.value)
-        .eq('season', CURRENT_SEASON)
-        .limit(1)
-      if ((psCount || 0) > 0) pitcherFlag = true
-    }
-    isPitcher.value = pitcherFlag
-
-    if (pitcherFlag) {
-      // PitcherDeepDive handles its own data — we're done here.
-      loading.value = false
-      return
-    }
 
     // 2. All windows for this batter, vs_hand = 'A' (overall)
     const { data: ws } = await supabase
@@ -240,7 +217,6 @@ watch(playerId, (newId, oldId) => {
     splitVsR.value = null
     tonightGame.value = null
     pitcherAllowed.value = null
-    isPitcher.value = false
     load()
   }
 })
@@ -318,26 +294,12 @@ const season = computed(() => {
 })
 
 // ── Pitch type breakdown ───────────────────────────────────────
-// Each window's row has a by_pitch_type JSONB column shaped like:
+// season.by_pitch_type is a JSONB object like:
 // { "4SM": {pa, hr, hr_pct, ev_avg, brl_pct}, "SL": {...}, ... }
-//
-// We support a user-selectable window with auto-fallback: if the chosen
-// window has no qualifying pitches, we walk up to larger windows until
-// we find data. This handles early-season cases and players returning
-// from IL where L7 has nothing but L30 has plenty.
-
-const pitchWindow = ref('l14')  // user-selected window for the pitch table
-
-// Fallback order: try requested window first, then walk to larger ones.
-const PITCH_WINDOW_FALLBACK = {
-  l7:     ['l7', 'l14', 'l30', 'season'],
-  l14:    ['l14', 'l30', 'season'],
-  l30:    ['l30', 'season'],
-  season: ['season'],
-}
-
-function buildPitchRows(bp) {
+const pitchBreakdown = computed(() => {
+  const bp = season.value?.by_pitch_type
   if (!bp || typeof bp !== 'object') return []
+
   return Object.entries(bp)
     .map(([code, stats]) => ({
       pitch: code,
@@ -349,33 +311,7 @@ function buildPitchRows(bp) {
     }))
     .filter(p => p.pa && p.pa >= 5)
     .sort((a, b) => (b.pa || 0) - (a.pa || 0))
-}
-
-// Returns { rows, effectiveWindow, fellBack }
-// - effectiveWindow: the window we actually used (may differ from request)
-// - fellBack: true if effectiveWindow !== requested
-const pitchBreakdownResult = computed(() => {
-  const requested = pitchWindow.value
-  const order = PITCH_WINDOW_FALLBACK[requested] || ['season']
-
-  for (const wt of order) {
-    const w = windows.value.find(x => x.window_type === wt)
-    if (!w) continue
-    const rows = buildPitchRows(w.by_pitch_type)
-    if (rows.length > 0) {
-      return {
-        rows,
-        effectiveWindow: wt,
-        fellBack: wt !== requested,
-      }
-    }
-  }
-
-  return { rows: [], effectiveWindow: requested, fellBack: false }
 })
-
-// Convenience for the existing template references
-const pitchBreakdown = computed(() => pitchBreakdownResult.value.rows)
 
 // ── Helpers ────────────────────────────────────────────────────
 function fmtSeasonStat(value, kind) {
@@ -452,37 +388,26 @@ function hrPctTone(pct) {
             @error="hideOnError"
           />
           <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-1.5">
+            <div class="flex items-baseline gap-2 flex-wrap mb-1.5">
               <h1 class="display-text text-2xl sm:text-3xl text-fg-800 tracking-tight leading-none truncate">
                 {{ player.name }}
               </h1>
-              <FavoriteStar
-                kind="player"
-                size="lg"
-                :item="{
-                  id: player.id,
-                  name: player.name,
-                  position: player.position,
-                  is_pitcher: isPitcher,
-                  team: team,
-                }"
-              />
+              <!-- POD badge: prominent gold trophy tag when this player is today's pick -->
+              <span
+                v-if="isPOD(playerId)"
+                class="display-num text-[10px] font-bold px-2 py-1 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none"
+                title="Today's Play of the Day"
+                aria-label="Today's Play of the Day"
+              >★ POD</span>
             </div>
             <div class="flex items-baseline gap-2 sm:gap-3 flex-wrap">
-              <router-link
-                v-if="team"
-                :to="{ name: 'team', params: { abbrev: team.abbrev } }"
-                class="label-bracket text-signal-400 hover:text-signal-200 transition"
-              >
+              <span v-if="team" class="label-bracket text-signal-400">
                 {{ team.abbrev }}
-              </router-link>
+              </span>
               <span v-if="player.position" class="label-caps">
                 {{ player.position }}
               </span>
-              <span v-if="isPitcher && player.throws" class="font-mono text-[10px] text-fg-500">
-                Throws {{ player.throws }}
-              </span>
-              <span v-else-if="player.bats" class="font-mono text-[10px] text-fg-500">
+              <span v-if="player.bats" class="font-mono text-[10px] text-fg-500">
                 Bats {{ player.bats }}
               </span>
             </div>
@@ -490,15 +415,6 @@ function hrPctTone(pct) {
         </div>
       </header>
 
-      <!-- ═══════ PITCHER VIEW ═══════ -->
-      <PitcherDeepDive
-        v-if="isPitcher"
-        :player="player"
-        :team="team"
-      />
-
-      <!-- ═══════ BATTER VIEW ═══════ -->
-      <template v-else>
       <!-- ── TONIGHT'S MATCHUP (if any) ───────────────────── -->
       <section
         v-if="tonightGame"
@@ -790,16 +706,9 @@ function hrPctTone(pct) {
       <section v-if="pitchBreakdown.length" class="px-4 sm:px-6 py-4 pb-8">
         <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
           <h2 class="label-bracket text-signal-400">pitch-type breakdown</h2>
-          <div class="flex items-baseline gap-3 flex-wrap">
-            <span
-              v-if="pitchBreakdownResult.fellBack"
-              class="label-caps !text-[8px] text-amber-300"
-              :title="`No qualifying pitches in ${pitchWindow.toUpperCase()} — falling back to ${pitchBreakdownResult.effectiveWindow.toUpperCase()}`"
-            >
-              ↳ showing {{ pitchBreakdownResult.effectiveWindow.toUpperCase() }}
-            </span>
-            <StatcastWindowToggle v-model="pitchWindow" />
-          </div>
+          <span class="label-caps !text-[8px] opacity-70">
+            season only · rolling-window breakdowns coming soon
+          </span>
         </div>
 
         <div class="bg-bg-50 border border-bg-200 overflow-x-auto">
@@ -848,17 +757,15 @@ function hrPctTone(pct) {
 
       <!-- Empty state for pitch breakdown -->
       <section v-else-if="season" class="px-4 sm:px-6 py-4 pb-8">
-        <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+        <div class="flex items-baseline justify-between mb-3">
           <h2 class="label-bracket text-signal-400">pitch-type breakdown</h2>
-          <StatcastWindowToggle v-model="pitchWindow" />
         </div>
         <div class="bg-bg-50 border border-bg-200 px-4 py-6 text-center">
           <div class="text-fg-500 text-xs italic">
-            Not enough at-bats in {{ pitchWindow.toUpperCase() }} to break down by pitch type.
+            Not enough at-bats yet to break down by pitch type.
           </div>
         </div>
       </section>
-      </template><!-- /BATTER VIEW -->
     </template>
 
     <!-- No-player-found fallback -->

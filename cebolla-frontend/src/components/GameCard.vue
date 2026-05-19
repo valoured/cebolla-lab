@@ -3,9 +3,11 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
 import { formatGameTimeShort, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
 import { useFavorites } from '../composables/useFavorites.js'
+import { useTodaysPOD } from '../composables/useTodaysPOD.js'
 import WindGauge from './WindGauge.vue'
 
 const { isTeamFav } = useFavorites()
+const { isPODGame, pod } = useTodaysPOD()
 
 const props = defineProps({
   game: { type: Object, required: true },
@@ -156,6 +158,13 @@ const favTeamPlaying = computed(() => {
             title="A favorite team is playing"
             aria-label="Favorite team is playing in this game"
           >★</span>
+          <!-- POD hint: subtle gold tag when today's POD is in this game -->
+          <span
+            v-if="isPODGame(game.id)"
+            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/15 text-amber-300 border border-amber-400/30 leading-none"
+            :title="`Today's POD: ${pod?.player_name}`"
+            aria-label="Today's Play of the Day"
+          >★ POD</span>
           <span class="display-num text-[11px] text-fg-500">{{ time }}</span>
           <span v-if="countdown" class="display-num text-[10px] text-signal-200 ml-0.5">
             ({{ countdown }})

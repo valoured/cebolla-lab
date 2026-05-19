@@ -5,6 +5,7 @@ import { formatLineupETA } from '../utils/timeHelpers.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useStatcastBatters } from '../composables/useStatcast.js'
 import { useFavorites } from '../composables/useFavorites.js'
+import { useTodaysPOD } from '../composables/useTodaysPOD.js'
 import {
   formatScore,
   formatTrend,
@@ -16,6 +17,7 @@ import BatterCard from './BatterCard.vue'
 import InfoTooltip from './InfoTooltip.vue'
 
 const { isPlayerFav } = useFavorites()
+const { isPOD } = useTodaysPOD()
 
 const props = defineProps({
   lineup:        { type: Array,  required: true },
@@ -537,6 +539,13 @@ const badgeLabel = computed(() => {
                   @error="hideOnError"
                 />
                 <span class="text-fg-700 text-sm">{{ row.name }}</span>
+                <!-- POD badge: bold gold trophy tag when this player is today's POD -->
+                <span
+                  v-if="isPOD(row.player_id)"
+                  class="display-num text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none"
+                  title="Today's Play of the Day"
+                  aria-label="Today's Play of the Day"
+                >★ POD</span>
                 <span
                   v-if="isPlayerFav(row.player_id)"
                   class="fav-row-marker"
