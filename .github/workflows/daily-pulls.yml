@@ -58,8 +58,10 @@ jobs:
   # ── SAVANT: heavy Statcast, 1x daily overnight ──
   pull-savant:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
-      || inputs.job == 'all' || inputs.job == 'savant'
+      always() && (
+        (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+        || inputs.job == 'all' || inputs.job == 'savant'
+      )
     runs-on: ubuntu-latest
     needs: pull-schedule
     steps:
@@ -75,8 +77,10 @@ jobs:
   # ── ARSENALS: pitcher pitch-type splits, 1x daily ──
   pull-arsenals:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
-      || inputs.job == 'all' || inputs.job == 'arsenals'
+      always() && (
+        (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+        || inputs.job == 'all' || inputs.job == 'arsenals'
+      )
     runs-on: ubuntu-latest
     needs: pull-schedule
     steps:
@@ -92,8 +96,10 @@ jobs:
   # ── PITCHER STATS: clean season stats from MLB API, 1x daily ──
   pull-pitcher-stats:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
-      || inputs.job == 'all' || inputs.job == 'pitcher_stats'
+      always() && (
+        (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+        || inputs.job == 'all' || inputs.job == 'pitcher_stats'
+      )
     runs-on: ubuntu-latest
     needs: pull-schedule
     steps:
@@ -109,8 +115,10 @@ jobs:
   # ── BATTER COUNTING STATS: R/RBI per PA from MLB API for HRR model, 1x daily ──
   pull-batter-counting-stats:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
-      || inputs.job == 'all' || inputs.job == 'batter_counting_stats'
+      always() && (
+        (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+        || inputs.job == 'all' || inputs.job == 'batter_counting_stats'
+      )
     runs-on: ubuntu-latest
     needs: pull-schedule
     steps:
@@ -126,9 +134,11 @@ jobs:
   # ── WEATHER: 3x daily ──
   pull-weather:
     if: |
-      (github.event_name == 'schedule' &&
-       contains(fromJSON('["13 6 * * *", "13 14 * * *", "17 20 * * *"]'), github.event.schedule))
-      || inputs.job == 'all' || inputs.job == 'weather'
+      always() && (
+        (github.event_name == 'schedule' &&
+         contains(fromJSON('["13 6 * * *", "13 14 * * *", "17 20 * * *"]'), github.event.schedule))
+        || inputs.job == 'all' || inputs.job == 'weather'
+      )
     runs-on: ubuntu-latest
     needs: pull-schedule
     steps:
@@ -195,9 +205,11 @@ jobs:
   # ── PROJECTIONS: hourly after odds + lineups ──
   compute-projections:
     if: |
-      (github.event_name == 'schedule' &&
-       contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
-      || inputs.job == 'all' || inputs.job == 'projections'
+      always() && (
+        (github.event_name == 'schedule' &&
+         contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+        || inputs.job == 'all' || inputs.job == 'projections'
+      )
     runs-on: ubuntu-latest
     needs: [pull-dk-odds, pull-lineups]
     steps:
