@@ -541,7 +541,32 @@ def main():
             log.info("  %-25s line=%.1f  count=%d", mkt, ln, cnt)
 
     if all_rows:
-        # Insert in batches of 500
+        # ─── Mark prior rows stale FIRST ───
+        # Without this, every snapshot ever inserted keeps is_current=TRUE,
+        # bloating queries and confusing settle logic. We update by the
+        # (game_id, player_id, market, book) tuple — line isn't part of the
+        # key because a single market call (e.g. h_r_rbi_yes) writes
+        # multiple lines and we want ALL of them marked stale together.
+        stale_keys = {
+            (r["game_id"], r["player_id"], r["market"], r["book"])
+            for r in all_rows
+        }
+        log.info("Marking %d (game,player,market,book) tuples stale…",
+                 len(stale_keys))
+        stale_count = 0
+        for (game_id, player_id, market, book) in stale_keys:
+            res = sb.table("odds_snapshots") \
+                .update({"is_current": False}) \
+                .eq("game_id", game_id) \
+                .eq("player_id", player_id) \
+                .eq("market", market) \
+                .eq("book", book) \
+                .eq("is_current", True) \
+                .execute()
+            stale_count += len(res.data or [])
+        log.info("  Marked %d prior rows is_current=FALSE", stale_count)
+
+        # Insert fresh rows in batches of 500
         for i in range(0, len(all_rows), 500):
             chunk = all_rows[i:i + 500]
             sb.table("odds_snapshots").insert(chunk).execute()
