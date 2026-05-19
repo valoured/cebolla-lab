@@ -37,16 +37,19 @@ log = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────
 # Stadium orientation: compass bearing (degrees) from home plate to CF.
 # 0 = N, 90 = E, 180 = S, 270 = W.
-# Used to convert wind direction → "out to CF" vs "in from CF" etc.
-# Approximate; refine with measured values if needed.
 # ────────────────────────────────────────────────────────────────
-CF_BEARING_BY_TEAM_ABBREV = {
+# Fallback CF bearings (kept only for the rare case the teams table
+# is missing home_plate_bearing). Real source of truth is the
+# teams.home_plate_bearing column. Update both if you ever refine a
+# value (and prefer updating the DB column).
+# ────────────────────────────────────────────────────────────────
+CF_BEARING_FALLBACK = {
     "ARI": 23,    "ATL": 50,   "BAL": 38,   "BOS": 45,   "CHC": 30,
-    "CWS": 130,   "CIN": 35,   "CLE": 0,    "COL": 0,    "DET": 145,
+    "CWS": 130,   "CIN": 35,   "CLE": 17,   "COL": 25,   "DET": 145,
     "HOU": 348,   "KC": 45,    "LAA": 60,   "LAD": 25,   "MIA": 40,
     "MIL": 135,   "MIN": 90,   "NYM": 25,   "NYY": 75,   "ATH": 60,
-    "PHI": 15,    "PIT": 117,  "SD": 0,     "SF": 90,    "SEA": 45,
-    "STL": 60,    "TB": 45,    "TEX": 0,    "TOR": 0,    "WSH": 30,
+    "PHI": 15,    "PIT": 117,  "SD": 22,    "SF": 90,    "SEA": 45,
+    "STL": 60,    "TB": 45,    "TEX": 24,   "TOR": 12,   "WSH": 30,
 }
 
 
@@ -197,7 +200,17 @@ def update_game_weather(game: dict, team: dict) -> bool:
     if not weather:
         return False
 
-    cf_bearing = CF_BEARING_BY_TEAM_ABBREV.get(team["abbrev"], 0)
+    # Primary source of truth: teams.home_plate_bearing column.
+    # Fallback to hardcoded dict if a row is missing the value
+    # (e.g. a new team added without the bearing populated yet).
+    cf_bearing = team.get("home_plate_bearing")
+    if cf_bearing is None:
+        cf_bearing = CF_BEARING_FALLBACK.get(team["abbrev"], 0)
+        log.warning(
+            "  Game %s: team %s missing home_plate_bearing in DB, using fallback %d",
+            game.get("id"), team.get("abbrev"), cf_bearing,
+        )
+    cf_bearing = int(cf_bearing)
     wind_label, wind_mult = wind_relative_to_cf(
         int(weather["wind_dir_deg"]), cf_bearing,
     )

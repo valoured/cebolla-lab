@@ -259,7 +259,7 @@ const favTeamPlaying = computed(() => {
                  If dome, both adapt: gauge dims and shows 'x', label says 'dome'. -->
             <div class="mt-1.5">
               <WindGauge
-                :team-abbrev="game.home_team?.abbrev"
+                :cf-bearing="game.home_team?.home_plate_bearing"
                 :wind-dir-deg="game.wind_dir_deg"
                 :wind-mph="game.wind_mph"
                 :is-dome="game.wind_label === 'dome'"

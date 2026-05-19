@@ -2,8 +2,9 @@
 /**
  * WindGauge.vue — Field-relative wind direction gauge.
  *
- * Renders a ~44px SVG showing:
+ * Renders an SVG showing:
  *   - A baseball-diamond outline (home plate at bottom, CF at top)
+ *     with labeled corners (CF / LF / RF / H) and outward tick marks
  *   - An arrow showing wind direction RELATIVE to the field's orientation
  *   - Wind speed as an mph number beside the gauge
  *
@@ -19,7 +20,10 @@
  *   - Dome / no wind:     dim placeholder, no arrow
  *
  * Props:
- *   - teamAbbrev: home team abbrev — used to look up CF bearing
+ *   - cfBearing:  compass bearing from home plate to CF (degrees, 0-359).
+ *                 Comes from teams.home_plate_bearing — the single source
+ *                 of truth. If null, gauge can't compute direction and
+ *                 falls back to a neutral display with just the mph.
  *   - windDirDeg: Open-Meteo wind direction in degrees (direction FROM which wind blows)
  *   - windMph:    wind speed in mph
  *   - isDome:     true if stadium is dome / wind irrelevant
@@ -28,23 +32,11 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  teamAbbrev: { type: String,  default: null },
+  cfBearing:  { type: [Number, String], default: null },
   windDirDeg: { type: [Number, String], default: null },
   windMph:    { type: [Number, String], default: null },
   isDome:     { type: Boolean, default: false },
 })
-
-// Home-plate-to-CF compass bearing per team. Mirrored from
-// pull_weather.py's CF_BEARING_BY_TEAM_ABBREV. Keep in sync if updated.
-// Approximate; refine with measured values if needed.
-const CF_BEARING_BY_TEAM = {
-  ARI: 23,  ATL: 50,  BAL: 38,  BOS: 45,  CHC: 30,
-  CWS:130,  CIN: 35,  CLE:  0,  COL:  0,  DET:145,
-  HOU:348,  KC:  45,  LAA: 60,  LAD: 25,  MIA: 40,
-  MIL:135,  MIN: 90,  NYM: 25,  NYY: 75,  ATH: 60,
-  PHI: 15,  PIT:117,  SD:   0,  SF:  90,  SEA: 45,
-  STL: 60,  TB:  45,  TEX:  0,  TOR:  0,  WSH: 30,
-}
 
 // Compute the field-relative wind angle in degrees.
 // 0   = blowing straight OUT to CF (helping HRs)
@@ -58,10 +50,10 @@ const CF_BEARING_BY_TEAM = {
 const fieldAngleDeg = computed(() => {
   const wd = Number(props.windDirDeg)
   if (!Number.isFinite(wd)) return null
-  const cfBearing = CF_BEARING_BY_TEAM[props.teamAbbrev] ?? null
-  if (cfBearing == null) return null
+  const cf = Number(props.cfBearing)
+  if (!Number.isFinite(cf)) return null
   const blowingToward = (wd + 180) % 360
-  return ((blowingToward - cfBearing) + 360) % 360
+  return ((blowingToward - cf) + 360) % 360
 })
 
 // Tone the arrow based on whether wind helps or hurts HRs.
