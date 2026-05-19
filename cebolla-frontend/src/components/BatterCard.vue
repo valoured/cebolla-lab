@@ -79,29 +79,57 @@ const marketLabel = computed(() => {
 
 <template>
   <div class="border-b border-bg-200/40 last:border-0">
-    <!-- Primary row: tap-to-expand -->
-    <button
-      type="button"
+    <!-- Primary row: tap-to-expand.
+         Uses a div with role="button" instead of a real <button> so that
+         the nested router-link tap targets (headshot, name) are valid HTML —
+         <a> can't nest inside <button>. Keyboard a11y preserved with
+         tabindex + keydown handler. -->
+    <div
+      role="button"
+      tabindex="0"
       @click="toggle"
-      class="w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-bg-100/40 transition-colors"
+      @keydown.enter.prevent="toggle"
+      @keydown.space.prevent="toggle"
+      class="w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-bg-100/40 transition-colors cursor-pointer focus:outline-none focus-visible:bg-bg-100/40"
+      :aria-expanded="expanded"
+      :aria-label="`${row.name} — tap to ${expanded ? 'collapse' : 'expand'}`"
     >
       <!-- Order # -->
       <span class="display-num text-xs text-fg-500 shrink-0 w-4">{{ row.batting_order }}</span>
 
-      <!-- Headshot -->
-      <img
-        v-if="row.mlbam_id"
-        :src="playerHeadshotUrl(row.mlbam_id)"
-        :alt="row.name"
-        class="player-headshot"
-        loading="lazy"
-        @error="hideOnError"
-      />
+      <!-- Headshot is a separate tap target → player profile.
+           @click.stop so the surrounding button's toggle() doesn't fire. -->
+      <router-link
+        :to="{ name: 'player', params: { playerId: row.player_id } }"
+        class="player-link"
+        :aria-label="`Open ${row.name} profile`"
+        @click.stop
+      >
+        <img
+          v-if="row.mlbam_id"
+          :src="playerHeadshotUrl(row.mlbam_id)"
+          :alt="row.name"
+          class="player-headshot"
+          loading="lazy"
+          @error="hideOnError"
+        />
+        <span v-else class="player-headshot player-headshot--fallback">
+          <span class="font-mono text-[10px] text-fg-500">→</span>
+        </span>
+      </router-link>
 
       <!-- Name + bats -->
       <div class="flex-1 min-w-0">
         <div class="flex items-baseline gap-1.5">
-          <span class="text-fg-700 text-sm truncate">{{ row.name }}</span>
+          <!-- Name is also a tap target → player profile.
+               Inline so the card's toggle still fires for the rest of the row. -->
+          <router-link
+            :to="{ name: 'player', params: { playerId: row.player_id } }"
+            class="player-name-link truncate"
+            @click.stop
+          >
+            {{ row.name }}
+          </router-link>
           <span
             v-if="isPlayerFav(row.player_id)"
             class="fav-row-marker shrink-0"
@@ -156,7 +184,7 @@ const marketLabel = computed(() => {
         class="shrink-0 text-fg-500 text-xs transition-transform duration-200"
         :class="{ 'rotate-180': expanded }"
       >▾</span>
-    </button>
+    </div>
 
     <!-- Expanded detail (4 Statcast cells + BvP + LOG) -->
     <div v-if="expanded" class="px-3 pb-3 pt-1 bg-bg-50/60 border-t border-bg-200/40">
@@ -236,6 +264,52 @@ const marketLabel = computed(() => {
 </template>
 
 <style scoped>
+/* Tap target wrapping the headshot — when tapped, navigates to the
+   player profile. @click.stop on the link prevents the outer button's
+   expand-toggle from firing on the same tap. */
+.player-link {
+  display: inline-flex;
+  flex-shrink: 0;
+  border-radius: 50%;
+  outline: none;
+  transition: transform 120ms ease;
+}
+.player-link:active {
+  transform: scale(0.94);
+}
+.player-link:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255, 42, 42, 0.55);
+}
+.player-link:hover .player-headshot {
+  filter: grayscale(0) brightness(1.10);
+  border-color: rgba(255, 42, 42, 0.40);
+}
+
+/* Fallback "headshot" when no mlbam_id — keeps the tap target visible */
+.player-headshot--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 42, 42, 0.05);
+  border: 1px dashed rgba(255, 42, 42, 0.30);
+}
+
+/* Player name is also a tap target → profile. Visual hint on hover/active
+   so users know it's clickable, but it stays styled like the surrounding text. */
+.player-name-link {
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  font-size: 14px;
+  line-height: 1.2;
+  transition: color 120ms ease;
+  min-width: 0;
+}
+.player-name-link:hover,
+.player-name-link:active {
+  color: rgba(255, 42, 42, 0.95);
+  text-decoration: underline;
+}
+
 /* Inline star for favorited players. Same treatment as BatterTable. */
 .fav-row-marker {
   font-size: 10px;
