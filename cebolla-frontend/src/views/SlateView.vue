@@ -21,18 +21,36 @@ function toggleFilter(key) {
   activeFilter.value = activeFilter.value === key ? null : key
 }
 
+// Finals get pushed to the bottom of the slate. Within each group (non-final
+// vs final), the composable's existing game_time_utc ascending order is
+// preserved by the stable sort.
+function isFinalStatus(status) {
+  const s = (status || '').toLowerCase()
+  return s.includes('final') || s.includes('game over') || s.includes('completed early')
+}
+
 const filteredGames = computed(() => {
-  if (!activeFilter.value) return games.value
-  return games.value.filter(g => {
-    const hrf = Number(g.hr_factor_overall) || 0
-    const status = (g.status || '').toLowerCase()
-    switch (activeFilter.value) {
-      case 'hot':   return hrf >= 1.05
-      case 'cold':  return hrf > 0 && hrf <= 0.95
-      case 'dome':  return g.wind_label === 'dome'
-      case 'live':  return status.includes('progress')
-      default:      return true
-    }
+  const list = !activeFilter.value
+    ? games.value
+    : games.value.filter(g => {
+        const hrf = Number(g.hr_factor_overall) || 0
+        const status = (g.status || '').toLowerCase()
+        switch (activeFilter.value) {
+          case 'hot':   return hrf >= 1.05
+          case 'cold':  return hrf > 0 && hrf <= 0.95
+          case 'dome':  return g.wind_label === 'dome'
+          case 'live':  return status.includes('progress')
+          default:      return true
+        }
+      })
+
+  // Stable partition: non-finals first, finals last.
+  // .slice() to avoid mutating the source, then sort by finality only —
+  // V8's sort is stable, so within-group time order survives.
+  return list.slice().sort((a, b) => {
+    const af = isFinalStatus(a.status) ? 1 : 0
+    const bf = isFinalStatus(b.status) ? 1 : 0
+    return af - bf
   })
 })
 

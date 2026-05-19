@@ -139,7 +139,7 @@ const favTeamPlaying = computed(() => {
   <router-link
     :to="{ name: 'hr-report', params: { gameId: game.id } }"
     class="block group reticle-card"
-    :class="{ 'live-pulse': isInProgress, 'delayed-pulse': isDelayed }"
+    :class="{ 'live-pulse': isInProgress, 'delayed-pulse': isDelayed, 'is-final': isFinal }"
   >
     <article
       class="bg-bg-50 border border-bg-200 hover:border-signal-400/50
@@ -297,6 +297,17 @@ const favTeamPlaying = computed(() => {
   filter: grayscale(0) brightness(1.1) contrast(1.05);
   opacity: 1;
   transform: scale(1.05);
+}
+
+/* ── Final games: subtle dim. Pushed to the bottom of the slate by
+       SlateView's sort. Keep colors readable but signal "done" at a glance.
+       Hover restores opacity so the card still feels interactive. ── */
+.is-final article {
+  opacity: 0.55;
+  transition: opacity 200ms ease, border-color 200ms ease;
+}
+.is-final:hover article {
+  opacity: 0.85;
 }
 
 /* ── Live game: signal-red box-shadow pulse on the article ── */
