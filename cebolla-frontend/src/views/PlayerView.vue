@@ -29,6 +29,7 @@ import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { formatGameTime, formatCountdown } from '../utils/timeHelpers.js'
 import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
+import PitcherDeepDive from '../components/PitcherDeepDive.vue'
 
 /**
  * Hi-res MLB headshot URL builder. We override mlbImages.js's default
@@ -53,6 +54,7 @@ const tonightGame = ref(null)    // {game, pitcher, pitcher_team, lineup_row}
 const pitcherAllowed = ref(null) // L14 pitcher_stats for tonight's pitcher
 const loading = ref(true)
 const error = ref(null)
+const isPitcher = ref(false)     // routed to PitcherDeepDive when true
 
 const CURRENT_SEASON = new Date().getFullYear()
 
@@ -84,6 +86,29 @@ async function load() {
 
     player.value = p
     team.value = p.team || null
+
+    // ── Pitcher detection ──────────────────────────────────────
+    // Position is the primary signal. If position is missing/ambiguous,
+    // fall back to checking whether a pitcher_stats row exists for this
+    // player this season. PitcherDeepDive owns its own data loading, so
+    // we just flip the flag and skip the batter queries.
+    let pitcherFlag = (p.position === 'P' || p.position === 'SP' || p.position === 'RP')
+    if (!pitcherFlag) {
+      const { count: psCount } = await supabase
+        .from('pitcher_stats')
+        .select('id', { count: 'exact', head: true })
+        .eq('pitcher_id', playerId.value)
+        .eq('season', CURRENT_SEASON)
+        .limit(1)
+      if ((psCount || 0) > 0) pitcherFlag = true
+    }
+    isPitcher.value = pitcherFlag
+
+    if (pitcherFlag) {
+      // PitcherDeepDive handles its own data — we're done here.
+      loading.value = false
+      return
+    }
 
     // 2. All windows for this batter, vs_hand = 'A' (overall)
     const { data: ws } = await supabase
@@ -213,6 +238,7 @@ watch(playerId, (newId, oldId) => {
     splitVsR.value = null
     tonightGame.value = null
     pitcherAllowed.value = null
+    isPitcher.value = false
     load()
   }
 })
@@ -394,7 +420,10 @@ function hrPctTone(pct) {
               <span v-if="player.position" class="label-caps">
                 {{ player.position }}
               </span>
-              <span v-if="player.bats" class="font-mono text-[10px] text-fg-500">
+              <span v-if="isPitcher && player.throws" class="font-mono text-[10px] text-fg-500">
+                Throws {{ player.throws }}
+              </span>
+              <span v-else-if="player.bats" class="font-mono text-[10px] text-fg-500">
                 Bats {{ player.bats }}
               </span>
             </div>
@@ -402,6 +431,15 @@ function hrPctTone(pct) {
         </div>
       </header>
 
+      <!-- ═══════ PITCHER VIEW ═══════ -->
+      <PitcherDeepDive
+        v-if="isPitcher"
+        :player="player"
+        :team="team"
+      />
+
+      <!-- ═══════ BATTER VIEW ═══════ -->
+      <template v-else>
       <!-- ── TONIGHT'S MATCHUP (if any) ───────────────────── -->
       <section
         v-if="tonightGame"
@@ -753,6 +791,7 @@ function hrPctTone(pct) {
           </div>
         </div>
       </section>
+      </template><!-- /BATTER VIEW -->
     </template>
 
     <!-- No-player-found fallback -->
