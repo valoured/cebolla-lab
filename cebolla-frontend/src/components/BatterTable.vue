@@ -162,17 +162,21 @@ const rows = computed(() => {
 })
 
 // ── Sorting ─────────────────────────────────────────────────────
-// Default: edge descending so the value bets surface at the top.
+// Default: 'combined' — multiplicative blend of normalized Edge × Contact
+// that surfaces bets where BOTH market value and recent contact agree.
+// Click any column header to override (Edge alone, Contact alone, etc).
 // `null` sortKey === lineup order (no sort).
 //
 // Click a column header to sort. Click the same header to toggle direction.
 // Click # column to reset to lineup order.
 //
 // Mobile: a small dropdown above the card list exposes the same controls.
-const sortKey = ref('edge')         // null | 'odds' | 'proj' | 'edge' | 'bvp' | 'hh' | 'brl' | 'xslg' | 'xba'
+const sortKey = ref('combined')     // null | 'odds' | 'proj' | 'edge' | 'combined' | 'contact' | 'bvp' | 'hh' | 'brl' | 'xslg' | 'xba'
 const sortDir = ref('desc')         // 'asc' | 'desc'
 
 // Sortable column metadata — single source of truth for headers + the mobile dropdown.
+// 'combined' is the implicit default but isn't a visible column; users access
+// it by leaving the sort alone, and any column click overrides.
 const SORT_COLUMNS = [
   { key: 'odds',    label: 'Odds' },
   { key: 'proj',    label: 'Proj%' },
@@ -185,16 +189,51 @@ const SORT_COLUMNS = [
   { key: 'xba',     label: 'xBA' },
 ]
 
+// ── Combined-sort math ─────────────────────────────────────────────
+// Multiplicative score that rewards being good at BOTH market edge AND
+// recent contact quality. A batter with +8% edge but 20 contact ranks
+// LOWER than one with +4% edge and 80 contact — the product punishes
+// one-trick stats and surfaces "balanced" picks.
+//
+// Both factors are normalized to 0-100 first so they multiply on equal
+// footing (otherwise edge's ~±10% range would be drowned out by contact's
+// 0-100 range).
+//
+// Missing values fall back to neutral 50 so batters with partial data
+// land near the middle of the ranking rather than being excluded or
+// shooting to the top/bottom.
+const EDGE_CLAMP_PCT = 10  // clamp edge to ±10% before normalizing
+
+function normalizeEdge(edge) {
+  if (edge == null || !Number.isFinite(Number(edge))) return 50
+  const pct = Number(edge) * 100  // edge stored as decimal (0.05 = 5%)
+  const clamped = Math.max(-EDGE_CLAMP_PCT, Math.min(EDGE_CLAMP_PCT, pct))
+  // Map -10% to +10% → 0 to 100
+  return ((clamped + EDGE_CLAMP_PCT) / (2 * EDGE_CLAMP_PCT)) * 100
+}
+
+function normalizeContact(score) {
+  if (score == null || !Number.isFinite(Number(score))) return 50
+  return Math.max(0, Math.min(100, Number(score)))
+}
+
+function combinedScore(row) {
+  const e = normalizeEdge(row.proj?.edge)
+  const c = normalizeContact(row.contact_score)
+  return e * c
+}
+
 function sortValue(row, key) {
-  if (key === 'odds')    return row.odds?.american_odds ?? null
-  if (key === 'proj')    return row.proj?.pct ?? null
-  if (key === 'edge')    return row.proj?.edge ?? null
-  if (key === 'contact') return row.contact_score ?? null
-  if (key === 'bvp')     return row.bvp?.hr_per_pa ?? null
-  if (key === 'hh')      return row.hard_hit_pct ?? null
-  if (key === 'brl')     return row.barrel_pct ?? null
-  if (key === 'xslg')    return row.xslg ?? null
-  if (key === 'xba')     return row.xba ?? null
+  if (key === 'odds')     return row.odds?.american_odds ?? null
+  if (key === 'proj')     return row.proj?.pct ?? null
+  if (key === 'edge')     return row.proj?.edge ?? null
+  if (key === 'combined') return combinedScore(row)
+  if (key === 'contact')  return row.contact_score ?? null
+  if (key === 'bvp')      return row.bvp?.hr_per_pa ?? null
+  if (key === 'hh')       return row.hard_hit_pct ?? null
+  if (key === 'brl')      return row.barrel_pct ?? null
+  if (key === 'xslg')     return row.xslg ?? null
+  if (key === 'xba')      return row.xba ?? null
   return null
 }
 
