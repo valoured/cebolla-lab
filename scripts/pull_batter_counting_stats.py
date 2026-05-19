@@ -157,29 +157,18 @@ def upsert_counting_stats(
     We only target vs_hand='A' since R/RBI per PA aren't available split
     by handedness from MLB Stats API for free.
 
-    If no row exists yet (rare — pull_savant runs first), we insert a
-    minimal row to avoid losing the counting stats.
+    If no matching row exists, we SKIP rather than insert. The parent row
+    is owned by pull_savant.py; if it hasn't created the row yet, we wait.
+    Inserting a stub here would create orphaned rows missing all the
+    Savant fields the projection model needs.
     """
-    # Try update first
-    res = sb.table("batter_stats") \
+    sb.table("batter_stats") \
         .update(counting) \
         .eq("batter_id", batter_id) \
         .eq("season", CURRENT_SEASON) \
         .eq("window_type", window_type) \
         .eq("vs_hand", "A") \
         .execute()
-
-    if not res.data:
-        # No matching row — insert a minimal stub. pull_savant will
-        # fill in the rest next time it runs.
-        sb.table("batter_stats").insert({
-            "batter_id": batter_id,
-            "season": CURRENT_SEASON,
-            "window_type": window_type,
-            "vs_hand": "A",
-            **counting,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -206,14 +195,14 @@ def process_batter(b: dict) -> tuple[bool, bool]:
 
     time.sleep(REQUEST_DELAY)
 
-    # L14
+    # L14 (matches pull_savant.py window_type naming: "l14", not "l14g")
     l14_stat = fetch_l14(mlbam_id)
     l14_ok = False
     if l14_stat:
         rates = extract_rates(l14_stat)
         # Skip if no PA in window (didn't play in last 14 days)
         if rates["runs"] or rates["rbis"]:
-            upsert_counting_stats(batter_id, "l14g", rates)
+            upsert_counting_stats(batter_id, "l14", rates)
             l14_ok = True
 
     return season_ok, l14_ok

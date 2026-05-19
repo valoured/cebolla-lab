@@ -370,7 +370,7 @@ def get_batter_stats_l14_map(batter_ids: list[int]) -> dict[int, dict]:
         return {}
     res = sb.table("batter_stats").select("*") \
         .in_("batter_id", batter_ids) \
-        .eq("window_type", "l14g") \
+        .eq("window_type", "l14") \
         .eq("vs_hand", "A") \
         .execute()
     return {r["batter_id"]: r for r in res.data}
