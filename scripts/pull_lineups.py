@@ -402,11 +402,20 @@ def main():
     log.info("Found %d games today", len(games))
 
     total_rows = 0
-    by_status = {"confirmed": 0, "projected": 0, "last_known": 0, "empty": 0}
+    by_status = {"confirmed": 0, "projected": 0, "last_known": 0, "empty": 0, "error": 0}
 
     for i, g in enumerate(games, 1):
         log.info("[%d/%d] gamePk %d", i, len(games), g["mlb_game_pk"])
-        rows, status = process_game(g, team_map, player_map)
+        # Per-game try/except — one game with a duplicate-key conflict or
+        # malformed boxscore must not kill the entire run. Log, count, move on.
+        try:
+            rows, status = process_game(g, team_map, player_map)
+        except Exception as e:
+            by_status["error"] = by_status.get("error", 0) + 1
+            log.warning("   ✗ game %d failed: %s", g.get("mlb_game_pk"), e)
+            time.sleep(REQUEST_DELAY)
+            continue
+
         by_status[status] = by_status.get(status, 0) + 1
         if rows:
             total_rows += rows
@@ -422,12 +431,13 @@ def main():
 
     log.info(
         "🧅 Lineups sync complete: %d batters total | "
-        "confirmed=%d projected=%d last_known=%d empty=%d",
+        "confirmed=%d projected=%d last_known=%d empty=%d error=%d",
         total_rows,
         by_status["confirmed"],
         by_status["projected"],
         by_status["last_known"],
         by_status["empty"],
+        by_status.get("error", 0),
     )
 
 
