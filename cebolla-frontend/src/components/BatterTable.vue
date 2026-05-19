@@ -4,9 +4,12 @@ import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { formatLineupETA } from '../utils/timeHelpers.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useStatcastBatters } from '../composables/useStatcast.js'
+import { useFavorites } from '../composables/useFavorites.js'
 import StatcastWindowToggle from './StatcastWindowToggle.vue'
 import BatterCard from './BatterCard.vue'
 import InfoTooltip from './InfoTooltip.vue'
+
+const { isPlayerFav } = useFavorites()
 
 const props = defineProps({
   lineup:        { type: Array,  required: true },
@@ -291,6 +294,12 @@ const badgeLabel = computed(() => {
                   @error="hideOnError"
                 />
                 <span class="text-fg-700 text-sm">{{ row.name }}</span>
+                <span
+                  v-if="isPlayerFav(row.player_id)"
+                  class="fav-row-marker"
+                  title="Favorite player"
+                  aria-label="Favorite player"
+                >★</span>
                 <span class="font-mono text-[9px] text-fg-500">{{ row.bats || '?' }}</span>
                 <span v-if="row.position"
                       class="font-mono text-[9px] text-fg-400">·{{ row.position }}</span>
@@ -402,6 +411,17 @@ const badgeLabel = computed(() => {
 </template>
 
 <style scoped>
+/* Inline star for favorited players in the row. Subtle gold,
+   small enough to not disrupt the table rhythm. */
+.fav-row-marker {
+  font-size: 10px;
+  line-height: 1;
+  color: #FFD23F;
+  filter: drop-shadow(0 0 2px rgba(255, 210, 63, 0.5));
+  user-select: none;
+  margin-left: -2px;
+}
+
 .player-headshot {
   width: 24px;
   height: 24px;

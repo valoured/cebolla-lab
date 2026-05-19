@@ -2,6 +2,9 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
 import { formatGameTimeShort, formatCountdown, minutesUntil } from '../utils/timeHelpers.js'
+import { useFavorites } from '../composables/useFavorites.js'
+
+const { isTeamFav } = useFavorites()
 
 const props = defineProps({
   game: { type: Object, required: true },
@@ -122,6 +125,14 @@ const inningDisplay = computed(() => {
 
 const awayLogo = computed(() => teamLogoUrl(props.game.away_team?.mlb_id))
 const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
+
+// Favorite team detection — if either team in this game is favorited,
+// surface a small ★ badge so the user can spot their teams on the slate.
+const favTeamPlaying = computed(() => {
+  const a = props.game.away_team?.id
+  const h = props.game.home_team?.id
+  return (a && isTeamFav(a)) || (h && isTeamFav(h))
+})
 </script>
 
 <template>
@@ -138,6 +149,12 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
       <!-- Header strip: time, status, venue -->
       <div class="px-3 py-2 border-b border-bg-200 flex items-center justify-between gap-2">
         <div class="flex items-center gap-2">
+          <span
+            v-if="favTeamPlaying"
+            class="fav-team-marker"
+            title="A favorite team is playing"
+            aria-label="Favorite team is playing in this game"
+          >★</span>
           <span class="display-num text-[11px] text-fg-500">{{ time }}</span>
           <span v-if="countdown" class="display-num text-[10px] text-signal-200 ml-0.5">
             ({{ countdown }})
@@ -254,6 +271,18 @@ const homeLogo = computed(() => teamLogoUrl(props.game.home_team?.mlb_id))
 </template>
 
 <style scoped>
+/* ── Favorite team marker on the header strip ── */
+.fav-team-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  color: #FFD23F;
+  filter: drop-shadow(0 0 3px rgba(255, 210, 63, 0.55));
+  user-select: none;
+}
+
 /* ── Team logos: bigger, less muted ── */
 .team-logo {
   width: 32px;

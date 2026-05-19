@@ -13,7 +13,10 @@
 import { ref, computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
+import { useFavorites } from '../composables/useFavorites.js'
 import InfoTooltip from './InfoTooltip.vue'
+
+const { isPlayerFav } = useFavorites()
 
 const props = defineProps({
   row:        { type: Object, required: true },
@@ -99,6 +102,12 @@ const marketLabel = computed(() => {
       <div class="flex-1 min-w-0">
         <div class="flex items-baseline gap-1.5">
           <span class="text-fg-700 text-sm truncate">{{ row.name }}</span>
+          <span
+            v-if="isPlayerFav(row.player_id)"
+            class="fav-row-marker shrink-0"
+            title="Favorite player"
+            aria-label="Favorite player"
+          >★</span>
           <span class="font-mono text-[9px] text-fg-500 shrink-0">{{ row.bats || '?' }}</span>
         </div>
         <div class="flex items-baseline gap-2 mt-0.5">
@@ -227,6 +236,16 @@ const marketLabel = computed(() => {
 </template>
 
 <style scoped>
+/* Inline star for favorited players. Same treatment as BatterTable. */
+.fav-row-marker {
+  font-size: 10px;
+  line-height: 1;
+  color: #FFD23F;
+  filter: drop-shadow(0 0 2px rgba(255, 210, 63, 0.5));
+  user-select: none;
+  margin-left: -2px;
+}
+
 .player-headshot {
   width: 28px;
   height: 28px;

@@ -31,6 +31,7 @@ import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
 import PitcherDeepDive from '../components/PitcherDeepDive.vue'
 import StatcastWindowToggle from '../components/StatcastWindowToggle.vue'
+import FavoriteStar from '../components/FavoriteStar.vue'
 
 /**
  * Hi-res MLB headshot URL builder. We override mlbImages.js's default
@@ -451,9 +452,22 @@ function hrPctTone(pct) {
             @error="hideOnError"
           />
           <div class="flex-1 min-w-0">
-            <h1 class="display-text text-2xl sm:text-3xl text-fg-800 tracking-tight leading-none mb-1.5 truncate">
-              {{ player.name }}
-            </h1>
+            <div class="flex items-center gap-2 mb-1.5">
+              <h1 class="display-text text-2xl sm:text-3xl text-fg-800 tracking-tight leading-none truncate">
+                {{ player.name }}
+              </h1>
+              <FavoriteStar
+                kind="player"
+                size="lg"
+                :item="{
+                  id: player.id,
+                  name: player.name,
+                  position: player.position,
+                  is_pitcher: isPitcher,
+                  team: team,
+                }"
+              />
+            </div>
             <div class="flex items-baseline gap-2 sm:gap-3 flex-wrap">
               <span v-if="team" class="label-bracket text-signal-400">
                 {{ team.abbrev }}

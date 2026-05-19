@@ -25,8 +25,11 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../supabase.js'
+import { useFavorites } from '../composables/useFavorites.js'
+import FavoriteStar from './FavoriteStar.vue'
 
 const router = useRouter()
+const { playerList: favPlayers, teamList: favTeams, totalCount: favCount } = useFavorites()
 
 const isOpen = ref(false)
 const query = ref('')
@@ -247,14 +250,65 @@ function teamFlatIndex(i) {
           <!-- Results body -->
           <div class="search-body">
             <!-- Empty state: nothing typed yet -->
-            <div v-if="!query.trim()" class="search-empty">
-              <div class="search-empty-title">Search players or teams</div>
-              <div class="search-empty-hint">
-                Try a partial name (<span class="display-num">jud</span>) or a team code (<span class="display-num">NYY</span>).
-                <br>
-                Use <kbd>↑</kbd> <kbd>↓</kbd> to walk, <kbd>Enter</kbd> to open.
+            <template v-if="!query.trim()">
+              <!-- Favorites surfaced when present -->
+              <div v-if="favCount > 0">
+                <div v-if="favPlayers.length" class="search-section">
+                  <div class="search-section-head">
+                    <span class="label-bracket text-fg-500">★ favorites · players</span>
+                    <span class="label-caps !text-[8px] opacity-70">{{ favPlayers.length }}</span>
+                  </div>
+                  <button
+                    v-for="fp in favPlayers"
+                    :key="`fav-p-${fp.id}`"
+                    type="button"
+                    @click="selectResult({ kind: 'player', id: fp.id, payload: fp })"
+                    class="search-row"
+                  >
+                    <span class="search-row-name">{{ fp.name }}</span>
+                    <span class="search-row-meta">
+                      <span v-if="fp.team_abbrev" class="label-bracket text-signal-400">{{ fp.team_abbrev }}</span>
+                      <span v-if="fp.position" class="label-caps !text-[8px]">{{ fp.position }}</span>
+                      <FavoriteStar kind="player" size="sm" :item="fp" />
+                    </span>
+                  </button>
+                </div>
+
+                <div v-if="favTeams.length" class="search-section">
+                  <div class="search-section-head">
+                    <span class="label-bracket text-fg-500">★ favorites · teams</span>
+                    <span class="label-caps !text-[8px] opacity-70">{{ favTeams.length }}</span>
+                  </div>
+                  <button
+                    v-for="ft in favTeams"
+                    :key="`fav-t-${ft.id}`"
+                    type="button"
+                    @click="selectResult({ kind: 'team', id: ft.id, payload: ft })"
+                    class="search-row"
+                  >
+                    <span class="search-row-name">
+                      <span class="label-bracket text-signal-400 mr-2">{{ ft.abbrev }}</span>
+                      {{ ft.name }}
+                    </span>
+                    <span class="search-row-meta">
+                      <FavoriteStar kind="team" size="sm" :item="ft" />
+                    </span>
+                  </button>
+                </div>
               </div>
-            </div>
+
+              <!-- No favorites yet -->
+              <div v-else class="search-empty">
+                <div class="search-empty-title">Search players or teams</div>
+                <div class="search-empty-hint">
+                  Try a partial name (<span class="display-num">jud</span>) or a team code (<span class="display-num">NYY</span>).
+                  <br>
+                  Use <kbd>↑</kbd> <kbd>↓</kbd> to walk, <kbd>Enter</kbd> to open.
+                  <br><br>
+                  Tap the ★ on any player or team to add them here.
+                </div>
+              </div>
+            </template>
 
             <!-- Loading -->
             <div v-else-if="loading && !flatResults.length" class="search-empty">
@@ -290,6 +344,11 @@ function teamFlatIndex(i) {
                   <span class="search-row-meta">
                     <span v-if="p.team?.abbrev" class="label-bracket text-signal-400">{{ p.team.abbrev }}</span>
                     <span v-if="p.position" class="label-caps !text-[8px]">{{ p.position }}</span>
+                    <FavoriteStar
+                      kind="player"
+                      size="sm"
+                      :item="{ id: p.id, name: p.name, position: p.position, is_pitcher: p.is_pitcher, team: p.team }"
+                    />
                   </span>
                 </button>
               </div>
@@ -315,6 +374,7 @@ function teamFlatIndex(i) {
                   </span>
                   <span class="search-row-meta">
                     <span class="label-caps !text-[8px] opacity-60">team</span>
+                    <FavoriteStar kind="team" size="sm" :item="t" />
                   </span>
                 </button>
               </div>
