@@ -5,6 +5,13 @@ import { formatLineupETA } from '../utils/timeHelpers.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useStatcastBatters } from '../composables/useStatcast.js'
 import { useFavorites } from '../composables/useFavorites.js'
+import {
+  buildContactSnapshot,
+  formatScore,
+  formatTrend,
+  scoreColorClass,
+  MIN_PA as CONTACT_MIN_PA,
+} from '../composables/useContactScore.js'
 import StatcastWindowToggle from './StatcastWindowToggle.vue'
 import BatterCard from './BatterCard.vue'
 import InfoTooltip from './InfoTooltip.vue'
@@ -36,9 +43,65 @@ const {
   loading: statcastLoading,
 } = useStatcastBatters(playerIds, 'l14')
 
+// Second instance: always loads SEASON stats. Used as the baseline for
+// the contact-score trend indicator (L14 vs season delta). Cached
+// separately by the composable's internal cache layer.
+const {
+  stats: seasonStats,
+} = useStatcastBatters(playerIds, 'season')
+
 const currentWindow = computed({
   get: () => windowType.value,
   set: (v) => setWindow(v),
+})
+
+// ── Contact Score (composable) ─────────────────────────────────
+// Computes a 0-100 score per batter based on percentile rank within tonight's
+// slate (pool = currently-loaded statcastStats values). Trend = L14 score
+// minus season score, both computed against the same L14 pool to keep the
+// scale consistent.
+//
+// IMPORTANT: contactSnapshot uses the L14 stats as the percentile reference
+// even when the user is viewing a different window. This keeps the score
+// stable across window toggles — the score is a property of the player vs
+// tonight, not of the toggle state.
+const contactSnapshot = computed(() => {
+  // Build rows compatible with buildContactSnapshot's expected shape.
+  // Always use L14 stats for the pool + L14 score (the "running hot" sample).
+  const l14Rows = []
+  const seasonRows = []
+
+  // Iterate the lineup once so we have aligned arrays.
+  // statcastStats might be the active window (l14 by default) — when the
+  // user toggles to l30/l7/season, we'd lose our l14 baseline. To keep this
+  // honest, contactSnapshot only computes when the active window IS l14.
+  //
+  // (This avoids showing a "trend" computed from L7 vs season, which would
+  // be misleading. The contact score column is L14-anchored by definition.)
+  if (windowType.value !== 'l14') return new Map()
+
+  for (const l of props.lineup) {
+    const player = l.player
+    if (!player) continue
+    const l14 = statcastStats.value[player.id]
+    const season = seasonStats.value[player.id]
+    if (l14) l14Rows.push({
+      batter_id: player.id,
+      pa: l14.pa,
+      barrel_pct: l14.barrel_pct,
+      hard_hit_pct: l14.hard_hit_pct,
+      xslg: l14.xslg,
+    })
+    if (season) seasonRows.push({
+      batter_id: player.id,
+      pa: season.pa,
+      barrel_pct: season.barrel_pct,
+      hard_hit_pct: season.hard_hit_pct,
+      xslg: season.xslg,
+    })
+  }
+
+  return buildContactSnapshot(l14Rows, seasonRows)
 })
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -92,6 +155,7 @@ function edgeDisplay(edge) {
 
 // ── Row construction ────────────────────────────────────────────
 const rows = computed(() => {
+  const snap = contactSnapshot.value  // Map<batter_id, {score, trend}>
   return props.lineup.map(l => {
     const player = l.player
     if (!player) return null
@@ -107,6 +171,10 @@ const rows = computed(() => {
       : null
 
     const hrPerPa = stats.hr_per_pa != null ? Number(stats.hr_per_pa) * 100 : null
+
+    // Contact score + trend — null when window != l14 OR PA < CONTACT_MIN_PA
+    // OR pool too small. Read from the precomputed snapshot map.
+    const cs = snap.get(player.id) || { score: null, trend: null }
 
     return {
       lineupId: l.id,
@@ -127,6 +195,8 @@ const rows = computed(() => {
       odds: o,
       proj,
       bvp: bvpRow,
+      contact_score: cs.score,
+      contact_trend: cs.trend,
     }
   }).filter(Boolean)
 })
@@ -144,25 +214,27 @@ const sortDir = ref('desc')         // 'asc' | 'desc'
 
 // Sortable column metadata — single source of truth for headers + the mobile dropdown.
 const SORT_COLUMNS = [
-  { key: 'odds', label: 'Odds' },
-  { key: 'proj', label: 'Proj%' },
-  { key: 'edge', label: 'Edge' },
-  { key: 'bvp',  label: 'BvP HR/PA' },
-  { key: 'hh',   label: 'HH%' },
-  { key: 'brl',  label: 'Brl%' },
-  { key: 'xslg', label: 'xSLG' },
-  { key: 'xba',  label: 'xBA' },
+  { key: 'odds',    label: 'Odds' },
+  { key: 'proj',    label: 'Proj%' },
+  { key: 'edge',    label: 'Edge' },
+  { key: 'contact', label: 'Contact' },
+  { key: 'bvp',     label: 'BvP HR/PA' },
+  { key: 'hh',      label: 'HH%' },
+  { key: 'brl',     label: 'Brl%' },
+  { key: 'xslg',    label: 'xSLG' },
+  { key: 'xba',     label: 'xBA' },
 ]
 
 function sortValue(row, key) {
-  if (key === 'odds')  return row.odds?.american_odds ?? null
-  if (key === 'proj')  return row.proj?.pct ?? null
-  if (key === 'edge')  return row.proj?.edge ?? null
-  if (key === 'bvp')   return row.bvp?.hr_per_pa ?? null
-  if (key === 'hh')    return row.hard_hit_pct ?? null
-  if (key === 'brl')   return row.barrel_pct ?? null
-  if (key === 'xslg')  return row.xslg ?? null
-  if (key === 'xba')   return row.xba ?? null
+  if (key === 'odds')    return row.odds?.american_odds ?? null
+  if (key === 'proj')    return row.proj?.pct ?? null
+  if (key === 'edge')    return row.proj?.edge ?? null
+  if (key === 'contact') return row.contact_score ?? null
+  if (key === 'bvp')     return row.bvp?.hr_per_pa ?? null
+  if (key === 'hh')      return row.hard_hit_pct ?? null
+  if (key === 'brl')     return row.barrel_pct ?? null
+  if (key === 'xslg')    return row.xslg ?? null
+  if (key === 'xba')     return row.xba ?? null
   return null
 }
 
@@ -367,6 +439,17 @@ const badgeLabel = computed(() => {
             </th>
             <th
               class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
+              :class="{ 'text-signal-400': sortKey === 'contact' }"
+              @click="toggleSort('contact')"
+              :title="`Composite contact score (0-100). Min ${CONTACT_MIN_PA} L14 PA. Built from Brl%/HH%/xSLG percentile-ranked vs tonight's slate.`"
+            >
+              <span class="inline-flex items-center justify-end gap-1">
+                Contact
+                <span v-if="sortKey === 'contact'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
+              </span>
+            </th>
+            <th
+              class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right cursor-pointer hover:text-fg-700 transition"
               :class="{ 'text-signal-400': sortKey === 'bvp' }"
               @click="toggleSort('bvp')"
             >
@@ -504,6 +587,38 @@ const badgeLabel = computed(() => {
               <span v-else class="label-bracket !text-[8px] opacity-50">
                 {{ marketMode === 'hr' ? 'no data' : 'pending' }}
               </span>
+            </td>
+            <td class="py-2 px-2 border-b border-bg-200/40 text-right">
+              <!-- Contact score: 0-100 composite of Brl%/HH%/xSLG percentile-
+                   ranked vs tonight's slate. Null when L14 PA < min, when the
+                   user isn't on L14 window, or pool too small. Trend = L14 vs
+                   season delta; arrow shown only when |delta| ≥ TREND_THRESHOLD. -->
+              <template v-if="row.contact_score != null">
+                <span
+                  class="display-num text-[11px] font-medium inline-flex items-baseline gap-1 justify-end"
+                  :title="`${formatScore(row.contact_score)}/100 contact score (L14 percentile vs tonight's slate)`"
+                >
+                  <span :class="scoreColorClass(row.contact_score)">{{ formatScore(row.contact_score) }}</span>
+                  <span
+                    v-if="formatTrend(row.contact_trend).show"
+                    class="!text-[9px] font-mono"
+                    :class="formatTrend(row.contact_trend).direction === 'up' ? 'text-signal-400' : 'text-edge-cold-1'"
+                    :title="`L14 contact is ${formatTrend(row.contact_trend).direction === 'up' ? 'above' : 'below'} season baseline by ${formatTrend(row.contact_trend).magnitude} pts`"
+                  >
+                    {{ formatTrend(row.contact_trend).direction === 'up' ? '▲' : '▼' }}{{ formatTrend(row.contact_trend).magnitude }}
+                  </span>
+                </span>
+              </template>
+              <span
+                v-else-if="windowType !== 'l14'"
+                class="label-bracket !text-[8px] opacity-40"
+                title="Contact score is L14-anchored. Switch window back to L14 to view."
+              >L14 only</span>
+              <span
+                v-else
+                class="display-num text-xs text-fg-400"
+                :title="`Need at least ${CONTACT_MIN_PA} L14 PA to compute a meaningful score.`"
+              >—</span>
             </td>
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span v-if="row.bvp" class="display-num text-xs text-fg-600">

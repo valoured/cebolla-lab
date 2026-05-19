@@ -14,6 +14,11 @@ import { ref, computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
 import { useFavorites } from '../composables/useFavorites.js'
+import {
+  formatScore,
+  formatTrend,
+  scoreColorClass,
+} from '../composables/useContactScore.js'
 import InfoTooltip from './InfoTooltip.vue'
 
 const { isPlayerFav } = useFavorites()
@@ -168,6 +173,30 @@ const marketLabel = computed(() => {
           <div class="label-bracket !text-[8px] opacity-50">
             {{ marketMode === 'hr' ? 'no data' : 'pending' }}
           </div>
+        </template>
+      </div>
+
+      <!-- Contact score + trend (composite contact signal) -->
+      <div class="shrink-0 text-right">
+        <template v-if="row.contact_score != null">
+          <div
+            class="display-num text-[11px] font-medium inline-flex items-baseline gap-0.5 justify-end"
+            :title="`${formatScore(row.contact_score)}/100 contact score (L14 percentile vs tonight's slate)`"
+          >
+            <span :class="scoreColorClass(row.contact_score)">{{ formatScore(row.contact_score) }}</span>
+            <span
+              v-if="formatTrend(row.contact_trend).show"
+              class="!text-[8px] font-mono"
+              :class="formatTrend(row.contact_trend).direction === 'up' ? 'text-signal-400' : 'text-edge-cold-1'"
+            >
+              {{ formatTrend(row.contact_trend).direction === 'up' ? '▲' : '▼' }}{{ formatTrend(row.contact_trend).magnitude }}
+            </span>
+          </div>
+          <div class="label-caps !text-[7px] mt-0.5">contact</div>
+        </template>
+        <template v-else>
+          <div class="display-num text-xs text-fg-400">—</div>
+          <div class="label-caps !text-[7px] mt-0.5 opacity-60">contact</div>
         </template>
       </div>
 
