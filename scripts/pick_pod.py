@@ -1,22 +1,35 @@
 """
 pick_pod.py — Daily Play of the Day selection.
 
-Selects ONE HR prop per slate that has:
-  - projected_prob >= 0.30 (floor — no wild longshots)
-  - largest edge among qualifying projections
-  - American odds present (we need a number to log)
+Picks ONE HR prop per slate using a multiplicative composite of market edge
+AND L14 contact quality. The winner is the batter where BOTH signals agree:
+strong market edge AND elite recent contact.
 
-Writes a row to the `pods` table with status='pending'. Idempotent:
-if a POD already exists for today, this script does nothing.
+Selection criteria (all must hold):
+  - market = HR_MARKET
+  - projected_prob >= MIN_PROJECTED_PROB   (sanity floor)
+  - edge IS NOT NULL                       (need a market price)
+  - american_odds IS NOT NULL              (need a number to log)
 
-Run AFTER:
-  - pull_schedule.py    (so today's games exist)
-  - pull_dk_odds.py     (so odds_snapshots are current)
-  - compute_projections.py (so projections.projected_prob and .edge are fresh)
+Among qualifying candidates, ranks by:
+  combined_score = normalize_edge(edge) * normalize_contact(score)
 
-Run BEFORE first pitch so the pick is locked in honestly. The morning
-cron at 14:13 UTC (10:13 AM ET) is the right window — after projections
-have been computed but before any games start.
+  where:
+    - normalize_edge clamps edge to ±10% and maps to 0–100
+    - normalize_contact uses the L14 contact score (0–100) directly,
+      computed exactly like the frontend useContactScore.js helper
+    - missing contact_score falls back to neutral 50 (so a batter with
+      strong edge but no L14 data still ranks reasonably)
+
+Run order:
+  pull_schedule → pull_savant → compute_projections → pick_pod
+
+The morning cron at 14:13 UTC (10:13 AM ET) is the right window — after
+projections have been computed but before any games start.
+
+Math kept in lockstep with cebolla-frontend/src/composables/useContactScore.js
+and BatterTable.vue's combinedScore(). Any change to one MUST be mirrored
+in the other or the POD pick won't match what the UI surfaces.
 """
 
 import os
@@ -28,40 +41,183 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("pick_pod")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+if not (SUPABASE_URL and SUPABASE_KEY):
+    log.error("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY env vars.")
+    sys.exit(1)
+
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Selection thresholds
-MIN_PROJECTED_PROB = 0.30  # filter out wild longshots
-HR_MARKET = "hr_0.5"       # over 0.5 HRs = at least one HR
+HR_MARKET = "hr_anytime"
+MIN_PROJECTED_PROB = 0.30
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-log = logging.getLogger(__name__)
+# Contact-score constants — keep in sync with useContactScore.js
+CONTACT_MIN_PA = 20
+CONTACT_WEIGHTS = {"barrel_pct": 0.40, "hard_hit_pct": 0.30, "xslg": 0.30}
+NEUTRAL_PERCENTILE = 50
 
-
-def get_today_iso() -> str:
-    """ET-relative baseball day. Same convention as pull_schedule.py."""
-    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
-    return et_now.date().isoformat()
+# Combined-sort constants — keep in sync with BatterTable.vue combinedScore()
+EDGE_CLAMP_PCT = 10  # clamp edge to ±10% before normalizing
 
 
-def existing_pod_for(date_iso: str) -> bool:
-    """Return True if a POD already exists for this date."""
-    r = sb.table("pods").select("id").eq("pod_date", date_iso).limit(1).execute()
-    return bool(r.data)
+def get_today_iso():
+    """ET-relative date for POD purposes (same as elsewhere)."""
+    et_offset = timedelta(hours=-4)
+    return (datetime.now(timezone.utc) + et_offset).date().isoformat()
 
 
-def fetch_candidates(date_iso: str) -> list[dict]:
+def existing_pod_for(date_iso):
+    res = sb.table("pods").select("id").eq("pod_date", date_iso).limit(1).execute()
+    return bool(res.data)
+
+
+# ─── Contact score math (mirrors useContactScore.js exactly) ──────────────────
+
+def _percentile_rank(value, pool):
+    """Average-rank percentile of `value` within `pool`. Returns 0-100 or None."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    finite = [float(p) for p in pool if p is not None and isinstance(p, (int, float))]
+    if len(finite) < 3:
+        return None
+    below = sum(1 for p in finite if p < v)
+    equal = sum(1 for p in finite if p == v)
+    rank = (below + equal / 2) / len(finite)
+    return max(0.0, min(100.0, rank * 100.0))
+
+
+def _build_contact_pools(stat_rows):
+    """Build per-component pools (filtered to PA >= MIN_PA)."""
+    pools = {"barrel_pct": [], "hard_hit_pct": [], "xslg": []}
+    for row in stat_rows or []:
+        if not row:
+            continue
+        pa = row.get("pa")
+        try:
+            pa_v = float(pa) if pa is not None else 0
+        except (TypeError, ValueError):
+            continue
+        if pa_v < CONTACT_MIN_PA:
+            continue
+        for key in pools.keys():
+            v = row.get(key)
+            if v is not None:
+                try:
+                    pools[key].append(float(v))
+                except (TypeError, ValueError):
+                    pass
+    return pools
+
+
+def _contact_score(stats, pools):
+    """0-100 weighted percentile composite, or None when not scorable."""
+    if not stats:
+        return None
+    pa = stats.get("pa")
+    try:
+        pa_v = float(pa) if pa is not None else 0
+    except (TypeError, ValueError):
+        return None
+    if pa_v < CONTACT_MIN_PA:
+        return None
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+    had_real_value = False
+    for key, weight in CONTACT_WEIGHTS.items():
+        v = stats.get(key)
+        pool = pools.get(key, [])
+        pct = None
+        if v is not None and len(pool) >= 3:
+            try:
+                pct = _percentile_rank(float(v), pool)
+                if pct is not None:
+                    had_real_value = True
+            except (TypeError, ValueError):
+                pass
+        if pct is None:
+            pct = NEUTRAL_PERCENTILE
+        weighted_sum += pct * weight
+        total_weight += weight
+    if not had_real_value:
+        return None
+    if total_weight == 0:
+        return None
+    return round(weighted_sum / total_weight, 1)
+
+
+def fetch_contact_scores(player_ids, season):
+    """Returns {player_id: contact_score_or_none}.
+
+    Pulls league-wide qualified L14 pool once, scores each requested player.
+    Players not in the L14 dataset (low PA / no recent activity) get None.
     """
-    Fetch HR projections for today's games above the prob floor.
-    Returns rows enriched with game + player metadata for the snapshot.
-    """
-    # Step 1: get game IDs for today (and only games still scheduled — no point
-    # picking a POD for a game that's already final or in progress).
+    if not player_ids:
+        return {}
+
+    pool_res = sb.table("batter_stats") \
+        .select("batter_id, pa, barrel_pct, hard_hit_pct, xslg") \
+        .eq("season", season) \
+        .eq("window_type", "l14") \
+        .eq("vs_hand", "A") \
+        .gte("pa", CONTACT_MIN_PA) \
+        .execute()
+    pool_rows = pool_res.data or []
+    pools = _build_contact_pools(pool_rows)
+    log.info("Contact pool: %d barrel, %d hard-hit, %d xslg values",
+             len(pools["barrel_pct"]), len(pools["hard_hit_pct"]), len(pools["xslg"]))
+
+    by_batter = {r["batter_id"]: r for r in pool_rows if r.get("batter_id") is not None}
+
+    out = {}
+    for pid in player_ids:
+        row = by_batter.get(pid)
+        out[pid] = _contact_score(row, pools) if row else None
+    return out
+
+
+# ─── Combined-sort math (mirrors BatterTable.vue combinedScore() exactly) ─────
+
+def _normalize_edge(edge):
+    """Map edge (decimal, e.g. 0.05 = 5%) to 0-100 via ±EDGE_CLAMP_PCT clamp."""
+    if edge is None:
+        return 50.0
+    try:
+        pct = float(edge) * 100.0
+    except (TypeError, ValueError):
+        return 50.0
+    clamped = max(-EDGE_CLAMP_PCT, min(EDGE_CLAMP_PCT, pct))
+    return ((clamped + EDGE_CLAMP_PCT) / (2.0 * EDGE_CLAMP_PCT)) * 100.0
+
+
+def _normalize_contact(score):
+    """Pass-through clamp to 0-100. None → neutral 50."""
+    if score is None:
+        return 50.0
+    try:
+        return max(0.0, min(100.0, float(score)))
+    except (TypeError, ValueError):
+        return 50.0
+
+
+def _combined_score(edge, contact):
+    """Multiplicative composite that rewards being good at both signals."""
+    return _normalize_edge(edge) * _normalize_contact(contact)
+
+
+# ─── Candidate fetch ──────────────────────────────────────────────────────────
+
+def fetch_candidates(date_iso):
+    """Fetch HR projections for today's games above the prob floor."""
     games_res = sb.table("games") \
         .select("id, away_team_id, home_team_id, "
                 "away_team:teams!games_away_team_id_fkey(abbrev), "
@@ -75,8 +231,6 @@ def fetch_candidates(date_iso: str) -> list[dict]:
     game_ids = [g["id"] for g in games]
     games_by_id = {g["id"]: g for g in games}
 
-    # Step 2: fetch projections for those games, HR market only.
-    # Note: edge can be null if odds weren't available — we filter those out.
     proj_res = sb.table("projections") \
         .select("id, game_id, player_id, market, projected_prob, no_vig_prob, edge, "
                 "best_american_odds, best_book, model_version") \
@@ -85,13 +239,11 @@ def fetch_candidates(date_iso: str) -> list[dict]:
         .gte("projected_prob", MIN_PROJECTED_PROB) \
         .not_.is_("edge", "null") \
         .not_.is_("best_american_odds", "null") \
-        .order("edge", desc=True) \
         .execute()
     projections = proj_res.data or []
     if not projections:
         return []
 
-    # Step 3: enrich with player metadata
     player_ids = list({p["player_id"] for p in projections})
     player_res = sb.table("players") \
         .select("id, mlbam_id, name, team_id") \
@@ -99,17 +251,20 @@ def fetch_candidates(date_iso: str) -> list[dict]:
         .execute()
     players_by_id = {p["id"]: p for p in (player_res.data or [])}
 
-    # Build the candidate list
+    season = datetime.now(timezone.utc).year
+    contact_by_player = fetch_contact_scores(player_ids, season)
+
     enriched = []
     for p in projections:
         game = games_by_id.get(p["game_id"])
         player = players_by_id.get(p["player_id"])
         if not game or not player:
             continue
-        # Figure out which team is the opponent
         is_home = player.get("team_id") == game.get("home_team_id")
         own_abbrev = (game["home_team"] if is_home else game["away_team"])["abbrev"]
         opp_abbrev = (game["away_team"] if is_home else game["home_team"])["abbrev"]
+        contact = contact_by_player.get(p["player_id"])
+        combined = _combined_score(p["edge"], contact)
         enriched.append({
             "game_id": p["game_id"],
             "player_id": p["player_id"],
@@ -124,7 +279,10 @@ def fetch_candidates(date_iso: str) -> list[dict]:
             "american_odds": p["best_american_odds"],
             "book": p["best_book"],
             "model_version": p["model_version"],
+            "contact_score": contact,
+            "combined_score": round(combined, 1),
         })
+    enriched.sort(key=lambda x: x["combined_score"], reverse=True)
     return enriched
 
 
@@ -142,16 +300,17 @@ def main():
                     today, MIN_PROJECTED_PROB)
         return
 
-    pick = candidates[0]
-    log.info("Top candidate: %s (%s vs %s) — projected %.2f%%, odds %+d, edge %.3f",
-             pick["player_name"],
-             pick["team_abbrev"],
-             pick["opponent_abbrev"],
-             100 * float(pick["projected_prob"]),
-             pick["american_odds"],
-             float(pick["edge"]))
+    # Log top 3 candidates so we have audit visibility into close calls
+    log.info("Top candidates by combined edge × contact:")
+    for i, c in enumerate(candidates[:3], 1):
+        cs = c["contact_score"]
+        cs_str = f"{cs:.0f}" if cs is not None else "—"
+        log.info("  #%d  %s (%s vs %s)  proj %.1f%%  odds %+d  edge %.3f  contact %s  combined %.1f",
+                 i, c["player_name"], c["team_abbrev"], c["opponent_abbrev"],
+                 100 * float(c["projected_prob"]), c["american_odds"], float(c["edge"]),
+                 cs_str, c["combined_score"])
 
-    # Insert. UNIQUE(pod_date) prevents duplicates if this races.
+    pick = candidates[0]
     sb.table("pods").insert({
         "pod_date": today,
         "game_id": pick["game_id"],
@@ -167,6 +326,8 @@ def main():
         "player_name": pick["player_name"],
         "team_abbrev": pick["team_abbrev"],
         "opponent_abbrev": pick["opponent_abbrev"],
+        "contact_score": pick["contact_score"],
+        "combined_score": pick["combined_score"],
         "stake": 10.00,
         "status": "pending",
     }).execute()

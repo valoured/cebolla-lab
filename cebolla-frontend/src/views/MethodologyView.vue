@@ -25,9 +25,11 @@ const sections = [
   { id: 'park-factors',  label: 'HR park factors',       code: 'M.03.f' },
   { id: 'lineups',       label: 'Lineups',               code: 'M.03.g' },
   { id: 'edge',          label: 'Edge',                  code: 'M.03.h' },
-  { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.i' },
-  { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.j' },
-  { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.k' },
+  { id: 'contact-score', label: 'Contact score',         code: 'M.03.i' },
+  { id: 'combined-sort', label: 'Default sort & POD',    code: 'M.03.j' },
+  { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.k' },
+  { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.l' },
+  { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.m' },
 ]
 
 const activeSection = ref('overview')
@@ -504,11 +506,121 @@ function scrollTo(id) {
           </p>
         </section>
 
+        <!-- 9. CONTACT SCORE -->
+        <section id="contact-score" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">Contact score</h2>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.i</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            The Contact column on the HR Report is a single 0–100 number that
+            captures how good a batter's recent contact quality is, in
+            absolute terms, compared to all qualified MLB batters this season.
+            A 90 means elite (top 10%). A 30 means weak. The math is honest:
+            we don't grade on a curve, we don't reward streakiness without
+            substance.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            It blends three Statcast metrics by percentile rank, weighted by
+            how predictive each is for HR outcomes: <span class="text-fg-700">Barrel%</span>
+            (40%), <span class="text-fg-700">Hard-Hit%</span> (30%), and
+            <span class="text-fg-700">xSLG</span> (30%). The L14 score uses
+            the last 14 days of plate appearances; the trend arrow (▲/▼)
+            compares L14 to the batter's full-season score, flagging hot and
+            cold streaks.
+          </p>
+          <details class="mt-2 text-fg-500 text-xs">
+            <summary class="cursor-pointer hover:text-fg-700 transition">show formula</summary>
+            <div class="mt-2 pl-3 border-l border-bg-300 font-mono text-[11px] leading-relaxed">
+              pool = all MLB batters this season
+              <br>&nbsp;&nbsp;&nbsp;with L14 PA &gt;= 20, vs_hand = 'A'
+              <br><br>
+              brl_pct  = percentile_rank(batter.barrel_pct,   pool)
+              <br>hh_pct   = percentile_rank(batter.hard_hit_pct, pool)
+              <br>xslg_pct = percentile_rank(batter.xslg,         pool)
+              <br><br>
+              contact_score = 0.40 · brl_pct
+              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.30 · hh_pct
+              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.30 · xslg_pct
+              <br><br>
+              trend = score(L14) − score(season)
+              <br>(arrow shown only when |trend| &gt;= 5)
+            </div>
+          </details>
+          <p class="text-fg-600 text-sm leading-relaxed mt-4 mb-2">
+            <span class="text-fg-700">Tier breakdown:</span>
+          </p>
+          <ul class="text-fg-600 text-sm leading-relaxed space-y-1 list-none pl-0">
+            <li class="border-l-2 border-signal-400/60 pl-3"><span class="text-signal-400 font-medium">90+</span> &nbsp; Elite — top 10% of MLB</li>
+            <li class="border-l-2 border-signal-400/30 pl-3"><span class="text-signal-200">75–89</span> &nbsp; Strong</li>
+            <li class="border-l-2 border-bg-300 pl-3"><span class="text-fg-700">50–74</span> &nbsp; Average to above average</li>
+            <li class="border-l-2 border-edge-cold-2/40 pl-3"><span class="text-edge-cold-2">30–49</span> &nbsp; Below average</li>
+            <li class="border-l-2 border-edge-cold-1/40 pl-3"><span class="text-edge-cold-1">&lt; 30</span> &nbsp; Poor contact this stretch</li>
+          </ul>
+          <p class="text-fg-500 text-xs italic mt-4">
+            Minimum 20 L14 PA to qualify. Under that, rate stats are random
+            noise. The score is L14-anchored — toggling the Statcast window
+            to L7/L30/Season shows "L14 only" since the trend logic depends
+            on the L14 sample.
+          </p>
+        </section>
+
+        <!-- 10. COMBINED SORT / POD -->
+        <section id="combined-sort" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">Default sort & POD</h2>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.j</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            By default, the HR Report ranks batters by a multiplicative blend
+            of <span class="text-signal-400">Edge × Contact</span>. The idea
+            is to surface bets where BOTH signals agree: strong market value
+            AND strong recent contact. A batter with +8% edge but a 20 contact
+            score isn't a great pick — either the market knows something we
+            don't, or the contact is too weak to expect the projection to
+            hold up. A batter with +4% edge and 80 contact is the more
+            durable play.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            Both factors are normalized to a 0–100 scale before multiplying so
+            neither one dominates. Edge is clamped at ±10% (anything more
+            extreme rounds to the edge of the scale).
+          </p>
+          <details class="mt-2 text-fg-500 text-xs">
+            <summary class="cursor-pointer hover:text-fg-700 transition">show formula</summary>
+            <div class="mt-2 pl-3 border-l border-bg-300 font-mono text-[11px] leading-relaxed">
+              edge_norm    = clamp(edge·100, −10, +10)
+              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;mapped to 0–100
+              <br>contact_norm = clamp(contact_score, 0, 100)
+              <br><br>
+              combined = edge_norm × contact_norm
+              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(range 0 – 10,000)
+              <br><br>
+              missing edge or contact → neutral 50
+            </div>
+          </details>
+          <p class="text-fg-600 text-sm leading-relaxed mt-4 mb-3">
+            <span class="text-fg-700">Play of the Day (POD):</span>
+            The daily public-scoreboard pick is the highest-combined-score HR
+            prop in the slate, gated by <span class="text-fg-700">projected_prob ≥ 30%</span>
+            so we don't pick wild longshots. The pick locks at ~10:30 AM ET
+            after the morning projections run, and settles automatically
+            after games end. The combined score AND contact score at lock
+            time are snapshot into the POD record, so the public scoreboard
+            shows why each pick was made.
+          </p>
+          <p class="text-fg-500 text-xs italic mt-4">
+            You can override the default sort by clicking any column header.
+            The default returns when you click the # column (lineup order
+            reset) or reload the page.
+          </p>
+        </section>
+
         <!-- 9. PITCH-TYPE BREAKDOWN -->
         <section id="pitch-types" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Pitch-type breakdown</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.i</span>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.k</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             On Player Deep Dive, the pitch-type table shows how a hitter
@@ -531,7 +643,7 @@ function scrollTo(id) {
         <section id="principles" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">What we don't do</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.j</span>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.l</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             A short list of what's off the table, by design:
@@ -565,7 +677,7 @@ function scrollTo(id) {
         <section id="freshness" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Updates & freshness</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.k</span>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.m</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Different data refreshes on different schedules:

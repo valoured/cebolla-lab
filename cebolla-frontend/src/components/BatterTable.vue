@@ -348,6 +348,20 @@ const badgeLabel = computed(() => {
       </span>
     </div>
 
+    <!-- Default-sort indicator: only visible when the implicit combined sort is active.
+         Disappears the moment the user clicks any column header. -->
+    <div
+      v-if="rows.length && sortKey === 'combined'"
+      class="px-3 sm:px-4 py-1.5 border-b border-bg-200/60 flex items-center justify-between gap-2 flex-wrap"
+    >
+      <span class="label-caps !text-[9px] text-fg-500">
+        sorted by <span class="text-signal-400">edge × contact</span> (default)
+      </span>
+      <span class="text-fg-400 text-[9px] italic">
+        click any column to override
+      </span>
+    </div>
+
     <!-- Empty state -->
     <div v-if="!rows.length" class="px-4 py-12 text-center">
       <div class="display-text text-lg text-fg-500 italic mb-1">No lineup yet</div>
