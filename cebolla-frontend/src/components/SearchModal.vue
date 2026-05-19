@@ -180,8 +180,14 @@ function selectResult(item) {
   if (item.kind === 'player') {
     router.push({ name: 'player', params: { playerId: item.id } })
   } else if (item.kind === 'team') {
-    // TEMP until PR #4: route to slate; later this becomes /team/:abbrev
-    router.push({ name: 'slate' })
+    // Route to team deep dive. payload may be a team record (live search)
+    // or a favorited team entry — both have `abbrev`.
+    const abbrev = item.payload?.abbrev
+    if (abbrev) {
+      router.push({ name: 'team', params: { abbrev } })
+    } else {
+      router.push({ name: 'slate' })
+    }
   }
   close()
 }

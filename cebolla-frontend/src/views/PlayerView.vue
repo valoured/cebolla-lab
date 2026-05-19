@@ -469,9 +469,13 @@ function hrPctTone(pct) {
               />
             </div>
             <div class="flex items-baseline gap-2 sm:gap-3 flex-wrap">
-              <span v-if="team" class="label-bracket text-signal-400">
+              <router-link
+                v-if="team"
+                :to="{ name: 'team', params: { abbrev: team.abbrev } }"
+                class="label-bracket text-signal-400 hover:text-signal-200 transition"
+              >
                 {{ team.abbrev }}
-              </span>
+              </router-link>
               <span v-if="player.position" class="label-caps">
                 {{ player.position }}
               </span>

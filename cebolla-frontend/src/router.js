@@ -23,6 +23,13 @@ const routes = [
     meta: { title: 'Player · Cebolla Lab' },
   },
   {
+    path: '/team/:abbrev',
+    name: 'team',
+    component: () => import('./views/TeamView.vue'),
+    props: true,
+    meta: { title: 'Team · Cebolla Lab' },
+  },
+  {
     path: '/bets',
     name: 'bets',
     component: () => import('./views/BetTrackerView.vue'),
