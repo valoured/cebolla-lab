@@ -28,6 +28,12 @@ const burstKey = ref(0)
 watch(isPulsing, (v) => {
   if (v) burstKey.value++
 })
+
+function openSearch() {
+  if (typeof window.__openCebollaSearch === 'function') {
+    window.__openCebollaSearch()
+  }
+}
 </script>
 
 <template>
@@ -70,6 +76,20 @@ watch(isPulsing, (v) => {
 
       <!-- Right side -->
       <div class="ml-auto flex items-center gap-3 sm:gap-6">
+        <!-- Search trigger -->
+        <button
+          type="button"
+          @click="openSearch"
+          class="search-trigger"
+          aria-label="Search players and teams"
+          title="Search players and teams (Ctrl+K)"
+        >
+          <span class="search-trigger-icon" aria-hidden="true">⌕</span>
+          <span class="search-trigger-hint hidden md:inline">
+            <kbd>Ctrl</kbd><kbd>K</kbd>
+          </span>
+        </button>
+
         <!-- Live status: pulsing onion icon as realtime indicator -->
         <div class="hidden md:flex items-center gap-2">
           <img
@@ -100,6 +120,51 @@ watch(isPulsing, (v) => {
 </template>
 
 <style scoped>
+/* Search trigger — a thin slot button next to the live indicator. */
+.search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+.search-trigger:hover {
+  border-color: rgba(255, 42, 42, 0.50);
+  color: rgba(255, 42, 42, 0.95);
+  background: rgba(255, 42, 42, 0.06);
+}
+.search-trigger-icon {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-block;
+  transform: translateY(-1px);
+}
+.search-trigger-hint {
+  display: inline-flex;
+  gap: 2px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+}
+.search-trigger-hint kbd {
+  display: inline-block;
+  padding: 1px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  font-family: inherit;
+  font-size: 9px;
+  line-height: 1;
+}
+
 .cebolla-wordmark-nav {
   /* Full wordmark is 1024x254 (~4:1). At 56px tall ≈ 226px wide.
      Tagline portion renders at ~12-14px which is comfortably legible. */

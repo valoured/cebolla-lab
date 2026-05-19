@@ -1,5 +1,6 @@
 <script setup>
 import TopNav from './components/TopNav.vue'
+import SearchModal from './components/SearchModal.vue'
 </script>
 
 <template>
@@ -12,6 +13,8 @@ import TopNav from './components/TopNav.vue'
         </transition>
       </router-view>
     </main>
+    <!-- Global Ctrl+K / `/` search. Mounted once, available on every route. -->
+    <SearchModal />
   </div>
 </template>
 
