@@ -28,7 +28,13 @@ export function useSlate(initialDateStr) {
   let channel = null
 
   function todayStr() {
-    return new Date().toISOString().slice(0, 10)
+    // Use local date components, NOT toISOString() — that returns UTC,
+    // which flips a day ahead for ET evenings (8 PM ET = midnight UTC).
+    const d = new Date()
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
   }
 
   // Step 1: figure out which date to load

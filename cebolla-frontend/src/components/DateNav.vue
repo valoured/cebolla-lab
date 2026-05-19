@@ -25,7 +25,12 @@ const props = defineProps({
 const emit = defineEmits(['update:targetDate'])
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10)
+  // Local date — toISOString() returns UTC and flips a day ahead in ET evenings.
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 // Parse 'YYYY-MM-DD' as LOCAL date (avoid TZ shift from new Date('2026-05-19'))
