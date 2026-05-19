@@ -203,6 +203,14 @@ const mphSuffix = computed(() => {
     <div class="wind-mph">
       <span class="display-num wind-mph-num" :class="`tone-${windTone}`">{{ mphDisplay }}</span>
       <span v-if="mphSuffix" class="wind-mph-unit">{{ mphSuffix }}</span>
+      <!-- TEMP DEBUG — remove after diagnosis -->
+      <span
+        v-if="!isDome"
+        class="wind-debug"
+        :title="`cf=${cfBearing} wd=${windDirDeg} angle=${fieldAngleDeg != null ? Math.round(fieldAngleDeg) : 'null'}`"
+      >
+        cf{{ cfBearing }} wd{{ windDirDeg }} a{{ fieldAngleDeg != null ? Math.round(fieldAngleDeg) : '∅' }}
+      </span>
     </div>
   </div>
 </template>
@@ -274,4 +282,19 @@ const mphSuffix = computed(() => {
 .tone-cross      { color: rgba(255, 255, 255, 0.65); }
 .tone-dome       { color: rgba(255, 255, 255, 0.40); font-size: 13px; }
 .tone-unknown    { color: rgba(255, 255, 255, 0.40); }
+
+/* TEMP DEBUG style — remove after diagnosis */
+.wind-debug {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: rgba(255, 200, 80, 0.85);
+  background: rgba(255, 200, 80, 0.08);
+  padding: 1px 3px;
+  margin-top: 2px;
+  border: 1px solid rgba(255, 200, 80, 0.25);
+  letter-spacing: 0;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 </style>
