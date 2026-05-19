@@ -44,6 +44,7 @@ const WINDOW_LABEL = {
 
 // ── Local state ─────────────────────────────────────────────────
 const windows = ref([])           // pitcher_stats rows, one per window_type
+const arsenal = ref([])           // pitcher_arsenals rows (season, both stances)
 const tonightGame = ref(null)     // { game, opponentTeam, isHomePitcher }
 const loading = ref(true)
 const error = ref(null)
@@ -66,7 +67,17 @@ async function load() {
     for (const r of (ws || [])) byType[r.window_type] = r
     windows.value = WINDOW_ORDER.map(t => byType[t]).filter(Boolean)
 
-    // 2. Tonight's start (if any)
+    // 2. Arsenal — season only, both stances
+    const { data: ars } = await supabase
+      .from('pitcher_arsenals')
+      .select('*')
+      .eq('pitcher_id', props.player.id)
+      .eq('season', CURRENT_SEASON)
+      .eq('window_type', 'season')
+
+    arsenal.value = ars || []
+
+    // 3. Tonight's start (if any)
     await loadTonightStart()
 
     loading.value = false
@@ -124,6 +135,7 @@ onMounted(load)
 watch(() => props.player?.id, (newId, oldId) => {
   if (newId && newId !== oldId) {
     windows.value = []
+    arsenal.value = []
     tonightGame.value = null
     load()
   }
@@ -194,6 +206,67 @@ const trajectory = computed(() => {
     return { ...m, points, trend, maxVal }
   })
 })
+
+// ── Arsenal table ──────────────────────────────────────────────
+// pitcher_arsenals stores one row per (pitch_type × vs_stance). We pivot
+// to one row per pitch_type with vsL and vsR sub-objects so the template
+// can render side-by-side stance splits.
+const ARSENAL_PITCH_LABELS = {
+  '4SM': '4-Seam',
+  'SI':  'Sinker',
+  'CT':  'Cutter',
+  'CH':  'Change',
+  'SL':  'Slider',
+  'CU':  'Curve',
+  'KC':  'Knuck-C',
+  'FS':  'Splitter',
+  'SW':  'Sweeper',
+  'ST':  'Sweeper',
+  'KN':  'Knuckle',
+}
+
+const pitchTable = computed(() => {
+  const byPitch = {}
+  for (const r of arsenal.value) {
+    const key = r.pitch_type
+    if (!byPitch[key]) byPitch[key] = { pitch_type: key, vsL: null, vsR: null }
+    if (r.vs_stance === 'L') byPitch[key].vsL = r
+    else if (r.vs_stance === 'R') byPitch[key].vsR = r
+  }
+
+  return Object.values(byPitch)
+    .map(p => ({
+      ...p,
+      label: ARSENAL_PITCH_LABELS[p.pitch_type] || p.pitch_type,
+      // Total usage = sum of stance usages, used for sort order. Each
+      // stance's usage_pct is per-stance, so summing approximates "how
+      // important is this pitch overall."
+      sortKey: (p.vsL?.usage_pct || 0) + (p.vsR?.usage_pct || 0),
+    }))
+    // Filter out pitches with negligible usage on both sides
+    .filter(p => (p.vsL?.usage_pct || 0) >= 1 || (p.vsR?.usage_pct || 0) >= 1)
+    .sort((a, b) => b.sortKey - a.sortKey)
+})
+
+// Tone for whiff% — higher is better for the pitcher
+function whiffTone(pct) {
+  if (pct == null) return 'text-fg-500'
+  if (pct >= 35) return 'text-signal-400'
+  if (pct >= 28) return 'text-signal-200'
+  if (pct >= 20) return 'text-fg-600'
+  return 'text-edge-cold-1'
+}
+
+// Tone for krash rating — 0-100, lower = pitch is getting hit hard. The
+// schema comment says "lower = pitcher gets hit hard." So high = good
+// pitcher, low = juicy target for hitters.
+function krashTone(rating) {
+  if (rating == null) return 'text-fg-500'
+  if (rating >= 70) return 'text-signal-400'
+  if (rating >= 55) return 'text-signal-200'
+  if (rating >= 40) return 'text-fg-600'
+  return 'text-edge-cold-1'
+}
 
 // ── Helpers ────────────────────────────────────────────────────
 function fmtSeasonStat(value, kind) {
@@ -419,16 +492,179 @@ const hasAnyData = computed(() => !!season.value || windows.value.length > 0)
       </div>
     </section>
 
-    <!-- ── ARSENAL placeholder (Stage 2) ───────────────── -->
-    <section class="px-4 sm:px-6 py-4 pb-8">
+    <!-- ── ARSENAL · vs L / vs R ──────────────────────── -->
+    <section v-if="pitchTable.length" class="px-4 sm:px-6 py-4 pb-8">
+      <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+        <h2 class="label-bracket text-signal-400">arsenal · vs L / vs R</h2>
+        <span class="label-caps !text-[8px] opacity-70">
+          season · per-stance usage
+        </span>
+      </div>
+
+      <!-- Two stacked split panels: vs L on top, vs R below.
+           Side-by-side at md+ so desktop shows the split at a glance. -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+        <!-- ─ vs LHB ─ -->
+        <div class="bg-bg-50 border border-bg-200">
+          <div class="px-3 py-2 border-b border-bg-200 flex items-baseline justify-between">
+            <span class="label-bracket text-signal-400">vs LHB</span>
+            <span class="label-caps !text-[8px] opacity-70">
+              {{ pitchTable.filter(p => p.vsL).length }} pitch{{ pitchTable.filter(p => p.vsL).length === 1 ? '' : 'es' }}
+            </span>
+          </div>
+
+          <!-- column headers -->
+          <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 border-b border-bg-200/60">
+            <span class="label-caps !text-[8px]">Pitch</span>
+            <span class="label-caps !text-[8px]">Usage</span>
+            <span class="label-caps !text-[8px] text-right">Velo</span>
+            <span class="label-caps !text-[8px] text-right">Brl%</span>
+            <span class="label-caps !text-[8px] text-right">HH%</span>
+            <span class="label-caps !text-[8px] text-right">Whf%</span>
+            <span class="label-caps !text-[8px] text-right">Krash</span>
+          </div>
+
+          <div
+            v-for="p in pitchTable"
+            :key="`l-${p.pitch_type}`"
+            class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
+          >
+            <span class="display-num text-xs text-fg-700 font-medium">{{ p.pitch_type }}</span>
+
+            <!-- Usage bar + value -->
+            <div v-if="p.vsL" class="flex items-center gap-2 min-w-0">
+              <div class="flex-1 h-1.5 bg-bg-200 relative overflow-hidden">
+                <div
+                  class="absolute inset-y-0 left-0 bg-signal-400/70"
+                  :style="{ width: `${Math.min(p.vsL.usage_pct || 0, 100)}%` }"
+                ></div>
+              </div>
+              <span class="display-num text-[10px] text-fg-500 w-7 text-right">
+                {{ p.vsL.usage_pct != null ? p.vsL.usage_pct.toFixed(0) + '%' : '—' }}
+              </span>
+            </div>
+            <span v-else class="text-fg-500 text-[10px] italic">—</span>
+
+            <span class="display-num text-[11px] text-fg-600 text-right">
+              {{ p.vsL?.velo_avg != null ? p.vsL.velo_avg.toFixed(0) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="statColor(p.vsL?.barrel_pct, 'barrel_pct', 'pitcher')"
+            >
+              {{ p.vsL?.barrel_pct != null ? p.vsL.barrel_pct.toFixed(1) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="statColor(p.vsL?.hard_hit_pct, 'hard_hit_pct', 'pitcher')"
+            >
+              {{ p.vsL?.hard_hit_pct != null ? p.vsL.hard_hit_pct.toFixed(0) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="whiffTone(p.vsL?.whiff_pct)"
+            >
+              {{ p.vsL?.whiff_pct != null ? p.vsL.whiff_pct.toFixed(0) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="krashTone(p.vsL?.krash_rating)"
+            >
+              {{ p.vsL?.krash_rating != null ? p.vsL.krash_rating : '—' }}
+            </span>
+          </div>
+        </div>
+
+        <!-- ─ vs RHB ─ -->
+        <div class="bg-bg-50 border border-bg-200">
+          <div class="px-3 py-2 border-b border-bg-200 flex items-baseline justify-between">
+            <span class="label-bracket text-signal-400">vs RHB</span>
+            <span class="label-caps !text-[8px] opacity-70">
+              {{ pitchTable.filter(p => p.vsR).length }} pitch{{ pitchTable.filter(p => p.vsR).length === 1 ? '' : 'es' }}
+            </span>
+          </div>
+
+          <div class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 border-b border-bg-200/60">
+            <span class="label-caps !text-[8px]">Pitch</span>
+            <span class="label-caps !text-[8px]">Usage</span>
+            <span class="label-caps !text-[8px] text-right">Velo</span>
+            <span class="label-caps !text-[8px] text-right">Brl%</span>
+            <span class="label-caps !text-[8px] text-right">HH%</span>
+            <span class="label-caps !text-[8px] text-right">Whf%</span>
+            <span class="label-caps !text-[8px] text-right">Krash</span>
+          </div>
+
+          <div
+            v-for="p in pitchTable"
+            :key="`r-${p.pitch_type}`"
+            class="px-3 py-1.5 grid grid-cols-[44px_1fr_38px_38px_38px_38px_40px] gap-1.5 items-center border-b border-bg-200/40 last:border-0"
+          >
+            <span class="display-num text-xs text-fg-700 font-medium">{{ p.pitch_type }}</span>
+
+            <div v-if="p.vsR" class="flex items-center gap-2 min-w-0">
+              <div class="flex-1 h-1.5 bg-bg-200 relative overflow-hidden">
+                <div
+                  class="absolute inset-y-0 left-0 bg-signal-400/70"
+                  :style="{ width: `${Math.min(p.vsR.usage_pct || 0, 100)}%` }"
+                ></div>
+              </div>
+              <span class="display-num text-[10px] text-fg-500 w-7 text-right">
+                {{ p.vsR.usage_pct != null ? p.vsR.usage_pct.toFixed(0) + '%' : '—' }}
+              </span>
+            </div>
+            <span v-else class="text-fg-500 text-[10px] italic">—</span>
+
+            <span class="display-num text-[11px] text-fg-600 text-right">
+              {{ p.vsR?.velo_avg != null ? p.vsR.velo_avg.toFixed(0) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="statColor(p.vsR?.barrel_pct, 'barrel_pct', 'pitcher')"
+            >
+              {{ p.vsR?.barrel_pct != null ? p.vsR.barrel_pct.toFixed(1) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="statColor(p.vsR?.hard_hit_pct, 'hard_hit_pct', 'pitcher')"
+            >
+              {{ p.vsR?.hard_hit_pct != null ? p.vsR.hard_hit_pct.toFixed(0) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="whiffTone(p.vsR?.whiff_pct)"
+            >
+              {{ p.vsR?.whiff_pct != null ? p.vsR.whiff_pct.toFixed(0) : '—' }}
+            </span>
+            <span
+              class="display-num text-[11px] text-right"
+              :class="krashTone(p.vsR?.krash_rating)"
+            >
+              {{ p.vsR?.krash_rating != null ? p.vsR.krash_rating : '—' }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="mt-3 flex items-center gap-3 flex-wrap text-fg-500">
+        <span class="label-caps !text-[8px]">
+          Brl% / HH% color · pitcher context (red = elite suppressing)
+        </span>
+        <span class="label-caps !text-[8px]">
+          Whf% / Krash · higher = better for pitcher
+        </span>
+      </div>
+    </section>
+
+    <!-- ── ARSENAL empty state ──────────────────────────── -->
+    <section v-else class="px-4 sm:px-6 py-4 pb-8">
       <div class="flex items-baseline justify-between mb-3">
         <h2 class="label-bracket text-signal-400">arsenal · vs L / vs R</h2>
-        <span class="label-caps !text-[8px] opacity-70">coming next</span>
       </div>
       <div class="bg-bg-50 border border-bg-200 px-4 py-6 text-center">
         <div class="text-fg-500 text-xs italic">
-          Pitch-type breakdown with usage, velocity, and contact-quality
-          metrics split by batter handedness — shipping in the next update.
+          No arsenal data recorded for this pitcher yet.
         </div>
       </div>
     </section>
