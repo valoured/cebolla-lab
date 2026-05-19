@@ -59,6 +59,7 @@ export function useSlate(dateStr) {
         status,
         temp_f,
         wind_mph,
+        wind_dir_deg,
         wind_label,
         precip_pct,
         hr_factor_overall,

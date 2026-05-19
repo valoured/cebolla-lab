@@ -53,17 +53,7 @@ const fieldAngleDeg = computed(() => {
   const cf = Number(props.cfBearing)
   if (!Number.isFinite(cf)) return null
   const blowingToward = (wd + 180) % 360
-  const result = ((blowingToward - cf) + 360) % 360
-  // TEMP DIAGNOSTIC — remove after fix
-  console.log('[WindGauge] inputs:', {
-    rawWd: props.windDirDeg,
-    rawCf: props.cfBearing,
-    wdNum: wd,
-    cfNum: cf,
-    blowingToward,
-    fieldAngle: result,
-  })
-  return result
+  return ((blowingToward - cf) + 360) % 360
 })
 
 // Tone the arrow based on whether wind helps or hurts HRs.
