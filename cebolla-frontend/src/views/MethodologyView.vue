@@ -27,9 +27,10 @@ const sections = [
   { id: 'edge',          label: 'Edge',                  code: 'M.03.h' },
   { id: 'contact-score', label: 'Contact score',         code: 'M.03.i' },
   { id: 'combined-sort', label: 'Default sort & POD',    code: 'M.03.j' },
-  { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.k' },
-  { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.l' },
-  { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.m' },
+  { id: 'hrr-pod',       label: 'H+R+RBI POD (planned)', code: 'M.03.k' },
+  { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.l' },
+  { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.m' },
+  { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.n' },
 ]
 
 const activeSection = ref('overview')
@@ -616,11 +617,69 @@ function scrollTo(id) {
           </p>
         </section>
 
+        <!-- 10b. HRR POD (PLANNED) -->
+        <section id="hrr-pod" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">H + R + RBI POD <span class="text-fg-500 text-sm font-normal italic">(planned)</span></h2>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.k</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            Alongside the HR POD, Cebolla is building a second daily pick for the
+            <span class="text-fg-700">Hits + Runs + RBIs</span> market — a popular
+            DraftKings prop where the line is typically posted at 0.5, 1.5, or 2.5
+            for each batter in a confirmed lineup. The model is in development; until
+            it ships, the POD page shows a placeholder for the HRR slot.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            <span class="text-fg-700">Why a separate POD?</span> The H+R+RBI market
+            and the HR market measure different things. A leadoff slap hitter who never
+            HRs can still produce 2+ hits and a run regularly. An elite power hitter who
+            walks a lot might struggle to clear an HRR line. Picking one POD per market
+            captures both kinds of value without forcing them into the same ranking.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            <span class="text-fg-700">Projection approach (v1).</span> For each batter,
+            expected plate appearances are derived from lineup position (leadoff ~4.6 PA,
+            #9 ~3.6 PA). Per-PA event rates for hits, runs, and RBIs are pulled from
+            L14 splits. A Poisson distribution over expected PAs gives the probability
+            of clearing each line (0.5 / 1.5 / 2.5).
+          </p>
+          <details class="mt-2 text-fg-500 text-xs">
+            <summary class="cursor-pointer hover:text-fg-700 transition">show formula</summary>
+            <div class="mt-2 pl-3 border-l border-bg-300 font-mono text-[11px] leading-relaxed">
+              E[PA]&nbsp;=&nbsp;lookup_by_batting_order(order)
+              <br><br>
+              p(H per PA)&nbsp;=&nbsp;batter.L14_hits / batter.L14_PA
+              <br>p(R per PA)&nbsp;=&nbsp;batter.L14_runs / batter.L14_PA
+              <br>p(RBI per PA)&nbsp;=&nbsp;batter.L14_rbis / batter.L14_PA
+              <br><br>
+              λ(HRR per PA)&nbsp;=&nbsp;p(H)+p(R)+p(RBI)
+              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;− overlap_adjustment
+              <br>λ(HRR per game)&nbsp;=&nbsp;λ(HRR per PA)&nbsp;·&nbsp;E[PA]
+              <br><br>
+              P(HRR ≥ X.5)&nbsp;=&nbsp;Poisson_tail(X+1, λ_game)
+            </div>
+          </details>
+          <p class="text-fg-600 text-sm leading-relaxed mt-4 mb-3">
+            <span class="text-fg-700">Selection logic.</span> Same combined edge × contact
+            rank as HR POD, applied to HRR projections. Probability floor is calibrated
+            separately because the HRR market sits at a different probability range
+            (typical Over 1.5 lines project 40–70%, vs HR's 10–25%).
+          </p>
+          <p class="text-fg-500 text-xs italic mt-4">
+            The v1 Poisson model assumes independence between PAs and uses each batter's
+            own L14 rates without adjusting for opposing pitcher or surrounding lineup
+            quality. Expected calibration: ±5 percentage points on the most common
+            (1.5) line. Once the model has ~30 settled picks, the back-test data will
+            inform tuning.
+          </p>
+        </section>
+
         <!-- 9. PITCH-TYPE BREAKDOWN -->
         <section id="pitch-types" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Pitch-type breakdown</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.k</span>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.l</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             On Player Deep Dive, the pitch-type table shows how a hitter
@@ -643,7 +702,7 @@ function scrollTo(id) {
         <section id="principles" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">What we don't do</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.l</span>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.m</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             A short list of what's off the table, by design:
@@ -677,7 +736,7 @@ function scrollTo(id) {
         <section id="freshness" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Updates & freshness</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.m</span>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.n</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Different data refreshes on different schedules:

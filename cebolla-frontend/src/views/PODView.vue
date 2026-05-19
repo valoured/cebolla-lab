@@ -79,6 +79,49 @@ const todayPod = computed(() => pods.value.find(p => p.pod_date === todayIso) ||
 const historicalPods = computed(() => pods.value.filter(p => p.pod_date !== todayIso))
 const settledPods = computed(() => pods.value.filter(p => ['win', 'loss', 'push'].includes(p.status)))
 
+// ── Per-market_class filtering (dual POD: HR + HRR) ────────────────────
+// All POD rows carry a `market_class` tag set at lock time. Until the HRR
+// model ships, all existing rows are 'hr' (backfilled by the migration).
+// These helpers let the template show two separate cards/scoreboards side-
+// by-side, one per market, without re-querying the DB.
+function podsByMarket(marketClass) {
+  return pods.value.filter(p => (p.market_class || 'hr') === marketClass)
+}
+function todayPodForMarket(marketClass) {
+  return pods.value.find(
+    p => p.pod_date === todayIso && (p.market_class || 'hr') === marketClass,
+  ) || null
+}
+function historicalPodsForMarket(marketClass) {
+  return pods.value.filter(
+    p => p.pod_date !== todayIso && (p.market_class || 'hr') === marketClass,
+  )
+}
+function settledPodsForMarket(marketClass) {
+  return pods.value.filter(
+    p => ['win', 'loss', 'push'].includes(p.status) &&
+         (p.market_class || 'hr') === marketClass,
+  )
+}
+
+// Market metadata for UI rendering
+const MARKETS = [
+  {
+    key: 'hr',
+    label: 'Home Run',
+    short: 'HR',
+    description: 'Anytime home run — the player hits at least one HR.',
+    enabled: true,
+  },
+  {
+    key: 'hrr',
+    label: 'H + R + RBI',
+    short: 'HRR',
+    description: 'Hits + Runs + RBIs — does the player produce across the board.',
+    enabled: false,  // flipped on once Phase 1B (HRR projections) ships
+  },
+]
+
 // Scale a stored payout (at canonical stake) up/down to viewer's stake.
 function scaledPayout(pod) {
   const canon = Number(pod.stake) || 10
@@ -91,35 +134,51 @@ function scaledRisk(pod) {
   return displayStake.value
 }
 
-// Win/loss record
-const record = computed(() => {
+// Win/loss record — overall (kept for backward compat) and per-market.
+const record = computed(() => recordFor(settledPods.value))
+
+function recordFor(podList) {
   let w = 0, l = 0, p = 0, v = 0
-  for (const pod of settledPods.value) {
+  for (const pod of podList) {
     if (pod.status === 'win') w++
     else if (pod.status === 'loss') l++
     else if (pod.status === 'push') p++
     else if (pod.status === 'void') v++
   }
   return { w, l, p, v, settled: w + l + p }
-})
+}
 
-// Net P&L at displayStake
-const netPnl = computed(() => {
+function recordForMarket(marketClass) {
+  return recordFor(settledPodsForMarket(marketClass))
+}
+
+// Net P&L — overall + per-market
+const netPnl = computed(() => pnlFor(settledPods.value))
+
+function pnlFor(podList) {
   let total = 0
-  for (const pod of settledPods.value) {
-    total += scaledPayout(pod)
-  }
+  for (const pod of podList) total += scaledPayout(pod)
   return total
-})
+}
 
-// ROI = net P&L / total risked. Pushes don't count as risk (refunded).
-const roi = computed(() => {
-  const risked = settledPods.value
+function pnlForMarket(marketClass) {
+  return pnlFor(settledPodsForMarket(marketClass))
+}
+
+// ROI — overall + per-market
+const roi = computed(() => roiFor(settledPods.value))
+
+function roiFor(podList) {
+  const risked = podList
     .filter(p => p.status === 'win' || p.status === 'loss')
     .length * displayStake.value
   if (risked === 0) return null
-  return netPnl.value / risked
-})
+  return pnlFor(podList) / risked
+}
+
+function roiForMarket(marketClass) {
+  return roiFor(settledPodsForMarket(marketClass))
+}
 
 // Cumulative P&L over time for the sparkline.
 const pnlTimeline = computed(() => {
@@ -250,77 +309,185 @@ function marketLabel(m) {
       </div>
 
       <template v-else>
-        <!-- ── TODAY'S POD ─────────────────────────────────── -->
-        <section class="mb-6">
-          <div class="flex items-baseline justify-between mb-2">
-            <h2 class="label-bracket text-signal-400">today · {{ fmtDate(todayIso) }}</h2>
-            <span v-if="todayPod" class="badge" :class="statusBadgeClass(todayPod.status)">
-              {{ statusLabel(todayPod.status) }}
+        <!-- ── TODAY'S PODS (per market_class) ────────────────── -->
+        <!-- HR POD (live since launch) -->
+        <section class="mb-4">
+          <div class="flex items-baseline justify-between mb-2 flex-wrap gap-2">
+            <div class="flex items-baseline gap-2">
+              <h2 class="label-bracket text-signal-400">today · hr · {{ fmtDate(todayIso) }}</h2>
+              <span class="label-caps !text-[8px] text-fg-500">anytime home run</span>
+            </div>
+            <span
+              v-if="todayPodForMarket('hr')"
+              class="badge"
+              :class="statusBadgeClass(todayPodForMarket('hr').status)"
+            >
+              {{ statusLabel(todayPodForMarket('hr').status) }}
             </span>
           </div>
 
-          <!-- Locked pick -->
-          <div v-if="todayPod" class="pod-card">
+          <!-- Locked HR pick -->
+          <div v-if="todayPodForMarket('hr')" class="pod-card">
             <div class="flex items-center gap-3 sm:gap-4 mb-3">
               <img
-                v-if="todayPod.player_mlbam_id"
-                :src="playerHeadshotUrl(todayPod.player_mlbam_id)"
-                :alt="todayPod.player_name"
+                v-if="todayPodForMarket('hr').player_mlbam_id"
+                :src="playerHeadshotUrl(todayPodForMarket('hr').player_mlbam_id)"
+                :alt="todayPodForMarket('hr').player_name"
                 class="pod-headshot"
                 @error="hideOnError"
               />
               <div v-else class="pod-headshot pod-headshot--fallback"></div>
               <div class="flex-1 min-w-0">
                 <div class="display-text text-xl sm:text-2xl text-fg-800 leading-tight truncate">
-                  {{ todayPod.player_name }}
+                  {{ todayPodForMarket('hr').player_name }}
                 </div>
                 <div class="flex items-baseline gap-2 mt-1 flex-wrap">
-                  <span class="label-bracket text-signal-400">{{ todayPod.team_abbrev }}</span>
+                  <span class="label-bracket text-signal-400">{{ todayPodForMarket('hr').team_abbrev }}</span>
                   <span class="text-fg-500 text-xs italic">vs</span>
-                  <span class="label-bracket text-fg-600">{{ todayPod.opponent_abbrev }}</span>
-                  <span class="label-caps !text-[9px]">{{ marketLabel(todayPod.market) }}</span>
+                  <span class="label-bracket text-fg-600">{{ todayPodForMarket('hr').opponent_abbrev }}</span>
+                  <span class="label-caps !text-[9px]">{{ marketLabel(todayPodForMarket('hr').market) }}</span>
                 </div>
               </div>
             </div>
 
-            <!-- Stats grid -->
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-bg-200">
               <div>
                 <div class="label-caps !text-[9px]">Cebolla Prob</div>
                 <div class="display-num text-xl text-fg-800 mt-1">
-                  {{ fmtProb(todayPod.projected_prob) }}
+                  {{ fmtProb(todayPodForMarket('hr').projected_prob) }}
                 </div>
               </div>
               <div>
                 <div class="label-caps !text-[9px]">Odds</div>
                 <div class="display-num text-xl text-fg-800 mt-1">
-                  {{ fmtOdds(todayPod.american_odds) }}
+                  {{ fmtOdds(todayPodForMarket('hr').american_odds) }}
                 </div>
               </div>
               <div>
                 <div class="label-caps !text-[9px]">Edge</div>
-                <div class="display-num text-xl mt-1" :class="todayPod.edge > 0 ? 'text-signal-400' : 'text-fg-600'">
-                  {{ fmtPct(todayPod.edge) }}
+                <div
+                  class="display-num text-xl mt-1"
+                  :class="todayPodForMarket('hr').edge > 0 ? 'text-signal-400' : 'text-fg-600'"
+                >
+                  {{ fmtPct(todayPodForMarket('hr').edge) }}
                 </div>
               </div>
               <div>
                 <div class="label-caps !text-[9px]">If hit at ${{ displayStake }}</div>
                 <div class="display-num text-xl text-signal-400 mt-1">
-                  +{{ fmtMoney(displayStake * (todayPod.american_odds >= 0 ? todayPod.american_odds / 100 : 100 / Math.abs(todayPod.american_odds)), false).replace('$', '$') }}
+                  +{{ fmtMoney(displayStake * (todayPodForMarket('hr').american_odds >= 0 ? todayPodForMarket('hr').american_odds / 100 : 100 / Math.abs(todayPodForMarket('hr').american_odds)), false).replace('$', '$') }}
                 </div>
               </div>
             </div>
 
-            <div v-if="todayPod.book" class="mt-3 pt-3 border-t border-bg-200/40 label-caps !text-[8px] opacity-70">
-              odds from {{ todayPod.book }} · locked {{ new Date(todayPod.locked_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) }} ET
+            <div
+              v-if="todayPodForMarket('hr').book"
+              class="mt-3 pt-3 border-t border-bg-200/40 label-caps !text-[8px] opacity-70"
+            >
+              odds from {{ todayPodForMarket('hr').book }} · locked
+              {{ new Date(todayPodForMarket('hr').locked_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) }} ET
             </div>
           </div>
 
-          <!-- No POD yet -->
+          <!-- No HR POD yet -->
           <div v-else class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
             <div class="display-text text-lg text-fg-500 italic mb-1">No pick locked yet</div>
             <p class="text-fg-500 text-xs">
-              Cebolla locks the day's POD by ~10:30 AM ET. Check back after morning projections run.
+              Cebolla locks the day's HR POD by ~10:30 AM ET. Check back after morning projections run.
+            </p>
+          </div>
+        </section>
+
+        <!-- HRR POD (placeholder — model not yet shipping picks) -->
+        <section class="mb-6">
+          <div class="flex items-baseline justify-between mb-2 flex-wrap gap-2">
+            <div class="flex items-baseline gap-2">
+              <h2 class="label-bracket text-signal-400">today · hrr · {{ fmtDate(todayIso) }}</h2>
+              <span class="label-caps !text-[8px] text-fg-500">hits + runs + rbis</span>
+            </div>
+            <span class="badge badge-pending">COMING SOON</span>
+          </div>
+
+          <div
+            v-if="todayPodForMarket('hrr')"
+            class="pod-card"
+          >
+            <!-- Once HRR PODs start being picked, render the same card structure
+                 as the HR side. For brevity I'm reusing the same template
+                 shape inline. -->
+            <div class="flex items-center gap-3 sm:gap-4 mb-3">
+              <img
+                v-if="todayPodForMarket('hrr').player_mlbam_id"
+                :src="playerHeadshotUrl(todayPodForMarket('hrr').player_mlbam_id)"
+                :alt="todayPodForMarket('hrr').player_name"
+                class="pod-headshot"
+                @error="hideOnError"
+              />
+              <div v-else class="pod-headshot pod-headshot--fallback"></div>
+              <div class="flex-1 min-w-0">
+                <div class="display-text text-xl sm:text-2xl text-fg-800 leading-tight truncate">
+                  {{ todayPodForMarket('hrr').player_name }}
+                </div>
+                <div class="flex items-baseline gap-2 mt-1 flex-wrap">
+                  <span class="label-bracket text-signal-400">{{ todayPodForMarket('hrr').team_abbrev }}</span>
+                  <span class="text-fg-500 text-xs italic">vs</span>
+                  <span class="label-bracket text-fg-600">{{ todayPodForMarket('hrr').opponent_abbrev }}</span>
+                  <span class="label-caps !text-[9px]">{{ marketLabel(todayPodForMarket('hrr').market) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-bg-200">
+              <div>
+                <div class="label-caps !text-[9px]">Cebolla Prob</div>
+                <div class="display-num text-xl text-fg-800 mt-1">
+                  {{ fmtProb(todayPodForMarket('hrr').projected_prob) }}
+                </div>
+              </div>
+              <div>
+                <div class="label-caps !text-[9px]">Odds</div>
+                <div class="display-num text-xl text-fg-800 mt-1">
+                  {{ fmtOdds(todayPodForMarket('hrr').american_odds) }}
+                </div>
+              </div>
+              <div>
+                <div class="label-caps !text-[9px]">Edge</div>
+                <div
+                  class="display-num text-xl mt-1"
+                  :class="todayPodForMarket('hrr').edge > 0 ? 'text-signal-400' : 'text-fg-600'"
+                >
+                  {{ fmtPct(todayPodForMarket('hrr').edge) }}
+                </div>
+              </div>
+              <div>
+                <div class="label-caps !text-[9px]">If hit at ${{ displayStake }}</div>
+                <div class="display-num text-xl text-signal-400 mt-1">
+                  +{{ fmtMoney(displayStake * (todayPodForMarket('hrr').american_odds >= 0 ? todayPodForMarket('hrr').american_odds / 100 : 100 / Math.abs(todayPodForMarket('hrr').american_odds)), false).replace('$', '$') }}
+                </div>
+              </div>
+            </div>
+
+            <div
+              v-if="todayPodForMarket('hrr').book"
+              class="mt-3 pt-3 border-t border-bg-200/40 label-caps !text-[8px] opacity-70"
+            >
+              odds from {{ todayPodForMarket('hrr').book }} · locked
+              {{ new Date(todayPodForMarket('hrr').locked_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) }} ET
+            </div>
+          </div>
+
+          <!-- No HRR POD — placeholder while model is in development -->
+          <div v-else class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
+            <div class="display-text text-lg text-fg-500 italic mb-1">
+              H + R + RBI model in development
+            </div>
+            <p class="text-fg-500 text-xs max-w-md mx-auto">
+              The HRR projection model (Poisson over expected PAs) is being built and
+              calibrated. Once it ships, a second POD will lock here daily — same
+              combined edge × contact logic as the HR pick, applied to the H+R+RBI market.
+            </p>
+            <p class="text-fg-400 text-[10px] mt-3">
+              See <router-link :to="{ name: 'methodology', hash: '#hrr-pod' }" class="text-signal-400 hover:underline">methodology · M.03</router-link> for the plan.
             </p>
           </div>
         </section>
