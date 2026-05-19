@@ -181,7 +181,7 @@ const marketLabel = computed(() => {
         <template v-if="row.contact_score != null">
           <div
             class="display-num text-[11px] font-medium inline-flex items-baseline gap-0.5 justify-end"
-            :title="`${formatScore(row.contact_score)}/100 contact score (L14 percentile vs tonight's slate)`"
+            :title="`${formatScore(row.contact_score)}/100 contact score (L14 percentile vs all qualified MLB batters)`"
           >
             <span :class="scoreColorClass(row.contact_score)">{{ formatScore(row.contact_score) }}</span>
             <span

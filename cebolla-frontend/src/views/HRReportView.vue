@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useGame } from '../composables/useGame.js'
+import { useContactPool } from '../composables/useContactPool.js'
 import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
 import LogBetModal from '../components/LogBetModal.vue'
@@ -26,6 +27,11 @@ const {
   batterStats, odds, bvp, projections,
   loading, error,
 } = useGame(gameId)
+
+// League-wide contact pool — fetched once per session, shared across both
+// BatterTable instances on this page. Pool fetch runs in parallel with
+// useGame, no extra latency on the user-visible critical path.
+const { getSnapshot: getContactSnapshot } = useContactPool()
 
 const showSecondary = ref(false)
 const secondaryMarket = ref('hits')
@@ -313,6 +319,7 @@ const modelMeta = computed(() => {
             market-mode="hr"
             :game-id="gameId"
             :game-time-utc="game.game_time_utc"
+            :get-contact-snapshot="getContactSnapshot"
             @log-bet="onLogBet"
           />
           <BatterTable
@@ -326,6 +333,7 @@ const modelMeta = computed(() => {
             market-mode="hr"
             :game-id="gameId"
             :game-time-utc="game.game_time_utc"
+            :get-contact-snapshot="getContactSnapshot"
             @log-bet="onLogBet"
           />
         </div>
@@ -369,6 +377,7 @@ const modelMeta = computed(() => {
               :market-mode="secondaryMarket"
               :game-id="gameId"
               :game-time-utc="game.game_time_utc"
+            :get-contact-snapshot="getContactSnapshot"
               @log-bet="onLogBet"
             />
             <BatterTable
@@ -382,6 +391,7 @@ const modelMeta = computed(() => {
               :market-mode="secondaryMarket"
               :game-id="gameId"
               :game-time-utc="game.game_time_utc"
+            :get-contact-snapshot="getContactSnapshot"
               @log-bet="onLogBet"
             />
           </div>
