@@ -34,6 +34,49 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 CURRENT_SEASON = 2026
 SEASON_START = f"{CURRENT_SEASON}-03-15"  # ~spring training end / opening day
 
+
+def safe_round(value, digits: int = 2):
+    """
+    Round a value to N digits, returning None for any non-finite input.
+
+    Pandas operations on empty/all-NaN series return NaN (a float), and
+    `NaN is not None` is True — meaning a naive `is not None` check
+    LETS NaN through. That NaN then gets passed straight into the JSON
+    payload and Supabase rejects it with `invalid input syntax for type json`.
+
+    This helper centralizes the check: anything pd.notna() can't accept
+    is normalized to None before serialization.
+    """
+    if value is None:
+        return None
+    try:
+        if not pd.notna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def sanitize_row(row: dict) -> dict:
+    """
+    Final pre-upsert sanity pass: ensure no NaN/Inf escapes into the
+    JSON payload. Belt-and-suspenders backstop for any field we missed.
+    """
+    cleaned = {}
+    for k, v in row.items():
+        if isinstance(v, float):
+            if pd.notna(v):
+                cleaned[k] = v
+            else:
+                cleaned[k] = None
+        else:
+            cleaned[k] = v
+    return cleaned
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -175,17 +218,17 @@ def aggregate_arsenal(df: pd.DataFrame, pitcher_id: int) -> list[dict]:
             "window_type": "season",
             "vs_stance": stance,
             "pitch_type": pitch,
-            "usage_pct": round(usage_pct, 2) if usage_pct is not None else None,
-            "velo_avg": round(velo, 1) if pd.notna(velo) else None,
-            "pitches": pitches,
-            "pa": int(pa),
-            "hr": int(hr_count),
-            "hr_pct": round(hr_pct, 2) if hr_pct is not None else None,
-            "barrel_pct": round(barrel_pct, 2) if barrel_pct is not None else None,
-            "hard_hit_pct": round(hh_pct, 2) if hh_pct is not None else None,
-            "ev_avg": round(ev_avg, 1) if ev_avg is not None else None,
-            "la_avg": round(la_avg, 1) if la_avg is not None else None,
-            "whiff_pct": round(whiff_pct, 2) if whiff_pct is not None else None,
+            "usage_pct":    safe_round(usage_pct, 2),
+            "velo_avg":     safe_round(velo, 1),
+            "pitches":      pitches,
+            "pa":           int(pa),
+            "hr":           int(hr_count),
+            "hr_pct":       safe_round(hr_pct, 2),
+            "barrel_pct":   safe_round(barrel_pct, 2),
+            "hard_hit_pct": safe_round(hh_pct, 2),
+            "ev_avg":       safe_round(ev_avg, 1),
+            "la_avg":       safe_round(la_avg, 1),
+            "whiff_pct":    safe_round(whiff_pct, 2),
             # krash_rating computed in Phase 4
             "krash_rating": None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -219,13 +262,25 @@ def main():
             log.info("   (no arsenal data)")
             continue
 
-        # Upsert
-        sb.table("pitcher_arsenals").upsert(
-            rows,
-            on_conflict="pitcher_id,season,window_type,vs_stance,pitch_type",
-        ).execute()
-        log.info("   ✓ %d arsenal rows", len(rows))
-        total_rows += len(rows)
+        # Final pre-upsert sanitize: belt-and-suspenders backstop against
+        # any NaN/Inf slipping past safe_round into the JSON payload.
+        # If even one row contains NaN, Supabase rejects the WHOLE batch
+        # with "Token 'NaN' is invalid" and the script previously crashed.
+        rows = [sanitize_row(r) for r in rows]
+
+        # Per-pitcher try/except — one bad pitcher must not poison the
+        # whole run. Log the failure, count it, move on to the next.
+        try:
+            sb.table("pitcher_arsenals").upsert(
+                rows,
+                on_conflict="pitcher_id,season,window_type,vs_stance,pitch_type",
+            ).execute()
+            log.info("   ✓ %d arsenal rows", len(rows))
+            total_rows += len(rows)
+        except Exception as e:
+            failed += 1
+            log.warning("   ✗ upsert failed for %s: %s", p["name"], e)
+            continue
 
     log.info("🧅 Arsenal sync complete: %d rows written; %d failed",
              total_rows, failed)
