@@ -120,6 +120,12 @@ SHARING_LIMITS = {
 MAX_PLAYER_APPEARANCES = 2   # any single player appears on at most 2 cards
 MAX_SAME_GAME_CARDS    = 1   # at most 1 card whose legs all share a single game
 
+# Market diversification: mandate at least this many cards use ONLY non-HR
+# markets (Hits / RBI / HRR). Prevents the menu from being entirely
+# dependent on HR variance, which is the noisiest market we cover.
+# A "non-HR card" has zero legs with market='hr_anytime'.
+MIN_NON_HR_CARDS = 1
+
 # ────────────────────────────────────────────────────────────────────────
 # DATE
 # ────────────────────────────────────────────────────────────────────────
@@ -573,7 +579,136 @@ def select_cards(all_combos_by_tier):
         if is_same_game_card(legs):
             same_game_card_count += 1
 
+    # ── Market diversification: ensure at least MIN_NON_HR_CARDS in menu ──
+    #
+    # If the natural selection above produced 0 non-HR cards (everything is
+    # HR-heavy), force-swap in the best non-HR alternatives. This protects
+    # against nights where HR variance wipes out the whole menu.
+    #
+    # Strategy: count current non-HR cards. For each shortfall:
+    #   1. Search across all tiers' generated combos for the highest-EV
+    #      candidate that is purely non-HR AND clears its tier's EV gate
+    #   2. Find the LOWEST-EV currently-selected HR-heavy card to evict
+    #   3. Swap them, respecting global exposure caps (recompute after each swap)
+    enforce_non_hr_mandate(selected, all_combos_by_tier)
+
     return selected
+
+
+def is_non_hr_card(combo):
+    """A card is 'non-HR' if NONE of its legs are hr_anytime."""
+    return all(leg["market"] != "hr_anytime" for leg in combo["legs"])
+
+
+def enforce_non_hr_mandate(selected, all_combos_by_tier):
+    """
+    Post-selection: ensure at least MIN_NON_HR_CARDS cards in the menu use
+    only non-HR markets. If we're short, evict the lowest-EV HR-heavy card
+    and swap in the highest-EV non-HR alternative.
+
+    Mutates `selected` in place.
+    """
+    def count_non_hr():
+        total = 0
+        for tier_list in selected.values():
+            for combo in tier_list:
+                if is_non_hr_card(combo):
+                    total += 1
+        return total
+
+    def all_selected_tier_pairs():
+        """Yield (tier_key, combo) pairs across all selected tiers."""
+        for tier_key, tier_list in selected.items():
+            for combo in tier_list:
+                yield tier_key, combo
+
+    deficit = MIN_NON_HR_CARDS - count_non_hr()
+    if deficit <= 0:
+        return  # nothing to fix
+
+    log.info("  market diversification: %d non-HR card%s short, attempting swap",
+             deficit, "" if deficit == 1 else "s")
+
+    # Build a candidate pool of non-HR combos from each tier, with EV gate already applied.
+    non_hr_pool = []   # list of (tier_key, combo)
+    for tier_key, combos in all_combos_by_tier.items():
+        gate = EV_GATES.get(tier_key, 0.05)
+        for combo in combos:
+            if is_non_hr_card(combo) and combo["math"]["ev_per_dollar"] >= gate:
+                non_hr_pool.append((tier_key, combo))
+    # Best non-HR options first (highest EV)
+    non_hr_pool.sort(key=lambda x: x[1]["math"]["ev_per_dollar"], reverse=True)
+
+    if not non_hr_pool:
+        log.warning("  no non-HR alternatives clear EV gates — slate is HR-only tonight")
+        return
+
+    swaps_done = 0
+    swaps_needed = deficit
+
+    # Track which non-HR combos we've already considered (avoid retry loops)
+    seen_combo_ids = set()
+
+    for tier_key, non_hr_combo in non_hr_pool:
+        if swaps_done >= swaps_needed:
+            break
+        combo_id = id(non_hr_combo)
+        if combo_id in seen_combo_ids:
+            continue
+        seen_combo_ids.add(combo_id)
+
+        non_hr_player_ids = set(l["player_id"] for l in non_hr_combo["legs"])
+
+        # Find the LOWEST-EV currently-selected HR-heavy card to evict.
+        # Constraints on the swap:
+        #   1. Evicted card must be in the SAME tier (preserve menu shape)
+        #   2. Removing it shouldn't drop us below 1 card in that tier when
+        #      we still need one there — but if all tiers have multiple, OK
+        evictable = []
+        for sel_tier_key, sel_combo in all_selected_tier_pairs():
+            if sel_tier_key != tier_key:
+                continue
+            if is_non_hr_card(sel_combo):
+                continue   # don't evict an already-non-HR card
+            evictable.append(sel_combo)
+        if not evictable:
+            continue
+        # Cheapest (lowest-EV) HR-heavy card in this tier
+        evictable.sort(key=lambda c: c["math"]["ev_per_dollar"])
+        victim = evictable[0]
+        victim_player_ids = set(l["player_id"] for l in victim["legs"])
+
+        # Verify the swap doesn't violate global exposure caps.
+        # Recompute player counts after removing victim + adding non_hr_combo.
+        proj_player_counts = {}
+        for sel_tier_key, sel_combo in all_selected_tier_pairs():
+            if sel_combo is victim:
+                continue
+            for leg in sel_combo["legs"]:
+                pid = leg["player_id"]
+                proj_player_counts[pid] = proj_player_counts.get(pid, 0) + 1
+        # Add non-HR combo's players
+        violates_cap = False
+        for pid in non_hr_player_ids:
+            new_count = proj_player_counts.get(pid, 0) + 1
+            if new_count > MAX_PLAYER_APPEARANCES:
+                violates_cap = True
+                break
+        if violates_cap:
+            continue
+
+        # Execute swap
+        selected[tier_key].remove(victim)
+        selected[tier_key].append(non_hr_combo)
+        swaps_done += 1
+        log.info("  swap %d: evict %s (%s, EV=%.3f) → add %s (%s, EV=%.3f)",
+                 swaps_done,
+                 victim.get("label", "?"), tier_key, victim["math"]["ev_per_dollar"],
+                 non_hr_combo.get("label", "?"), tier_key, non_hr_combo["math"]["ev_per_dollar"])
+
+    if swaps_done < swaps_needed:
+        log.warning("  market diversification: only %d/%d swaps possible (exposure caps blocked rest)",
+                    swaps_done, swaps_needed)
 
 
 # ────────────────────────────────────────────────────────────────────────
