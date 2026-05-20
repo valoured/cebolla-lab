@@ -395,7 +395,7 @@ function hrPctTone(pct) {
               <!-- POD badge: prominent gold trophy tag when this player is today's pick -->
               <span
                 v-if="isPOD(playerId)"
-                class="display-num text-[10px] font-bold px-2 py-1 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none"
+                class="display-num text-[10px] font-bold px-2 py-1 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none whitespace-nowrap"
                 title="Today's Play of the Day"
                 aria-label="Today's Play of the Day"
               >★ POD</span>

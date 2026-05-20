@@ -161,7 +161,7 @@ const favTeamPlaying = computed(() => {
           <!-- POD hint: subtle gold tag when today's POD is in this game -->
           <span
             v-if="isPODGame(game.id)"
-            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/15 text-amber-300 border border-amber-400/30 leading-none"
+            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/15 text-amber-300 border border-amber-400/30 leading-none whitespace-nowrap"
             :title="`Today's POD: ${pod?.player_name}`"
             aria-label="Today's Play of the Day"
           >★ POD</span>

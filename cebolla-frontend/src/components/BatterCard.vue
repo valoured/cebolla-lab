@@ -139,7 +139,7 @@ const marketLabel = computed(() => {
           </router-link>
           <span
             v-if="isPOD(row.player_id)"
-            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none shrink-0"
+            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none shrink-0 whitespace-nowrap"
             title="Today's Play of the Day"
             aria-label="Today's Play of the Day"
           >★ POD</span>

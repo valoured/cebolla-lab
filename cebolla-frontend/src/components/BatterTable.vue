@@ -542,7 +542,7 @@ const badgeLabel = computed(() => {
                 <!-- POD badge: bold gold trophy tag when this player is today's POD -->
                 <span
                   v-if="isPOD(row.player_id)"
-                  class="display-num text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none"
+                  class="display-num text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none whitespace-nowrap"
                   title="Today's Play of the Day"
                   aria-label="Today's Play of the Day"
                 >★ POD</span>
