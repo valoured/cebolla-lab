@@ -23,22 +23,55 @@ export function useSlate(dateStr) {
   async function pickActiveDate() {
     if (dateStr) return dateStr
 
-    const today = new Date().toISOString().slice(0, 10)
+    // ET-relative "today" — same convention used by the picker scripts and PODView.
+    // BUG fix: previously used toISOString() which returns UTC. In ET evenings
+    // (after 8 PM ET = midnight UTC) that flipped the date to tomorrow and the
+    // slate auto-advanced before the day was over. Always use the ET calendar.
+    const today = etTodayStr()
 
-    // Find the earliest date >= today that has at least one non-final game
+    // Does today's slate still have ANY game that hasn't finalized?
+    // If so, stay on today — even if the only remaining games are mid-inning.
+    // Only advance to tomorrow once today's entire slate is settled.
+    const { data: todayData, error: todayErr } = await supabase
+      .from('games')
+      .select('id, status')
+      .eq('game_date', today)
+      .not('status', 'in', '("Final","Game Over","Completed Early")')
+      .limit(1)
+
+    if (!todayErr && todayData && todayData.length > 0) {
+      return today
+    }
+
+    // Today's slate is fully settled (or has zero games). Look forward for the
+    // earliest upcoming date with a non-final game.
     const { data, error: e } = await supabase
       .from('games')
       .select('game_date, status')
-      .gte('game_date', today)
+      .gt('game_date', today)
       .not('status', 'in', '("Final","Game Over","Completed Early")')
       .order('game_date', { ascending: true })
       .limit(1)
 
     if (e || !data || data.length === 0) {
-      // Fallback: just use today (will show empty state)
+      // No upcoming games — keep showing today (will render empty/settled state)
       return today
     }
     return data[0].game_date
+  }
+
+  // ET-relative YYYY-MM-DD (avoids UTC drift in evenings)
+  function etTodayStr() {
+    const now = new Date()
+    // EDT is UTC-4; EST is UTC-5. We assume EDT during baseball season.
+    // For correctness year-round, we'd need a proper TZ library, but EDT
+    // covers the entire MLB regular season (March through October).
+    const etMs = now.getTime() - 4 * 60 * 60 * 1000
+    const et = new Date(etMs)
+    const y = et.getUTCFullYear()
+    const m = String(et.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(et.getUTCDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
   }
 
   async function load() {

@@ -25,11 +25,16 @@ const props = defineProps({
 const emit = defineEmits(['update:targetDate'])
 
 function todayStr() {
-  // Local date — toISOString() returns UTC and flips a day ahead in ET evenings.
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
+  // ET-relative date — must match useSlate.js so "TODAY" pill aligns with
+  // the auto-picked active date. Using LOCAL date or UTC breaks this for
+  // non-ET viewers, and using UTC also flipped the day prematurely in
+  // evening ET hours.
+  const now = new Date()
+  const etMs = now.getTime() - 4 * 60 * 60 * 1000   // EDT (baseball season)
+  const et = new Date(etMs)
+  const y = et.getUTCFullYear()
+  const m = String(et.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(et.getUTCDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
 }
 
