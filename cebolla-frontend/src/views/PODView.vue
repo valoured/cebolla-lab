@@ -45,12 +45,15 @@ function saveStake(v) {
   }
 }
 
-// Helper: ET-relative today (used by load() and derived constants below).
+// Helper: ET-relative today (DST-safe via Intl.DateTimeFormat — handles
+// EDT/EST transitions automatically). Used by load() and derived constants.
 function todayIsoFn() {
-  const now = new Date()
-  const offsetMs = -4 * 60 * 60 * 1000
-  const et = new Date(now.getTime() + offsetMs)
-  return et.toISOString().slice(0, 10)
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
 }
 
 // ── Load ───────────────────────────────────────────────────────

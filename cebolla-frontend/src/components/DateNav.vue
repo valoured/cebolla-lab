@@ -25,17 +25,16 @@ const props = defineProps({
 const emit = defineEmits(['update:targetDate'])
 
 function todayStr() {
-  // ET-relative date — must match useSlate.js so "TODAY" pill aligns with
-  // the auto-picked active date. Using LOCAL date or UTC breaks this for
-  // non-ET viewers, and using UTC also flipped the day prematurely in
-  // evening ET hours.
-  const now = new Date()
-  const etMs = now.getTime() - 4 * 60 * 60 * 1000   // EDT (baseball season)
-  const et = new Date(etMs)
-  const y = et.getUTCFullYear()
-  const m = String(et.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(et.getUTCDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  // ET-relative YYYY-MM-DD (DST-safe via Intl.DateTimeFormat).
+  // Must match useSlate.js so the "TODAY" pill aligns with the auto-picked
+  // active date. 'en-CA' locale formats as YYYY-MM-DD which is exactly
+  // what we compare against game_date.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
 }
 
 // Parse 'YYYY-MM-DD' as LOCAL date (avoid TZ shift from new Date('2026-05-19'))

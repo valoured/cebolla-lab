@@ -60,18 +60,16 @@ export function useSlate(dateStr) {
     return data[0].game_date
   }
 
-  // ET-relative YYYY-MM-DD (avoids UTC drift in evenings)
+  // ET-relative YYYY-MM-DD (DST-safe via Intl.DateTimeFormat).
+  // 'en-CA' locale happens to format as YYYY-MM-DD which is exactly what
+  // we need to compare against game_date strings in Supabase.
   function etTodayStr() {
-    const now = new Date()
-    // EDT is UTC-4; EST is UTC-5. We assume EDT during baseball season.
-    // For correctness year-round, we'd need a proper TZ library, but EDT
-    // covers the entire MLB regular season (March through October).
-    const etMs = now.getTime() - 4 * 60 * 60 * 1000
-    const et = new Date(etMs)
-    const y = et.getUTCFullYear()
-    const m = String(et.getUTCMonth() + 1).padStart(2, '0')
-    const d = String(et.getUTCDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date())
   }
 
   async function load() {
