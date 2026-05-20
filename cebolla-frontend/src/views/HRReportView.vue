@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useGame } from '../composables/useGame.js'
-import { useContactPool } from '../composables/useContactPool.js'
 import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
 import LogBetModal from '../components/LogBetModal.vue'
@@ -28,13 +27,11 @@ const {
   loading, error,
 } = useGame(gameId)
 
-// League-wide contact pool — fetched once per session, shared across both
-// BatterTable instances on this page. Pool fetch runs in parallel with
-// useGame, no extra latency on the user-visible critical path.
-const { getSnapshot: getContactSnapshot } = useContactPool()
-
 const showSecondary = ref(false)
 const secondaryMarket = ref('hits')
+// HRR has 3 lines (1.5 / 2.5 / 3.5). User picks which one to view via sub-toggle.
+// Only relevant when secondaryMarket === 'hrr'.
+const hrrLine = ref(1.5)
 
 // ─── Bet logging state ───
 const showLogModal = ref(false)
@@ -169,21 +166,14 @@ const modelMeta = computed(() => {
             <!-- Teams + time/venue: row on desktop, wraps tighter on mobile -->
             <div class="flex items-center gap-2 sm:gap-4 flex-wrap">
               <h1 class="flex items-center gap-2 sm:gap-3 display-text text-3xl sm:text-4xl text-fg-800 tracking-tight leading-none">
-                <router-link
-                  v-if="game.away_team?.abbrev"
-                  :to="{ name: 'team', params: { abbrev: game.away_team.abbrev } }"
-                  class="hr-team-link flex items-center gap-2 sm:gap-3"
-                  :title="`${game.away_team.name} team page`"
-                >
-                  <img
-                    v-if="awayLogo"
-                    :src="awayLogo"
-                    :alt="game.away_team?.abbrev"
-                    class="hr-team-logo"
-                    @error="hideOnError"
-                  />
-                  <span>{{ game.away_team?.abbrev }}</span>
-                </router-link>
+                <img
+                  v-if="awayLogo"
+                  :src="awayLogo"
+                  :alt="game.away_team?.abbrev"
+                  class="hr-team-logo"
+                  @error="hideOnError"
+                />
+                <span>{{ game.away_team?.abbrev }}</span>
                 <!-- Live/final scoreboard, or @ separator -->
                 <template v-if="showScores">
                   <span
@@ -197,21 +187,14 @@ const modelMeta = computed(() => {
                   >{{ game.home_score }}</span>
                 </template>
                 <span v-else class="text-fg-400 italic mx-1">@</span>
-                <router-link
-                  v-if="game.home_team?.abbrev"
-                  :to="{ name: 'team', params: { abbrev: game.home_team.abbrev } }"
-                  class="hr-team-link flex items-center gap-2 sm:gap-3"
-                  :title="`${game.home_team.name} team page`"
-                >
-                  <span>{{ game.home_team?.abbrev }}</span>
-                  <img
-                    v-if="homeLogo"
-                    :src="homeLogo"
-                    :alt="game.home_team?.abbrev"
-                    class="hr-team-logo"
-                    @error="hideOnError"
-                  />
-                </router-link>
+                <span>{{ game.home_team?.abbrev }}</span>
+                <img
+                  v-if="homeLogo"
+                  :src="homeLogo"
+                  :alt="game.home_team?.abbrev"
+                  class="hr-team-logo"
+                  @error="hideOnError"
+                />
               </h1>
               <!-- Inning display when live -->
               <span
@@ -319,7 +302,6 @@ const modelMeta = computed(() => {
             market-mode="hr"
             :game-id="gameId"
             :game-time-utc="game.game_time_utc"
-            :get-contact-snapshot="getContactSnapshot"
             @log-bet="onLogBet"
           />
           <BatterTable
@@ -333,7 +315,6 @@ const modelMeta = computed(() => {
             market-mode="hr"
             :game-id="gameId"
             :game-time-utc="game.game_time_utc"
-            :get-contact-snapshot="getContactSnapshot"
             @log-bet="onLogBet"
           />
         </div>
@@ -350,10 +331,10 @@ const modelMeta = computed(() => {
         </button>
 
         <div v-if="showSecondary" class="mt-5">
-          <div class="flex items-center gap-2 mb-3">
+          <div class="flex items-center gap-2 mb-3 flex-wrap">
             <span class="label-caps mr-2">market:</span>
             <button
-              v-for="m in ['hits', 'rbi']"
+              v-for="m in ['hits', 'rbi', 'hrr']"
               :key="m"
               @click="secondaryMarket = m"
               class="text-[11px] px-2.5 py-1 border transition"
@@ -361,8 +342,24 @@ const modelMeta = computed(() => {
                 ? 'border-signal-400 text-signal-200 bg-signal-400/10'
                 : 'border-bg-200 text-fg-500 hover:border-bg-300 hover:text-fg-700'"
             >
-              {{ m.toUpperCase() }}
+              {{ m === 'hrr' ? 'H+R+RBI' : m.toUpperCase() }}
             </button>
+
+            <!-- HRR line sub-toggle: 1.5 / 2.5 / 3.5 -->
+            <template v-if="secondaryMarket === 'hrr'">
+              <span class="label-caps ml-3 mr-1 text-fg-500">line:</span>
+              <button
+                v-for="line in [1.5, 2.5, 3.5]"
+                :key="line"
+                @click="hrrLine = line"
+                class="text-[11px] px-2 py-1 border transition font-mono"
+                :class="hrrLine === line
+                  ? 'border-signal-400 text-signal-200 bg-signal-400/10'
+                  : 'border-bg-200 text-fg-500 hover:border-bg-300 hover:text-fg-700'"
+              >
+                {{ line.toFixed(1) }}
+              </button>
+            </template>
           </div>
 
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 sm:gap-4">
@@ -375,9 +372,9 @@ const modelMeta = computed(() => {
               :pitcher-id="game.home_pitcher?.id"
               :team-label="`${game.away_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
+              :hrr-line="hrrLine"
               :game-id="gameId"
               :game-time-utc="game.game_time_utc"
-            :get-contact-snapshot="getContactSnapshot"
               @log-bet="onLogBet"
             />
             <BatterTable
@@ -389,9 +386,9 @@ const modelMeta = computed(() => {
               :pitcher-id="game.away_pitcher?.id"
               :team-label="`${game.home_team?.abbrev} BATTERS`"
               :market-mode="secondaryMarket"
+              :hrr-line="hrrLine"
               :game-id="gameId"
               :game-time-utc="game.game_time_utc"
-            :get-contact-snapshot="getContactSnapshot"
               @log-bet="onLogBet"
             />
           </div>
@@ -419,22 +416,6 @@ const modelMeta = computed(() => {
 </template>
 
 <style scoped>
-/* Clickable team link in the HR Report header — wraps logo + abbrev so
-   the whole pair is the hit target. Hover bumps the logo brightness and
-   colors the abbrev red to signal navigability. */
-.hr-team-link {
-  text-decoration: none;
-  color: inherit;
-  transition: color 160ms ease;
-}
-.hr-team-link:hover {
-  color: rgba(255, 42, 42, 0.95);
-}
-.hr-team-link:hover .hr-team-logo {
-  filter: grayscale(0) brightness(1.12) contrast(1.05);
-  opacity: 1;
-}
-
 /* Team logos in the HR Report header */
 .hr-team-logo {
   width: 36px;

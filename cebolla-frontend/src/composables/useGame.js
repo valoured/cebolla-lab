@@ -85,7 +85,19 @@ export function useGame(gameId) {
         .map(l => l.player?.id)
         .filter(Boolean)
 
-      // 5) Odds (latest snapshot per player+market)
+      // 5) Odds (latest snapshot per player+market+line)
+      //
+      // Keyed as: oddsMap[player_id][market][line] = row
+      //
+      // Many markets (hits, h_r_rbi) have multiple lines all stored under
+      // the same `market` string but different `line` values. The previous
+      // version of this loop keyed by market only and silently dropped
+      // 3-of-4 hits rows and 4-of-5 HRR rows. Now each line is preserved
+      // and consumers (BatterTable / BatterCard) look up the line they
+      // need explicitly.
+      //
+      // For single-line markets (HR Anytime = line 0.5) the structure is
+      // the same — consumers just look up `odds[pid].hr_anytime_yes[0.5]`.
       if (batterIds.length) {
         const { data: o } = await supabase
           .from('odds_snapshots')
@@ -96,9 +108,15 @@ export function useGame(gameId) {
           .order('snapshot_time', { ascending: false })
         const oddsMap = {}
         for (const row of (o || [])) {
-          if (!oddsMap[row.player_id]) oddsMap[row.player_id] = {}
-          if (!oddsMap[row.player_id][row.market]) {
-            oddsMap[row.player_id][row.market] = row
+          const pid = row.player_id
+          const mkt = row.market
+          const line = row.line == null ? 0.5 : Number(row.line)
+          if (!oddsMap[pid]) oddsMap[pid] = {}
+          if (!oddsMap[pid][mkt]) oddsMap[pid][mkt] = {}
+          // Order-by-snapshot-desc + only-set-if-empty preserves the latest
+          // snapshot per (pid, market, line) tuple.
+          if (!oddsMap[pid][mkt][line]) {
+            oddsMap[pid][mkt][line] = row
           }
         }
         odds.value = oddsMap
