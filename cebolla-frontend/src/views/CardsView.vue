@@ -306,9 +306,11 @@ function openPlayer(mlbamId) {
         <span class="label-bracket text-fg-500">M.03</span>
       </div>
       <p class="text-fg-500 text-sm max-w-2xl">
-        AI-built daily parlay cards. The model scans every market for value combinations,
-        applies correlation penalties for same-game / same-team / same-player legs,
-        and picks the highest-EV plays. Each card shows recommended stake and payout.
+        AI-generated parlay analysis for informational and entertainment purposes. The model
+        scans every market for mathematical value combinations, applies correlation penalties
+        for same-game / same-team / same-player legs, and identifies the highest-EV
+        configurations. Each card shows a hypothetical stake and payout structure — not betting
+        advice.
       </p>
     </section>
 
@@ -330,7 +332,7 @@ function openPlayer(mlbamId) {
         <div v-if="todaysPods.length" class="mb-6">
           <div class="tier-header">
             <span class="tier-label">STRAIGHTS</span>
-            <span class="tier-sublabel">{{ todaysPods.length }} pick{{ todaysPods.length === 1 ? '' : 's' }} · $10 stake</span>
+            <span class="tier-sublabel">{{ todaysPods.length }} projection{{ todaysPods.length === 1 ? '' : 's' }} · $10 hypothetical</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div v-for="pod in todaysPods" :key="`pod-${pod.id}`" class="card-frame">

@@ -1,0 +1,83 @@
+========================================================================
+CEBOLLA — LEGAL DISCLAIMER (Master copy — use across all pages/footer)
+========================================================================
+
+SHORT VERSION (footer / per-page):
+─────────────────────────────────────
+Cebolla provides sports analytics, projections, and research tools for
+informational and entertainment purposes only. Nothing on this platform
+constitutes financial advice or betting advice. Sports betting involves
+risk and may not be legal in your jurisdiction. Never wager more than
+you can afford to lose. If you or someone you know has a gambling
+problem, call 1-800-GAMBLER. Must be 21+ to participate in legal sports
+wagering where permitted.
+
+
+LONG VERSION (for /disclaimer page or in ToS):
+─────────────────────────────────────────────────
+Cebolla ("we", "our", "the Platform") is a sports analytics research
+platform that provides statistical projections, historical matchup
+data, weather information, lineup information, and AI-generated
+parlay analysis. ALL CONTENT IS FOR INFORMATIONAL AND ENTERTAINMENT
+PURPOSES ONLY.
+
+1. NOT FINANCIAL OR BETTING ADVICE
+Nothing on this Platform constitutes financial, investment, legal, or
+betting advice. We do not provide recommendations to place specific
+wagers. Users are solely responsible for any wagering decisions they
+make.
+
+2. NO GUARANTEES
+Past performance does not guarantee future results. Our statistical
+projections are estimates based on historical data and proprietary
+models. Actual outcomes may differ significantly from projections.
+We make no representations regarding the accuracy of any projection,
+analysis, or other information.
+
+3. SPORTS BETTING IS RISKY
+Sports betting involves substantial risk of financial loss. Most
+bettors lose money over time. You should only wager money you can
+afford to lose. We are not responsible for any losses incurred by
+users.
+
+4. LEGAL JURISDICTION
+Sports betting is regulated differently in each U.S. state and
+country. It is the user's sole responsibility to determine whether
+sports betting is legal in their jurisdiction. We do not facilitate,
+accept, or process any wagers. We are not a sportsbook.
+
+5. AGE RESTRICTION
+Sports betting is restricted to individuals 21+ in most U.S.
+jurisdictions. Users must verify they meet all age and eligibility
+requirements in their jurisdiction before engaging in any wagering
+activity with third parties.
+
+6. PROBLEM GAMBLING
+If you or someone you know has a gambling problem, please seek help:
+- National Council on Problem Gambling: 1-800-GAMBLER
+- Or visit ncpgambling.org
+
+7. NO AFFILIATION
+Cebolla is independent and not affiliated with, endorsed by, or
+sponsored by Major League Baseball, MLB Advanced Media, the MLB
+Players Association, DraftKings, FanDuel, or any other sportsbook,
+sports league, team, player, or governing body.
+
+8. DATA SOURCES
+We aggregate publicly available sports data including statistical
+information from publicly accessible MLB sources and publicly
+available sportsbook odds. We make no claim of ownership over
+underlying sports data, official statistics, or odds data.
+
+9. INTELLECTUAL PROPERTY
+The Cebolla platform, including its analytics, projections,
+proprietary models, design, and branding, is the intellectual
+property of Cebolla. Reproduction or redistribution of platform
+content without authorization is prohibited.
+
+10. CHANGES TO DISCLAIMER
+We reserve the right to update this disclaimer at any time. Continued
+use of the Platform constitutes acceptance of any updates.
+
+Last updated: [DATE]
+========================================================================

@@ -114,7 +114,7 @@ async function onDelete(bet) {
     <!-- Header -->
     <div class="mb-6">
       <div class="label-bracket text-accent-red mb-1">[ M.05 / BET TRACKER ]</div>
-      <h1 class="font-display text-2xl text-fg-50">Bet Log</h1>
+      <h1 class="font-display text-2xl text-fg-50">Activity Log</h1>
       <p class="text-fg-400 text-sm mt-1">
         Cebolla's feedback loop. Log every bet with edge at placement → see which edge buckets actually print.
       </p>

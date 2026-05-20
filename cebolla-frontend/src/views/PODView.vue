@@ -455,15 +455,16 @@ function marketLabel(m) {
       <header class="mb-5">
         <div class="flex items-baseline gap-3 flex-wrap">
           <h1 class="display-text text-2xl sm:text-3xl text-fg-800 tracking-tight leading-none">
-            Play of the Day
+            Projection of the Day
           </h1>
           <span class="label-bracket text-signal-400">M.02</span>
         </div>
         <p class="text-fg-500 text-xs mt-2 max-w-2xl">
-          Every morning, Cebolla automatically picks one HR prop — the bet with the highest
-          combined edge × contact score, gated to picks with at least a 20% projected win
-          probability. Locked in before first pitch, settled after games end. This is the
-          public scoreboard.
+          Each morning, Cebolla's model identifies one high-confidence HR projection — the
+          player with the highest combined edge × contact score, gated to projections with at
+          least a 20% projected probability. Generated before first pitch and graded after
+          games end. Public, transparent record. For informational and entertainment purposes
+          only — not betting advice.
         </p>
       </header>
 
@@ -561,7 +562,7 @@ function marketLabel(m) {
 
           <!-- No HR POD yet -->
           <div v-else class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
-            <div class="display-text text-lg text-fg-500 italic mb-1">No pick locked yet</div>
+            <div class="display-text text-lg text-fg-500 italic mb-1">No projection locked yet</div>
             <p class="text-fg-500 text-xs">
               Cebolla locks the day's HR POD by ~10:30 AM ET. Check back after morning projections run.
             </p>
@@ -678,7 +679,7 @@ function marketLabel(m) {
             <h2 class="label-bracket text-signal-400">performance</h2>
             <!-- Stake adjuster -->
             <div class="flex items-baseline gap-2">
-              <span class="label-caps !text-[9px]">if i bet</span>
+              <span class="label-caps !text-[9px]">hypothetical $10</span>
               <span class="text-fg-500 text-sm">$</span>
               <input
                 type="number"
@@ -752,7 +753,7 @@ function marketLabel(m) {
 
         <!-- ── RECENT PICKS ────────────────────────────────── -->
         <section v-if="historicalPods.length > 0" class="mb-8">
-          <h2 class="label-bracket text-signal-400 mb-3">recent picks</h2>
+          <h2 class="label-bracket text-signal-400 mb-3">recent projections</h2>
           <div class="bg-bg-50 border border-bg-200 overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
