@@ -5,9 +5,9 @@ Generates daily parlay cards from today's projection pool. Runs after
 pick_pod.py in the 2:45 AM ET POD lock window.
 
 CARD TIERS (variable per slate quality):
-  two_leg   — up to 3 cards, ev_per_dollar > 0.05
-  three_leg — up to 2 cards, ev_per_dollar > 0.08
-  four_leg  — up to 1 card,  ev_per_dollar > 0.10 AND 4+ strong candidates
+  two_leg   — up to 6 cards, ev_per_dollar > 0.05
+  three_leg — up to 4 cards, ev_per_dollar > 0.08
+  four_leg  — up to 2 cards, ev_per_dollar > 0.10 AND 4+ strong candidates
 
 STAKE RECOMMENDATIONS (canonical, frontend can scale):
   two_leg=$10, three_leg=$5, four_leg=$1
@@ -21,8 +21,10 @@ MATH:
   ev_per_dollar   = combined_prob × (parlay_decimal - 1) - (1 - combined_prob)
 
 CORRELATION PENALTIES:
-  same game     -8%   (weather, lineup, umpire shared)
-  same team     -12%  (lineup state shared, e.g. two HRs from same team
+  same game     -12%  (weather, lineup, umpire shared — SGPs usually have
+                       negative correlation and juiced lines; we penalize
+                       harder to discourage frequency)
+  same team     -15%  (lineup state shared, e.g. two HRs from same team
                        requires same hot offense)
   same player   -15%  (player having a good day correlates across markets)
 
@@ -97,16 +99,24 @@ EV_GATES = {
 }
 
 # Card count caps by tier (variable per slate, capped here)
+# Expanded from 3/2/1 to give users more research surface per slate.
+# Real watch: cards 4-6 in a tier will naturally have lower EV than 1-3.
+# That's fine — they're still +EV (passing the EV gate) but show variety.
 CARD_CAPS = {
-    "two_leg":   3,
-    "three_leg": 2,
-    "four_leg":  1,
+    "two_leg":   6,
+    "three_leg": 4,
+    "four_leg":  2,
 }
 
-# Correlation penalties applied to combined_prob
+# Correlation penalties applied to combined_prob.
+# same_game (SGP) penalty intentionally HIGHER than initial design — SGPs
+# usually have unfavorable correlation (when one leg loses, the other tends
+# to also lose), and sportsbooks juice the prices accordingly. We make them
+# harder to qualify so they appear less often. They still surface when the
+# math genuinely supports it (rare but real).
 CORRELATION_PENALTIES = {
-    "same_game":   0.08,
-    "same_team":   0.12,
+    "same_game":   0.12,   # bumped from 0.08 — discourage SGP frequency
+    "same_team":   0.15,   # bumped from 0.12
     "same_player": 0.15,
 }
 
@@ -117,14 +127,19 @@ SHARING_LIMITS = {
 }
 
 # Global exposure caps (across the entire daily card menu, all tiers combined)
-MAX_PLAYER_APPEARANCES = 2   # any single player appears on at most 2 cards
-MAX_SAME_GAME_CARDS    = 1   # at most 1 card whose legs all share a single game
+# Scaled up with the expanded CARD_CAPS so the picker doesn't bottleneck on
+# player availability. SGP cap intentionally kept at 1 even with bigger menu
+# — SGPs are usually bad juju (negative correlation, juiced lines) and we
+# want them as a rare lottery shot, not a regular feature.
+MAX_PLAYER_APPEARANCES = 3   # scaled from 2 — bigger menu needs more headroom
+MAX_SAME_GAME_CARDS    = 1   # KEPT at 1 — SGPs stay rare regardless of menu size
 
 # Market diversification: mandate at least this many cards use ONLY non-HR
 # markets (Hits / RBI / HRR). Prevents the menu from being entirely
 # dependent on HR variance, which is the noisiest market we cover.
 # A "non-HR card" has zero legs with market='hr_anytime'.
-MIN_NON_HR_CARDS = 1
+# Scaled to 2 to match the bigger menu — more cards = more diversification needed.
+MIN_NON_HR_CARDS = 2
 
 # ────────────────────────────────────────────────────────────────────────
 # DATE
