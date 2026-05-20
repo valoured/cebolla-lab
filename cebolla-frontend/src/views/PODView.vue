@@ -23,7 +23,7 @@
  *   4. Recent picks history with W/L badges
  */
 
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../supabase.js'
 import { playerHeadshotUrl, teamLogoUrl, hideOnError } from '../utils/mlbImages.js'
 import LoadingBrand from '../components/LoadingBrand.vue'
@@ -88,7 +88,74 @@ async function load() {
   }
 }
 
-onMounted(load)
+// Lightweight refresh: ONLY fetch today's game statuses + today's POD rows
+// (status flips when settle_pods grades them). Avoids re-pulling 200 historical
+// PODs every minute. Called by the auto-refresh interval and on tab focus.
+async function refreshLive() {
+  try {
+    const today = todayIsoFn()
+
+    // Refresh today's game statuses (mainly for STARTING SOON → LIVE flip)
+    const { data: gamesData } = await supabase
+      .from('games')
+      .select('id, status, game_time_utc')
+      .eq('game_date', today)
+    if (gamesData) todayGames.value = gamesData
+
+    // Refresh ONLY today's PODs (status flips when settle grades them).
+    // Update in-place so we don't disturb the historical list.
+    const { data: todayPodsData } = await supabase
+      .from('pods')
+      .select('*')
+      .eq('pod_date', today)
+    if (todayPodsData) {
+      // Replace today's rows in pods.value; keep historical untouched
+      const todayIds = new Set(todayPodsData.map(p => p.id))
+      const historical = pods.value.filter(p => !todayIds.has(p.id) && p.pod_date !== today)
+      pods.value = [...todayPodsData, ...historical]
+    }
+  } catch (e) {
+    // Swallow — auto-refresh failures shouldn't break the page.
+    // Initial load() failure is what surfaces errors to the user.
+    console.warn('[PODView] refresh failed (silent):', e)
+  }
+}
+
+// Auto-refresh: every 60s while the page is open AND visible. Also refresh
+// immediately when user re-focuses the tab (more responsive than waiting up
+// to a full minute). Cleared on unmount to prevent leaked intervals.
+let refreshTimer = null
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return  // skip while tab is in background — refresh on next focus instead
+    }
+    refreshLive()
+  }, 60_000)
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    refreshLive()  // immediate refresh on tab focus
+  }
+}
+
+onMounted(() => {
+  load()
+  startAutoRefresh()
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange)
+  }
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+  }
+})
 
 // ── Derived ────────────────────────────────────────────────────
 const todayIso = todayIsoFn()
