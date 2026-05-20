@@ -738,6 +738,58 @@ def wipe_today(date_iso):
              count, date_iso)
 
 
+def combo_fingerprint(legs):
+    """
+    Deterministic fingerprint for a set of legs. Two combos with the
+    same (player_id, market, line) tuples produce the same fingerprint
+    regardless of leg ordering or other metadata.
+
+    Used to prevent inserting duplicate cards when pick_cards re-runs
+    (e.g. manual dispatch) on the same slate. The combinatorial output
+    is deterministic given identical inputs — so if odds haven't shifted,
+    the same combos will be generated again. We refuse to re-insert any
+    combo whose fingerprint is already present in today's cards.
+
+    Format: 'p:1234|m:hr_anytime|l:0.5;p:5678|m:h_r_rbi_1.5|l:1.5'
+    """
+    parts = []
+    for leg in sorted(legs, key=lambda l: (l["player_id"], l["market"], l.get("line") or 0)):
+        pid = leg["player_id"]
+        mkt = leg["market"]
+        line = leg.get("line") if leg.get("line") is not None else 0.5
+        parts.append(f"p:{pid}|m:{mkt}|l:{line}")
+    return ";".join(parts)
+
+
+def fetch_existing_fingerprints(date_iso):
+    """
+    Fetch fingerprints of all cards already in DB for the given date.
+    Returns a set of fingerprint strings for fast lookup.
+
+    Pulls every card_leg from today's cards to reconstruct each card's
+    fingerprint, regardless of whether the card is pending or settled.
+    """
+    cards_res = sb.table("cards").select("id").eq("card_date", date_iso).execute()
+    card_ids = [c["id"] for c in (cards_res.data or [])]
+    if not card_ids:
+        return set()
+
+    legs_res = sb.table("card_legs") \
+        .select("card_id, player_id, market, line") \
+        .in_("card_id", card_ids) \
+        .execute()
+    legs_by_card = {}
+    for leg in (legs_res.data or []):
+        legs_by_card.setdefault(leg["card_id"], []).append(leg)
+
+    fingerprints = set()
+    for cid, legs in legs_by_card.items():
+        # legs here come from DB which doesn't have player_mlbam_id etc.
+        # but combo_fingerprint only needs player_id/market/line — same shape works
+        fingerprints.add(combo_fingerprint(legs))
+    return fingerprints
+
+
 def insert_card(date_iso, combo):
     """Insert one card + its legs."""
     math = combo["math"]
@@ -841,13 +893,37 @@ def main():
              len(selected["two_leg"]), len(selected["three_leg"]),
              len(selected["four_leg"]))
 
-    # Wipe today's existing cards before inserting new ones
+    # Wipe today's PENDING cards before inserting new ones.
+    # Settled cards (already-graded results) are preserved — they're permanent
+    # receipts. See wipe_today() docstring.
     wipe_today(today)
 
-    # Insert all selected cards
+    # Fetch fingerprints of any cards STILL in DB (i.e. settled cards we
+    # preserved from earlier runs). Used to prevent re-inserting duplicates
+    # of already-settled combos when the picker re-runs on the same slate.
+    existing_fingerprints = fetch_existing_fingerprints(today)
+    if existing_fingerprints:
+        log.info("  found %d existing card fingerprints from earlier runs — will dedup",
+                 len(existing_fingerprints))
+
+    # Insert all selected cards (skip any whose fingerprint is already present)
+    inserted_count = 0
+    skipped_dups = 0
     for tier in ["two_leg", "three_leg", "four_leg"]:
         for combo in selected[tier]:
+            fp = combo_fingerprint(combo["legs"])
+            if fp in existing_fingerprints:
+                skipped_dups += 1
+                log.info("  ⊘ skipped %s [%s] — fingerprint already in DB (settled earlier)",
+                         combo["tier"], combo["label"])
+                continue
+
             cid = insert_card(today, combo)
+            if cid is None:
+                continue
+            existing_fingerprints.add(fp)   # prevent within-run duplicates too
+            inserted_count += 1
+
             math = combo["math"]
             log.info("  ✓ %s [%s] EV=%.3f edge=%.3f odds=%s (id=%s)",
                      combo["tier"], combo["label"],
@@ -863,7 +939,8 @@ def main():
                          leg["projected_prob"] * 100,
                          leg["edge"] * 100)
 
-    log.info("✓ Cards picker complete")
+    log.info("✓ Cards picker complete — inserted=%d, skipped_dups=%d",
+             inserted_count, skipped_dups)
 
 
 if __name__ == "__main__":
