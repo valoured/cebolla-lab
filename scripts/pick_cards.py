@@ -116,6 +116,10 @@ SHARING_LIMITS = {
     "four_vs_any":  2,   # 4-legger can share at most 2 legs with anything
 }
 
+# Global exposure caps (across the entire daily card menu, all tiers combined)
+MAX_PLAYER_APPEARANCES = 2   # any single player appears on at most 2 cards
+MAX_SAME_GAME_CARDS    = 1   # at most 1 card whose legs all share a single game
+
 # ────────────────────────────────────────────────────────────────────────
 # DATE
 # ────────────────────────────────────────────────────────────────────────
@@ -444,18 +448,47 @@ def tier_for_legs(n):
 
 def select_cards(all_combos_by_tier):
     """
-    Greedy selection across tiers with overlap penalties.
+    Greedy selection across tiers with overlap penalties + global exposure caps.
 
     Order: select 2-leggers first (most card-slots, most popular), then
     3-leggers (allowed to share at most 1 leg with any 2-legger), then
     4-leggers (allowed to share at most 2 legs with anything selected).
 
-    Within a tier, also avoid duplicating the same player across cards
-    of that tier — keeps the menu diverse.
+    Global caps (across ALL tiers combined):
+      - Any single player appears on at most MAX_PLAYER_APPEARANCES cards
+        (prevents one player blowing up half the menu on an off night)
+      - At most MAX_SAME_GAME_CARDS cards where ALL legs are from one game
+        (don't spam SGPs — books price them too tight)
+
+    Within a tier, also avoid the same player appearing on two cards of
+    that tier — keeps each tier's menu diverse.
     """
     selected = {"two_leg": [], "three_leg": [], "four_leg": []}
 
-    # Two-leggers first
+    # Global trackers across all tiers
+    global_player_counts = {}   # player_id -> count of cards they're on
+    same_game_card_count = 0    # how many fully-same-game cards we've selected
+
+    def player_caps_ok(legs):
+        """Would adding this combo push any player past MAX_PLAYER_APPEARANCES?"""
+        for leg in legs:
+            pid = leg["player_id"]
+            if global_player_counts.get(pid, 0) >= MAX_PLAYER_APPEARANCES:
+                return False
+        return True
+
+    def is_same_game_card(legs):
+        """All legs share exactly one game_id?"""
+        return len(set(l["game_id"] for l in legs)) == 1
+
+    def commit(combo, tier_bucket):
+        """Add combo to selection + update global trackers."""
+        tier_bucket.append(combo)
+        for leg in combo["legs"]:
+            pid = leg["player_id"]
+            global_player_counts[pid] = global_player_counts.get(pid, 0) + 1
+
+    # ── Two-leggers first ─────────────────────────────────────────────
     two_legs = all_combos_by_tier.get("two_leg", [])
     used_players_2 = set()
     for combo in two_legs:
@@ -463,14 +496,23 @@ def select_cards(all_combos_by_tier):
             break
         if combo["math"]["ev_per_dollar"] < EV_GATES["two_leg"]:
             continue
-        player_ids = set(l["player_id"] for l in combo["legs"])
-        # Within-tier dedup: avoid the same player on two different 2-leggers
+        legs = combo["legs"]
+        player_ids = set(l["player_id"] for l in legs)
+        # Within-tier dedup
         if player_ids & used_players_2:
             continue
-        selected["two_leg"].append(combo)
+        # Global player exposure cap
+        if not player_caps_ok(legs):
+            continue
+        # Same-game cap
+        if is_same_game_card(legs) and same_game_card_count >= MAX_SAME_GAME_CARDS:
+            continue
+        commit(combo, selected["two_leg"])
         used_players_2.update(player_ids)
+        if is_same_game_card(legs):
+            same_game_card_count += 1
 
-    # Three-leggers (limit overlap with two-leggers)
+    # ── Three-leggers ─────────────────────────────────────────────────
     three_legs = all_combos_by_tier.get("three_leg", [])
     used_players_3 = set()
     for combo in three_legs:
@@ -478,8 +520,16 @@ def select_cards(all_combos_by_tier):
             break
         if combo["math"]["ev_per_dollar"] < EV_GATES["three_leg"]:
             continue
-        player_ids = set(l["player_id"] for l in combo["legs"])
+        legs = combo["legs"]
+        player_ids = set(l["player_id"] for l in legs)
+        # Within-tier dedup
         if player_ids & used_players_3:
+            continue
+        # Global player exposure cap
+        if not player_caps_ok(legs):
+            continue
+        # Same-game cap
+        if is_same_game_card(legs) and same_game_card_count >= MAX_SAME_GAME_CARDS:
             continue
         # Overlap check vs selected 2-leggers
         too_overlapping = False
@@ -490,18 +540,27 @@ def select_cards(all_combos_by_tier):
                 break
         if too_overlapping:
             continue
-        selected["three_leg"].append(combo)
+        commit(combo, selected["three_leg"])
         used_players_3.update(player_ids)
+        if is_same_game_card(legs):
+            same_game_card_count += 1
 
-    # Four-legger (most exclusive)
+    # ── Four-legger ──────────────────────────────────────────────────
     four_legs = all_combos_by_tier.get("four_leg", [])
     for combo in four_legs:
         if len(selected["four_leg"]) >= CARD_CAPS["four_leg"]:
             break
         if combo["math"]["ev_per_dollar"] < EV_GATES["four_leg"]:
             continue
-        player_ids = set(l["player_id"] for l in combo["legs"])
-        # Overlap check vs all selected
+        legs = combo["legs"]
+        player_ids = set(l["player_id"] for l in legs)
+        # Global player exposure cap
+        if not player_caps_ok(legs):
+            continue
+        # Same-game cap
+        if is_same_game_card(legs) and same_game_card_count >= MAX_SAME_GAME_CARDS:
+            continue
+        # Overlap check vs ALL selected
         too_overlapping = False
         for other in selected["two_leg"] + selected["three_leg"]:
             other_players = set(l["player_id"] for l in other["legs"])
@@ -510,7 +569,9 @@ def select_cards(all_combos_by_tier):
                 break
         if too_overlapping:
             continue
-        selected["four_leg"].append(combo)
+        commit(combo, selected["four_leg"])
+        if is_same_game_card(legs):
+            same_game_card_count += 1
 
     return selected
 
