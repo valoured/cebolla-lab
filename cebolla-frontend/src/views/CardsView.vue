@@ -164,15 +164,42 @@ function gameStatusFor(gameId) {
 function gameTimeFor(gameId) {
   return gamesById.value[gameId]?.game_time_utc || null
 }
-// Is the game live? Uses `status` field, with time-based override
-// for cases where pull_scores hasn't fired yet.
+
+// Mirror backend pull_scores classification exactly. MLB uses many status
+// strings ("In Progress", "Manager Challenge", "Delayed Start: Rain",
+// "Game Over", "Postponed", etc.) — substring keyword match handles them.
+// Terminal checked FIRST so "Postponed" doesn't match "delayed" later.
+const LIVE_KEYWORDS = [
+  'in progress', 'manager challenge', 'umpire review',
+  'replay', 'instant replay',
+  'delayed', 'suspended',
+]
+const TERMINAL_KEYWORDS = [
+  'final', 'game over', 'completed', 'postponed',
+  'cancelled', 'canceled', 'forfeit',
+]
+const PREGAME_KEYWORDS = [
+  'scheduled', 'pre-game', 'pregame', 'warmup', 'status unknown',
+]
+function classifyGameStatus(rawStatus) {
+  const s = (rawStatus || '').toLowerCase().trim()
+  if (!s) return 'unknown'
+  if (TERMINAL_KEYWORDS.some(k => s.includes(k))) return 'final'
+  if (LIVE_KEYWORDS.some(k => s.includes(k)))     return 'live'
+  if (PREGAME_KEYWORDS.some(k => s.includes(k)))  return 'pregame'
+  return 'unknown'
+}
+
+// Is the game live? Uses classifier + time-based override for cases where
+// pull_scores hasn't fired yet (the row still says "Scheduled" but game has
+// definitely started).
 function isGameLive(gameId) {
   const g = gamesById.value[gameId]
   if (!g) return false
-  const st = (g.status || '').toLowerCase()
-  if (st === 'live' || st === 'in_progress' || st === 'in progress') return true
-  // Time-based override: if scheduled but past start time + 5min, assume live
-  if (st === 'scheduled' || st === 'preview') {
+  const klass = classifyGameStatus(g.status)
+  if (klass === 'live') return true
+  // Time-based override for stale 'pregame' / 'unknown'
+  if (klass === 'pregame' || klass === 'unknown') {
     if (g.game_time_utc) {
       const start = new Date(g.game_time_utc).getTime()
       const now = Date.now()
@@ -182,8 +209,7 @@ function isGameLive(gameId) {
   return false
 }
 function isGameFinal(gameId) {
-  const st = (gameStatusFor(gameId) || '').toLowerCase()
-  return st === 'final' || st === 'completed'
+  return classifyGameStatus(gameStatusFor(gameId)) === 'final'
 }
 
 // Leg status — picks the right indicator class + label.

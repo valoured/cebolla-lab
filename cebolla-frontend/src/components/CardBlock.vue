@@ -28,13 +28,38 @@ function openPlayer(mlbamId) {
   router.push({ name: 'player', params: { playerId: mlbamId } })
 }
 
-// ── Status helpers (same logic as CardsView, replicated for encapsulation) ──
+// ── Status helpers — mirror backend pull_scores classification exactly ──
+// MLB uses many status strings ("In Progress", "Manager Challenge",
+// "Delayed Start: Rain", "Game Over", "Postponed", etc.). Substring match
+// handles them all. Terminal checked first so "Postponed" doesn't trip
+// "delayed" later.
+const LIVE_KEYWORDS = [
+  'in progress', 'manager challenge', 'umpire review',
+  'replay', 'instant replay',
+  'delayed', 'suspended',
+]
+const TERMINAL_KEYWORDS = [
+  'final', 'game over', 'completed', 'postponed',
+  'cancelled', 'canceled', 'forfeit',
+]
+const PREGAME_KEYWORDS = [
+  'scheduled', 'pre-game', 'pregame', 'warmup', 'status unknown',
+]
+function classifyGameStatus(rawStatus) {
+  const s = (rawStatus || '').toLowerCase().trim()
+  if (!s) return 'unknown'
+  if (TERMINAL_KEYWORDS.some(k => s.includes(k))) return 'final'
+  if (LIVE_KEYWORDS.some(k => s.includes(k)))     return 'live'
+  if (PREGAME_KEYWORDS.some(k => s.includes(k)))  return 'pregame'
+  return 'unknown'
+}
+
 function isGameLive(gameId) {
   const g = props.gamesById[gameId]
   if (!g) return false
-  const st = (g.status || '').toLowerCase()
-  if (st === 'live' || st === 'in_progress' || st === 'in progress') return true
-  if (st === 'scheduled' || st === 'preview') {
+  const klass = classifyGameStatus(g.status)
+  if (klass === 'live') return true
+  if (klass === 'pregame' || klass === 'unknown') {
     if (g.game_time_utc) {
       const start = new Date(g.game_time_utc).getTime()
       const now = Date.now()
@@ -46,8 +71,7 @@ function isGameLive(gameId) {
 function isGameFinal(gameId) {
   const g = props.gamesById[gameId]
   if (!g) return false
-  const st = (g.status || '').toLowerCase()
-  return st === 'final' || st === 'completed'
+  return classifyGameStatus(g.status) === 'final'
 }
 
 function legStatusIndicator(leg) {
