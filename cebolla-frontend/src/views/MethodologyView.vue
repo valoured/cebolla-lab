@@ -27,7 +27,7 @@ const sections = [
   { id: 'edge',          label: 'Edge',                  code: 'M.03.h' },
   { id: 'contact-score', label: 'Contact score',         code: 'M.03.i' },
   { id: 'combined-sort', label: 'Default sort & POD',    code: 'M.03.j' },
-  { id: 'hrr-pod',       label: 'H+R+RBI POD (planned)', code: 'M.03.k' },
+  { id: 'hrr-pod',       label: 'H+R+RBI POD',           code: 'M.03.k' },
   { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.l' },
   { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.m' },
   { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.n' },
@@ -617,60 +617,75 @@ function scrollTo(id) {
           </p>
         </section>
 
-        <!-- 10b. HRR POD (PLANNED) -->
+        <!-- 10b. HRR POD (SHIPPED) -->
         <section id="hrr-pod" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
-            <h2 class="display-text text-xl text-fg-800">H + R + RBI POD <span class="text-fg-500 text-sm font-normal italic">(planned)</span></h2>
+            <h2 class="display-text text-xl text-fg-800">H + R + RBI POD</h2>
             <span class="label-bracket !text-[8px] text-fg-500">M.03.k</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
-            Alongside the HR POD, Cebolla is building a second daily pick for the
-            <span class="text-fg-700">Hits + Runs + RBIs</span> market — a popular
-            DraftKings prop where the line is typically posted at 0.5, 1.5, or 2.5
-            for each batter in a confirmed lineup. The model is in development; until
-            it ships, the POD page shows a placeholder for the HRR slot.
+            Alongside the HR POD, Cebolla picks a second daily play for the
+            <span class="text-fg-700">Hits + Runs + RBIs</span> market — a DraftKings
+            prop where the line is posted at 1.5, 2.5, or 3.5 for each batter.
+            Same daily lock window (~2:45 AM ET), same combined edge × contact ranking,
+            just a different stat to clear.
           </p>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             <span class="text-fg-700">Why a separate POD?</span> The H+R+RBI market
-            and the HR market measure different things. A leadoff slap hitter who never
-            HRs can still produce 2+ hits and a run regularly. An elite power hitter who
+            and the HR market measure different things. A leadoff contact hitter who rarely
+            homers can still produce 2+ hits and a run regularly. An elite power hitter who
             walks a lot might struggle to clear an HRR line. Picking one POD per market
             captures both kinds of value without forcing them into the same ranking.
           </p>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
-            <span class="text-fg-700">Projection approach (v1).</span> For each batter,
+            <span class="text-fg-700">Projection approach (v0.3).</span> For each batter,
             expected plate appearances are derived from lineup position (leadoff ~4.6 PA,
-            #9 ~3.6 PA). Per-PA event rates for hits, runs, and RBIs are pulled from
-            L14 splits. A Poisson distribution over expected PAs gives the probability
-            of clearing each line (0.5 / 1.5 / 2.5).
+            #9 ~3.6 PA). Per-PA event rates for hits, runs, and RBIs come from a
+            shrinkage estimator that blends the batter's L14 rate with the league average,
+            weighted by sample size — this prevents small-sample noise from inflating
+            projections on hot hitters with few recent PAs.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            The three per-PA rates are summed (with an overlap correction since a HR
+            counts as 1H + 1R + 1RBI from one event) to get a single λ representing
+            expected HRR events per PA. Multiplied by expected PAs, that gives λ for
+            the full game. A Poisson tail probability over λ produces the line-clearing
+            chance for each of 1.5 / 2.5 / 3.5.
           </p>
           <details class="mt-2 text-fg-500 text-xs">
             <summary class="cursor-pointer hover:text-fg-700 transition">show formula</summary>
             <div class="mt-2 pl-3 border-l border-bg-300 font-mono text-[11px] leading-relaxed">
               E[PA]&nbsp;=&nbsp;lookup_by_batting_order(order)
               <br><br>
-              p(H per PA)&nbsp;=&nbsp;batter.L14_hits / batter.L14_PA
-              <br>p(R per PA)&nbsp;=&nbsp;batter.L14_runs / batter.L14_PA
-              <br>p(RBI per PA)&nbsp;=&nbsp;batter.L14_rbis / batter.L14_PA
+              # Shrinkage estimator (k = prior strength, 150 PA)
+              <br>shrink(batter_rate, league_rate, batter_PA, k)
+              <br>&nbsp;&nbsp;=&nbsp;(batter_rate · batter_PA + league_rate · k) / (batter_PA + k)
               <br><br>
-              λ(HRR per PA)&nbsp;=&nbsp;p(H)+p(R)+p(RBI)
-              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;− overlap_adjustment
-              <br>λ(HRR per game)&nbsp;=&nbsp;λ(HRR per PA)&nbsp;·&nbsp;E[PA]
+              p(H per PA)&nbsp;&nbsp;&nbsp;=&nbsp;shrink(batter.hits/PA,&nbsp;league_H/PA,&nbsp;PA,&nbsp;k=150)
+              <br>p(R per PA)&nbsp;&nbsp;&nbsp;=&nbsp;shrink(batter.runs/PA,&nbsp;league_R/PA,&nbsp;PA,&nbsp;k=150)
+              <br>p(RBI per PA)&nbsp;=&nbsp;shrink(batter.rbi/PA,&nbsp;league_RBI/PA,&nbsp;PA,&nbsp;k=150)
               <br><br>
-              P(HRR ≥ X.5)&nbsp;=&nbsp;Poisson_tail(X+1, λ_game)
+              λ(per PA)&nbsp;=&nbsp;p(H) + p(R) + p(RBI) − HR_overlap
+              <br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(HR_overlap ≈ 0.06 — one HR contributes to all 3 stats)
+              <br>λ(per PA)&nbsp;=&nbsp;clamp(λ, 0, 0.75)
+              <br><br>
+              λ(per game)&nbsp;=&nbsp;λ(per PA)&nbsp;·&nbsp;E[PA]
+              <br>P(HRR ≥ X+1)&nbsp;=&nbsp;Poisson_tail(X+1, λ_game)
             </div>
           </details>
           <p class="text-fg-600 text-sm leading-relaxed mt-4 mb-3">
-            <span class="text-fg-700">Selection logic.</span> Same combined edge × contact
-            rank as HR POD, applied to HRR projections. Probability floor is calibrated
-            separately because the HRR market sits at a different probability range
-            (typical Over 1.5 lines project 40–70%, vs HR's 10–25%).
+            <span class="text-fg-700">Line selection.</span> For each batter, the picker
+            evaluates all three lines (1.5 / 2.5 / 3.5) and chooses the one with the
+            highest edge above its probability floor. Floors are calibrated to the
+            actual distribution of projections per line — roughly 40% for the 1.5 line,
+            20% for 2.5, and 7% for 3.5. The batter with the highest combined-score
+            (edge × L14 contact percentile) becomes that day's HRR POD.
           </p>
           <p class="text-fg-500 text-xs italic mt-4">
-            The v1 Poisson model assumes independence between PAs and uses each batter's
-            own L14 rates without adjusting for opposing pitcher or surrounding lineup
-            quality. Expected calibration: ±5 percentage points on the most common
-            (1.5) line. Once the model has ~30 settled picks, the back-test data will
+            The v0.3 Poisson model assumes independence between PAs and uses each batter's
+            own shrunk L14 rates without adjusting for opposing pitcher or surrounding
+            lineup quality. Expected calibration: ±5 percentage points on the most common
+            (1.5) line. Once the model has ~30 settled picks, back-test data will
             inform tuning.
           </p>
         </section>

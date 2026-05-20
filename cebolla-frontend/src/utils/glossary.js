@@ -248,4 +248,32 @@ export const glossary = {
     description:
       'Last 7 days. ~25–30 PAs. Useful for spotting hot streaks but noisy — confirm with L14 before acting.',
   },
+
+  // ── Markets ──────────────────────────────────────────────
+  hr_anytime: {
+    label: 'HR Anytime',
+    description:
+      'Anytime Home Run prop. The bet wins if the batter hits 1 or more home runs at any point in the game. DraftKings price is what Cebolla compares against the model\'s projected probability.',
+  },
+
+  hrr: {
+    label: 'H + R + RBI',
+    description:
+      'Hits + Runs + RBIs combined total prop. The bet wins if the sum of the batter\'s hits, runs scored, and RBIs in the game clears the line. DraftKings posts lines at 1.5, 2.5, and 3.5. A HR by the batter counts in all three columns simultaneously — Cebolla\'s projection accounts for this overlap.',
+    note: 'The 1.5 line is the most popular (Over 1.5 is roughly a 40–55% prop for typical starters). The 2.5 line lives around 15–25%, and 3.5 is a true power-day longshot at 5–10%.',
+  },
+
+  // ── POD ──────────────────────────────────────────────────
+  pod: {
+    label: 'Play of the Day (POD)',
+    description:
+      'Cebolla\'s daily algorithmic pick — one HR pick and one H+R+RBI pick per slate. Locked at ~2:45 AM ET before any line movement. Selected by combined edge × contact score within each market. Scoreboard tracks settled W/L over time at a canonical $10 stake.',
+  },
+
+  pod_combined_score: {
+    label: 'Combined Score',
+    unit: 'index',
+    description:
+      'Multiplicative composite of normalized edge (0–100) and contact score (0–100). Used as the default sort + POD selection metric. Rewards picks where BOTH signals agree — strong market value AND elite recent contact quality. A single strong signal alone won\'t win; you need both.',
+  },
 }
