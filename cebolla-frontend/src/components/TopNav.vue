@@ -14,7 +14,7 @@ const navItems = [
   { name: 'pod',         label: 'POD',         code: 'M.02' },
   { name: 'cards',       label: 'Cards',       code: 'M.03' },
   { name: 'stats',       label: 'Stats',       code: 'M.04' },
-  { name: 'methodology', label: 'How',         code: 'M.05' },
+  { name: 'methodology', label: 'Methodology', code: 'M.05' },
 ]
 
 // Sport selector — MLB is live today. NFL is scaffolded so users know it's
