@@ -69,12 +69,14 @@ async function load() {
     if (dbErr) throw dbErr
     pods.value = data || []
 
-    // Fetch today's game statuses so we can show STARTING SOON / LIVE
-    // on pending PODs based on whether the game has actually started.
+    // Fetch today's game statuses + start times so we can show
+    // STARTING SOON / LIVE on pending PODs based on game state.
+    // game_time_utc is the trusted source for "has the game started?"
+    // since pull_scores cron is hourly and lags behind first pitch.
     const today = todayIsoFn()
     const { data: gamesData } = await supabase
       .from('games')
-      .select('id, status, game_time')
+      .select('id, status, game_time_utc')
       .eq('game_date', today)
     todayGames.value = gamesData || []
 
@@ -292,21 +294,39 @@ function statusLabel(status) {
   }
 }
 
-// Look up the live game.status string for a POD's game.
+// Look up the full game object (status + start time) for a POD's game.
 // Returns null if the game isn't in our cached set.
-function gameStatusFor(pod) {
+function gameFor(pod) {
   if (!pod || !pod.game_id) return null
-  const g = todayGames.value.find(x => x.id === pod.game_id)
+  return todayGames.value.find(x => x.id === pod.game_id) || null
+}
+
+function gameStatusFor(pod) {
+  const g = gameFor(pod)
   return g ? (g.status || null) : null
 }
 
-// True if the game hasn't started yet — covers Scheduled/Warmup/Pre-Game
-// plus the empty/null default case before pull_scores updates the row.
-function gameIsPregame(gameStatus) {
+// True if the game has started based on its scheduled start time.
+// 5-min buffer absorbs late starts / clock skew.
+function gameHasStartedByTime(pod) {
+  const g = gameFor(pod)
+  if (!g || !g.game_time_utc) return false
+  const startMs = new Date(g.game_time_utc).getTime()
+  if (Number.isNaN(startMs)) return false
+  return Date.now() > startMs + 5 * 60 * 1000
+}
+
+// True if the game's status string indicates a settled/over state.
+function gameStatusIsFinal(gameStatus) {
+  if (!gameStatus) return false
+  const s = String(gameStatus).toLowerCase()
+  return s === 'final' || s.includes('game over') || s.includes('completed early')
+}
+
+// True if game status string indicates pre-game (Scheduled / Warmup / etc).
+function gameStatusIsPregame(gameStatus) {
   if (!gameStatus) return true
   const s = String(gameStatus).toLowerCase()
-  // Anything containing "scheduled", "pre-game", "warmup", "delayed start"
-  // (before first pitch) counts as pre-game.
   if (s.includes('scheduled')) return true
   if (s.includes('pre-game') || s.includes('pre game') || s.includes('pregame')) return true
   if (s.includes('warmup')) return true
@@ -314,31 +334,44 @@ function gameIsPregame(gameStatus) {
   return false
 }
 
-// True if the game is currently live (first pitch thrown, not yet Final).
-function gameIsLive(gameStatus) {
-  if (!gameStatus) return false
-  const s = String(gameStatus).toLowerCase()
-  if (s === 'final' || s.includes('game over') || s.includes('completed early')) return false
-  if (gameIsPregame(gameStatus)) return false
-  // Anything else with a real status (In Progress, Manager Challenge, suspended, etc.)
+// True if the game is currently live.
+// Time-based primary: once we're past first pitch + 5 min, it's LIVE even
+// if pull_scores hasn't updated the status string yet (cron lags up to ~1 hr).
+// Status-based fallback: catches statuses like "In Progress" / "Manager
+// Challenge" / "Delayed" that pull_scores has already written.
+function gameIsLive(pod) {
+  const status = gameStatusFor(pod)
+  // If the DB knows it's final, trust that and don't show LIVE.
+  if (gameStatusIsFinal(status)) return false
+  // If we're past scheduled first pitch, treat as live regardless of stale status.
+  if (gameHasStartedByTime(pod)) return true
+  // Status string says it's actively going.
+  if (status && !gameStatusIsPregame(status)) return true
+  return false
+}
+
+// True if the game hasn't started yet.
+function gameIsPregame(pod) {
+  const status = gameStatusFor(pod)
+  if (gameStatusIsFinal(status)) return false
+  if (gameHasStartedByTime(pod)) return false   // time says it's already going
+  if (status && !gameStatusIsPregame(status)) return false  // status says it's going
   return true
 }
 
-// Smart label for a pending POD based on its game's live status.
+// Smart label for a pending POD based on its game's live state.
 //   game not started → STARTING SOON
 //   game live        → LIVE
 //   game final but pod still pending → PENDING (settle job hasn't run yet)
 function pendingLabelFor(pod) {
-  const gs = gameStatusFor(pod)
-  if (gameIsPregame(gs)) return 'STARTING SOON'
-  if (gameIsLive(gs))    return 'LIVE'
+  if (gameIsPregame(pod)) return 'STARTING SOON'
+  if (gameIsLive(pod))    return 'LIVE'
   return 'PENDING'
 }
 
 // Smart badge class for pending PODs — different visual treatment for LIVE.
 function pendingBadgeClass(pod) {
-  const gs = gameStatusFor(pod)
-  if (gameIsLive(gs)) return 'badge-live'
+  if (gameIsLive(pod)) return 'badge-live'
   return 'badge-pending'
 }
 function marketLabel(m) {
