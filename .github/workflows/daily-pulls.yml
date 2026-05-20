@@ -18,7 +18,19 @@ on:
 
     - cron: '13 14 * * *'  # 14:13 UTC = 10:13 AM ET — schedule, lineups, weather, settle (East Coast finals)
 
+    # ── DENSE PULL_SCORES SCHEDULE (LIVE LIVE UPDATES) ──
+    # pull-scores ONLY fires on these crons. Other jobs ignore them.
+    # Public repo = unlimited free Actions minutes, so we go full-tilt.
+    # Peak slate (2 PM - midnight ET = UTC 18-23 + 0-3): every 5 min
+    # Off-peak (midnight ET - 2 PM ET = UTC 4-18): every 15 min
+    # Offsets dodge the top-of-hour GitHub load spike.
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 18-23 * * *'  # peak: 2 PM - 7 PM ET, every 5 min
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 0-3 * * *'    # peak: 8 PM - midnight ET, every 5 min
+    - cron: '7,22,37,52 4-17 * * *'                          # off-peak: midnight - 1 PM ET, every 15 min
+
     # Hourly slate window (15 UTC = 11 AM ET through 03 UTC = 11 PM ET)
+    # These trigger the FULL slate update chain (odds, lineups, projections, settle).
+    # pull-scores ALSO matches these (covered separately via dense schedule above).
     - cron: '17 15 * * *'  # 11:17 AM ET
     - cron: '17 16 * * *'  # 12:17 PM ET
     - cron: '17 17 * * *'  # 1:17 PM ET
@@ -185,11 +197,15 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_dk_odds.py
 
-  # ── SCORES: live scores + inning state, hourly during slate ──
+  # ── SCORES: live scores + inning state, dense cadence for LIVE updates ──
+  # Peak (2 PM - midnight ET): every 5 min via the comma-list crons.
+  # Off-peak (midnight - 1 PM ET): every 15 min via the 7,22,37,52 cron.
+  # NOTE: pull-scores does NOT match the legacy 17-minute hourly crons —
+  # the dense schedule covers those hours already.
   pull-scores:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
+       contains(fromJSON('["2,7,12,17,22,27,32,37,42,47,52,57 18-23 * * *", "2,7,12,17,22,27,32,37,42,47,52,57 0-3 * * *", "7,22,37,52 4-17 * * *", "13 14 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'scores'
     runs-on: ubuntu-latest
     steps:
