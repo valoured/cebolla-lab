@@ -716,10 +716,26 @@ def enforce_non_hr_mandate(selected, all_combos_by_tier):
 # ────────────────────────────────────────────────────────────────────────
 
 def wipe_today(date_iso):
-    """Delete today's existing cards (and cascade to legs) before re-picking."""
-    res = sb.table("cards").delete().eq("card_date", date_iso).execute()
+    """
+    Delete today's PENDING cards (and cascade to legs) before re-picking.
+
+    Settled cards (status IN win/loss/void) are PRESERVED. This is critical
+    for the historical ledger — once a card settles, those results are
+    permanent receipts and re-running the picker must never erase them.
+
+    Result:
+      - Re-running pick_cards mid-day adds fresh pending cards alongside
+        already-settled ones from earlier in the same day.
+      - Settled cards continue to show in Card History.
+      - Today's Menu still only displays the newly picked pending cards.
+    """
+    res = sb.table("cards").delete() \
+        .eq("card_date", date_iso) \
+        .eq("status", "pending") \
+        .execute()
     count = len(res.data or [])
-    log.info("  wiped %d existing cards for %s", count, date_iso)
+    log.info("  wiped %d pending cards for %s (settled cards preserved)",
+             count, date_iso)
 
 
 def insert_card(date_iso, combo):
