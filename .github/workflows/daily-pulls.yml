@@ -287,10 +287,12 @@ jobs:
   # Lineups for tonight's games aren't posted yet at this hour, so
   # compute_projections falls back to each team's last-known lineup
   # (~85% accurate) so projections still produce values.
-  pick-pod:
+    pick-pod:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
-      || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_pod')
+      always() && (
+        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
+        || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_pod')
+      )
     runs-on: ubuntu-latest
     needs: compute-projections
     steps:
@@ -321,10 +323,12 @@ jobs:
   # latest odds, scores, settle, etc.) WITHOUT inadvertently re-picking
   # locked daily cards. Manual re-pick requires explicit inputs.job ==
   # 'pick_cards' — a deliberate action, not a side-effect of "refresh all".
-  pick-cards:
+    pick-cards:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
-      || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_cards')
+      always() && (
+        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
+        || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_cards')
+      )
     runs-on: ubuntu-latest
     needs: pick-pod
     steps:
