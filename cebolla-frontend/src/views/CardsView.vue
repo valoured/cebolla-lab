@@ -1,33 +1,44 @@
 <script setup>
 /**
- * CardsView.vue — Cebolla Cards
+ * CardsView.vue — Cebolla Cards (rebuilt for AI-built parlays)
  *
- * The branded public picks page. Two sections:
+ * Renders cards from the `cards` table with their stacked `card_legs`.
+ * Each leg shows:
+ *   - Headshot, player name, team vs opponent
+ *   - Market label + line + American odds
+ *   - Status indicator (pregame / live / hit / busted / void)
  *
- *   1. Today's Card — the day's locked PODs (HR + HRR) at the top, plus
- *      a "secondary picks" rail showing the next ~5 highest-edge plays
- *      the model likes today across all markets. The POD is the headline
- *      bet; secondaries are "model also liked these."
+ * Each card shows:
+ *   - Tier badge + label ("Value Combo", "Lottery Shot", etc.)
+ *   - Combined American odds + parlay decimal
+ *   - "Stake $X → $Y if hit" payout line
+ *   - Overall card status badge
  *
- *   2. Historical Ledger — every settled POD ever, newest first. Date,
- *      player, market, odds, result, P&L. Real receipts.
- *
- * No bet-placing happens here — these are research recommendations.
- * The Bet Log (/bets) is separate (user's personal bet tracking).
+ * Sections:
+ *   1. Today's Card Menu — grouped by tier (Straights → 2L → 3L → 4L)
+ *      PODs are still rendered as "Straights" for unified display.
+ *   2. Card History — all settled cards from past days
  */
 
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../supabase.js'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import LoadingBrand from '../components/LoadingBrand.vue'
+import CardBlock from '../components/CardBlock.vue'
 
 const router = useRouter()
 
-const pods = ref([])
-const todaySecondaries = ref([])    // top secondary picks for today
+// State
+const cards = ref([])           // all cards (today + history)
+const legsByCard = ref({})      // card_id → [legs]
+const pods = ref([])            // PODs from `pods` table (straights)
+const gamesById = ref({})       // game_id → game (for status lookup)
 const loading = ref(true)
 const error = ref(null)
+
+// Refresh — keep live status fresh while page is open
+let refreshTimer = null
 
 // ── Today's ET date ───────────────────────────────────────────
 function todayIsoFn() {
@@ -43,21 +54,70 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    // All historical PODs
+    // Cards — pull recent (today + last 30 days for history)
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - 30)
+    const cutoffIso = cutoff.toISOString().slice(0, 10)
+
+    const { data: cardData, error: ce } = await supabase
+      .from('cards')
+      .select('id, card_date, tier, label, leg_count, combined_prob, ' +
+              'combined_odds, decimal_odds, implied_prob, edge, ev_per_dollar, ' +
+              'stake_rec, payout_if_hit, status, payout, settled_at, created_at')
+      .gte('card_date', cutoffIso)
+      .order('card_date', { ascending: false })
+      .order('tier', { ascending: true })
+      .order('ev_per_dollar', { ascending: false })
+    if (ce) throw ce
+    cards.value = cardData || []
+
+    // Legs for all loaded cards
+    if (cards.value.length) {
+      const cardIds = cards.value.map(c => c.id)
+      const { data: legData, error: le } = await supabase
+        .from('card_legs')
+        .select('*')
+        .in('card_id', cardIds)
+        .order('card_id', { ascending: true })
+        .order('leg_order', { ascending: true })
+      if (le) throw le
+      const byCard = {}
+      for (const leg of (legData || [])) {
+        if (!byCard[leg.card_id]) byCard[leg.card_id] = []
+        byCard[leg.card_id].push(leg)
+      }
+      legsByCard.value = byCard
+    }
+
+    // PODs (straights) — today + history
     const { data: podData, error: pe } = await supabase
       .from('pods')
       .select('id, pod_date, market_class, market, projected_prob, edge, ' +
               'american_odds, status, payout, stake, player_name, ' +
-              'team_abbrev, opponent_abbrev, player_mlbam_id, combined_score')
+              'team_abbrev, opponent_abbrev, player_mlbam_id, game_id')
+      .gte('pod_date', cutoffIso)
       .order('pod_date', { ascending: false })
-      .limit(500)
     if (pe) throw pe
     pods.value = podData || []
 
-    // Today's secondary picks — pull top-edge projections for today's
-    // games that aren't already a POD. Surfaces the "model's also liked"
-    // plays at a glance.
-    await loadSecondaries()
+    // Games (for live/final status on legs)
+    const gameIds = new Set()
+    for (const card of cards.value) {
+      const legs = legsByCard.value[card.id] || []
+      for (const leg of legs) {
+        if (leg.game_id) gameIds.add(leg.game_id)
+      }
+    }
+    for (const pod of pods.value) {
+      if (pod.game_id) gameIds.add(pod.game_id)
+    }
+    if (gameIds.size) {
+      const { data: gameData } = await supabase
+        .from('games')
+        .select('id, status, game_time_utc')
+        .in('id', [...gameIds])
+      gamesById.value = Object.fromEntries((gameData || []).map(g => [g.id, g]))
+    }
   } catch (e) {
     console.error('[CardsView] load failed:', e)
     error.value = e.message || String(e)
@@ -66,117 +126,104 @@ async function load() {
   }
 }
 
-async function loadSecondaries() {
-  // 1) Get today's game IDs
-  const { data: games } = await supabase
-    .from('games')
-    .select('id, away_team_id, home_team_id, ' +
-            'away_team:teams!games_away_team_id_fkey(abbrev), ' +
-            'home_team:teams!games_home_team_id_fkey(abbrev)')
-    .eq('game_date', todayIso)
-  if (!games || !games.length) {
-    todaySecondaries.value = []
-    return
-  }
-  const gameIds = games.map(g => g.id)
-  const gameById = Object.fromEntries(games.map(g => [g.id, g]))
+onMounted(() => {
+  load()
+  // Refresh every 60s while page is open
+  refreshTimer = setInterval(load, 60_000)
+})
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 
-  // 2) Pull HR + HRR (1.5 line) projections with positive edge
-  const { data: projs } = await supabase
-    .from('projections')
-    .select('id, game_id, player_id, market, projected_prob, edge, best_american_odds, best_book')
-    .in('game_id', gameIds)
-    .in('market', ['hr_anytime', 'h_r_rbi_1.5'])
-    .gte('edge', 0.03)            // floor: 3% edge minimum
-    .not('best_american_odds', 'is', null)
-    .order('edge', { ascending: false })
-    .limit(40)
-  if (!projs || !projs.length) {
-    todaySecondaries.value = []
-    return
-  }
-
-  // 3) Exclude rows that are already today's POD
-  const podKeys = new Set(
-    pods.value
-      .filter(p => p.pod_date === todayIso)
-      .map(p => `${p.player_mlbam_id}_${p.market}`)
-  )
-
-  // 4) Need player names + mlbam_ids — single batch lookup
-  const playerIds = [...new Set(projs.map(p => p.player_id))]
-  const { data: players } = await supabase
-    .from('players')
-    .select('id, name, mlbam_id, team_id')
-    .in('id', playerIds)
-  const playerById = Object.fromEntries((players || []).map(p => [p.id, p]))
-
-  // 5) Build secondary cards, drop POD-duplicates, take top 5 by edge
-  const secondaries = []
-  const seenPlayers = new Set()
-  for (const proj of projs) {
-    const player = playerById[proj.player_id]
-    if (!player) continue
-    const key = `${player.mlbam_id}_${proj.market}`
-    if (podKeys.has(key)) continue
-    // Avoid showing the same player twice (could appear in both HR and HRR)
-    if (seenPlayers.has(player.id)) continue
-    seenPlayers.add(player.id)
-
-    const game = gameById[proj.game_id]
-    if (!game) continue
-    const isHome = player.team_id === game.home_team_id
-    const own = (isHome ? game.home_team : game.away_team)?.abbrev
-    const opp = (isHome ? game.away_team : game.home_team)?.abbrev
-
-    secondaries.push({
-      player_id: player.id,
-      player_mlbam_id: player.mlbam_id,
-      player_name: player.name,
-      team_abbrev: own,
-      opponent_abbrev: opp,
-      market: proj.market,
-      projected_prob: Number(proj.projected_prob),
-      edge: Number(proj.edge),
-      american_odds: proj.best_american_odds,
-      book: proj.best_book,
-    })
-    if (secondaries.length >= 5) break
-  }
-  todaySecondaries.value = secondaries
-}
-onMounted(load)
-
-// ── Derived ───────────────────────────────────────────────────
+// ── Derived: today vs history ─────────────────────────────────
+const todaysCards = computed(() =>
+  cards.value.filter(c => c.card_date === todayIso)
+)
 const todaysPods = computed(() =>
   pods.value.filter(p => p.pod_date === todayIso)
 )
-const todaysHrPod  = computed(() => todaysPods.value.find(p => (p.market_class || 'hr') === 'hr') || null)
-const todaysHrrPod = computed(() => todaysPods.value.find(p => (p.market_class || 'hr') === 'hrr') || null)
-
-const historicalPods = computed(() =>
-  pods.value.filter(p => p.pod_date !== todayIso && ['win', 'loss', 'push', 'void'].includes(p.status))
+const historicalCards = computed(() =>
+  cards.value.filter(c => c.card_date !== todayIso && c.status !== 'pending')
 )
+const historicalPods = computed(() =>
+  pods.value.filter(p => p.pod_date !== todayIso && p.status !== 'pending')
+)
+
+// ── Group today's by tier ─────────────────────────────────────
+function cardsByTier(tier) {
+  return todaysCards.value.filter(c => c.tier === tier)
+}
+const twoLegCards   = computed(() => cardsByTier('two_leg'))
+const threeLegCards = computed(() => cardsByTier('three_leg'))
+const fourLegCards  = computed(() => cardsByTier('four_leg'))
+
+// ── Status helpers ────────────────────────────────────────────
+function gameStatusFor(gameId) {
+  return gamesById.value[gameId]?.status || null
+}
+function gameTimeFor(gameId) {
+  return gamesById.value[gameId]?.game_time_utc || null
+}
+// Is the game live? Uses `status` field, with time-based override
+// for cases where pull_scores hasn't fired yet.
+function isGameLive(gameId) {
+  const g = gamesById.value[gameId]
+  if (!g) return false
+  const st = (g.status || '').toLowerCase()
+  if (st === 'live' || st === 'in_progress' || st === 'in progress') return true
+  // Time-based override: if scheduled but past start time + 5min, assume live
+  if (st === 'scheduled' || st === 'preview') {
+    if (g.game_time_utc) {
+      const start = new Date(g.game_time_utc).getTime()
+      const now = Date.now()
+      if (now > start + 5 * 60_000 && now < start + 4 * 60 * 60_000) return true
+    }
+  }
+  return false
+}
+function isGameFinal(gameId) {
+  const st = (gameStatusFor(gameId) || '').toLowerCase()
+  return st === 'final' || st === 'completed'
+}
+
+// Leg status — picks the right indicator class + label.
+function legStatusIndicator(leg) {
+  // If leg has its own settled status (win/loss/void), use it
+  if (leg.status === 'win')  return { kind: 'hit',     label: 'HIT'   }
+  if (leg.status === 'loss') return { kind: 'busted',  label: 'MISS'  }
+  if (leg.status === 'void') return { kind: 'void',    label: 'VOID'  }
+  // Pending → check game state
+  if (isGameLive(leg.game_id))  return { kind: 'live',     label: 'LIVE'  }
+  if (isGameFinal(leg.game_id)) return { kind: 'awaiting', label: 'GRADING' }
+  return { kind: 'pregame', label: 'PREGAME' }
+}
+
+// Card-level status badge
+function cardStatusBadge(card) {
+  if (card.status === 'win')     return { kind: 'win',     label: 'CASHED'  }
+  if (card.status === 'loss')    return { kind: 'loss',    label: 'BUSTED'  }
+  if (card.status === 'void')    return { kind: 'void',    label: 'VOID'    }
+  // Pending — show live if any leg's game is live
+  const legs = legsByCard.value[card.id] || []
+  if (legs.some(l => isGameLive(l.game_id))) {
+    return { kind: 'live', label: 'LIVE' }
+  }
+  return { kind: 'pending', label: 'PENDING' }
+}
 
 // ── Formatters ────────────────────────────────────────────────
 function fmtOdds(n) {
   if (n == null) return '—'
   return n > 0 ? `+${n}` : `${n}`
 }
-function fmtPct(n) {
-  if (n == null) return '—'
-  return `${(Number(n) * 100).toFixed(1)}%`
+function fmtPct(n, digits = 1) {
+  if (n == null || !Number.isFinite(Number(n))) return '—'
+  return `${(Number(n) * 100).toFixed(digits)}%`
 }
-function fmtEdge(n) {
-  if (n == null) return '—'
-  const pct = Number(n) * 100
-  const sign = pct >= 0 ? '+' : ''
-  return `${sign}${pct.toFixed(1)}%`
-}
-function fmtMoney(n) {
+function fmtMoney(n, signed = false) {
   if (n == null || !Number.isFinite(Number(n))) return '—'
   const v = Number(n)
-  const sign = v > 0 ? '+' : (v < 0 ? '-' : '')
+  const sign = signed ? (v > 0 ? '+' : (v < 0 ? '-' : '')) : (v < 0 ? '-' : '')
   return `${sign}$${Math.abs(v).toFixed(2)}`
 }
 function fmtDate(s) {
@@ -185,30 +232,26 @@ function fmtDate(s) {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
   return `${months[m-1]} ${d}`
 }
-function marketLabel(m) {
-  if (m === 'hr_anytime') return 'HR Anytime'
-  if (m === 'hr_0.5') return 'HR Anytime'
-  if (m && m.startsWith('h_r_rbi_')) {
-    const line = m.replace('h_r_rbi_', '')
-    return `H+R+RBI O${line}`
+function marketLabel(market, line) {
+  if (market === 'hr_anytime') return 'HR Anytime'
+  if (market === 'hits_yes')   return `Hits O${line ?? 0.5}`
+  if (market === 'rbi_yes')    return `RBI O${line ?? 0.5}`
+  if (market && market.startsWith('h_r_rbi_')) {
+    return `H+R+RBI O${market.replace('h_r_rbi_', '')}`
   }
-  return m || '?'
+  return market || '?'
 }
-function statusBadgeClass(status) {
-  switch (status) {
-    case 'win':     return 'badge-win'
-    case 'loss':    return 'badge-loss'
-    case 'push':    return 'badge-push'
-    case 'void':    return 'badge-void'
-    case 'pending': return 'badge-pending'
-    default:        return 'badge-pending'
+function tierLabel(tier) {
+  switch (tier) {
+    case 'straight':  return 'STRAIGHT'
+    case 'two_leg':   return '2-LEGGER'
+    case 'three_leg': return '3-LEGGER'
+    case 'four_leg':  return 'LOTTERY'
+    default: return tier?.toUpperCase() || '?'
   }
-}
-function statusLabel(status) {
-  if (!status) return '?'
-  return status.toUpperCase()
 }
 
+// Navigation
 function openPlayer(mlbamId) {
   if (!mlbamId) return
   router.push({ name: 'player', params: { playerId: mlbamId } })
@@ -224,155 +267,160 @@ function openPlayer(mlbamId) {
         <span class="label-bracket text-fg-500">M.03</span>
       </div>
       <p class="text-fg-500 text-sm max-w-2xl">
-        Today's locked picks at the top, plus the model's secondary plays it
-        also liked. Below, every Cebolla Card ever — the full ledger.
+        AI-built daily parlay cards. The model scans every market for value combinations,
+        applies correlation penalties for same-game / same-team / same-player legs,
+        and picks the highest-EV plays. Each card shows recommended stake and payout.
       </p>
     </section>
 
-    <LoadingBrand v-if="loading" />
+    <LoadingBrand v-if="loading && cards.length === 0" />
 
     <div v-else-if="error" class="px-6 py-12 text-edge-cold-1">
       Error: {{ error }}
     </div>
 
     <template v-else>
-      <!-- ── TODAY'S CARD ────────────────────────────────────── -->
+      <!-- ── TODAY'S CARD MENU ─────────────────────────────── -->
       <section class="px-4 sm:px-6 mb-8">
-        <div class="flex items-baseline gap-3 mb-3">
-          <h2 class="display-text text-xl text-fg-800">Today's Card</h2>
+        <div class="flex items-baseline gap-3 mb-4">
+          <h2 class="display-text text-xl text-fg-800">Today's Menu</h2>
           <span class="label-bracket !text-[8px] text-fg-500">{{ fmtDate(todayIso) }}</span>
         </div>
 
-        <!-- POD slots -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
-          <!-- HR POD -->
-          <div class="card-slot">
-            <div class="flex items-baseline justify-between mb-2">
-              <span class="label-caps text-signal-400">★ HR POD</span>
-              <span v-if="todaysHrPod" class="badge !text-[9px]"
-                    :class="statusBadgeClass(todaysHrPod.status)">
-                {{ statusLabel(todaysHrPod.status) }}
-              </span>
-            </div>
-            <div v-if="todaysHrPod" class="flex items-center gap-3 cursor-pointer hover:opacity-90 transition"
-                 @click="openPlayer(todaysHrPod.player_mlbam_id)">
-              <img v-if="todaysHrPod.player_mlbam_id"
-                   :src="playerHeadshotUrl(todaysHrPod.player_mlbam_id)"
-                   :alt="todaysHrPod.player_name"
-                   class="card-headshot"
-                   @error="hideOnError" />
-              <div class="flex-1 min-w-0">
-                <div class="display-text text-lg text-fg-800 truncate">{{ todaysHrPod.player_name }}</div>
-                <div class="flex items-baseline gap-1.5 flex-wrap text-[10px] mt-0.5">
-                  <span class="label-bracket text-signal-400">{{ todaysHrPod.team_abbrev }}</span>
-                  <span class="text-fg-500 italic">vs</span>
-                  <span class="label-bracket text-fg-600">{{ todaysHrPod.opponent_abbrev }}</span>
-                  <span class="label-caps !text-[8px] ml-1">{{ marketLabel(todaysHrPod.market) }}</span>
-                </div>
-                <div class="flex items-baseline gap-3 mt-1.5 text-[11px]">
-                  <span class="text-fg-500">{{ fmtPct(todaysHrPod.projected_prob) }} proj</span>
-                  <span class="display-num text-signal-200">{{ fmtOdds(todaysHrPod.american_odds) }}</span>
-                  <span class="display-num"
-                        :class="todaysHrPod.edge > 0 ? 'text-signal-400' : 'text-fg-500'">
-                    {{ fmtEdge(todaysHrPod.edge) }} edge
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div v-else class="text-fg-500 text-xs italic py-4 text-center">
-              No HR pick locked yet today.
-            </div>
+        <!-- ── STRAIGHTS (PODs) ──────────────────────────────── -->
+        <div v-if="todaysPods.length" class="mb-6">
+          <div class="tier-header">
+            <span class="tier-label">STRAIGHTS</span>
+            <span class="tier-sublabel">{{ todaysPods.length }} pick{{ todaysPods.length === 1 ? '' : 's' }} · $10 stake</span>
           </div>
-
-          <!-- HRR POD -->
-          <div class="card-slot">
-            <div class="flex items-baseline justify-between mb-2">
-              <span class="label-caps text-signal-400">★ H+R+RBI POD</span>
-              <span v-if="todaysHrrPod" class="badge !text-[9px]"
-                    :class="statusBadgeClass(todaysHrrPod.status)">
-                {{ statusLabel(todaysHrrPod.status) }}
-              </span>
-            </div>
-            <div v-if="todaysHrrPod" class="flex items-center gap-3 cursor-pointer hover:opacity-90 transition"
-                 @click="openPlayer(todaysHrrPod.player_mlbam_id)">
-              <img v-if="todaysHrrPod.player_mlbam_id"
-                   :src="playerHeadshotUrl(todaysHrrPod.player_mlbam_id)"
-                   :alt="todaysHrrPod.player_name"
-                   class="card-headshot"
-                   @error="hideOnError" />
-              <div class="flex-1 min-w-0">
-                <div class="display-text text-lg text-fg-800 truncate">{{ todaysHrrPod.player_name }}</div>
-                <div class="flex items-baseline gap-1.5 flex-wrap text-[10px] mt-0.5">
-                  <span class="label-bracket text-signal-400">{{ todaysHrrPod.team_abbrev }}</span>
-                  <span class="text-fg-500 italic">vs</span>
-                  <span class="label-bracket text-fg-600">{{ todaysHrrPod.opponent_abbrev }}</span>
-                  <span class="label-caps !text-[8px] ml-1">{{ marketLabel(todaysHrrPod.market) }}</span>
-                </div>
-                <div class="flex items-baseline gap-3 mt-1.5 text-[11px]">
-                  <span class="text-fg-500">{{ fmtPct(todaysHrrPod.projected_prob) }} proj</span>
-                  <span class="display-num text-signal-200">{{ fmtOdds(todaysHrrPod.american_odds) }}</span>
-                  <span class="display-num"
-                        :class="todaysHrrPod.edge > 0 ? 'text-signal-400' : 'text-fg-500'">
-                    {{ fmtEdge(todaysHrrPod.edge) }} edge
-                  </span>
-                </div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div v-for="pod in todaysPods" :key="`pod-${pod.id}`" class="card-frame">
+              <div class="card-header">
+                <span class="card-label">
+                  ★ {{ pod.market_class === 'hrr' ? 'H+R+RBI POD' : 'HR POD' }}
+                </span>
+                <span class="badge" :class="`badge-${cardStatusBadge({status: pod.status, id: 0}).kind}`">
+                  {{ cardStatusBadge({status: pod.status, id: 0}).label }}
+                </span>
               </div>
-            </div>
-            <div v-else class="text-fg-500 text-xs italic py-4 text-center">
-              No HRR pick locked yet today.
+              <div class="leg-row" @click="openPlayer(pod.player_mlbam_id)">
+                <img v-if="pod.player_mlbam_id"
+                     :src="playerHeadshotUrl(pod.player_mlbam_id)"
+                     :alt="pod.player_name"
+                     class="leg-headshot"
+                     @error="hideOnError" />
+                <div class="leg-body">
+                  <div class="leg-name">{{ pod.player_name }}</div>
+                  <div class="leg-meta">
+                    <span class="label-bracket text-signal-400">{{ pod.team_abbrev }}</span>
+                    <span class="text-fg-500 italic">vs</span>
+                    <span class="label-bracket text-fg-600">{{ pod.opponent_abbrev }}</span>
+                    <span class="leg-market">{{ marketLabel(pod.market) }}</span>
+                  </div>
+                  <div class="leg-numbers">
+                    <span class="leg-proj">{{ fmtPct(pod.projected_prob) }} proj</span>
+                    <span class="leg-odds">{{ fmtOdds(pod.american_odds) }}</span>
+                    <span class="leg-edge" :class="pod.edge > 0 ? 'text-signal-400' : 'text-fg-500'">
+                      {{ pod.edge >= 0 ? '+' : '' }}{{ fmtPct(pod.edge) }} edge
+                    </span>
+                  </div>
+                </div>
+                <span class="leg-status" :class="`leg-status-${legStatusIndicator({status: pod.status, game_id: pod.game_id}).kind}`">
+                  <span class="status-dot"></span>
+                  {{ legStatusIndicator({status: pod.status, game_id: pod.game_id}).label }}
+                </span>
+              </div>
+              <div class="card-footer">
+                <span class="text-fg-500">$10 stake</span>
+                <span class="text-fg-500">·</span>
+                <span v-if="pod.status === 'win'" class="text-signal-400 display-num">
+                  cashed {{ fmtMoney(pod.payout, true) }}
+                </span>
+                <span v-else-if="pod.status === 'loss'" class="text-edge-cold-1 display-num">
+                  busted {{ fmtMoney(pod.payout, true) }}
+                </span>
+                <span v-else class="text-fg-700 display-num">
+                  → {{ fmtMoney((10 * (1 + Math.abs(pod.american_odds) / (pod.american_odds < 0 ? Math.abs(pod.american_odds) : 100)))) }} if hit
+                </span>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- Secondary picks rail -->
-        <div v-if="todaySecondaries.length">
-          <div class="flex items-baseline gap-2 mb-2">
-            <span class="label-caps text-fg-500">also liked</span>
-            <span class="label-bracket !text-[8px] text-fg-500">model picks &gt; 3% edge</span>
+        <!-- ── 2-LEGGERS ─────────────────────────────────────── -->
+        <div v-if="twoLegCards.length" class="mb-6">
+          <div class="tier-header">
+            <span class="tier-label">2-LEGGERS</span>
+            <span class="tier-sublabel">{{ twoLegCards.length }} card{{ twoLegCards.length === 1 ? '' : 's' }} · $10 stake</span>
           </div>
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead>
-                <tr class="text-left border-b border-bg-200">
-                  <th class="label-caps !text-[8px] py-2 px-3">Player</th>
-                  <th class="label-caps !text-[8px] py-2 px-2 text-right">Market</th>
-                  <th class="label-caps !text-[8px] py-2 px-2 text-right">Odds</th>
-                  <th class="label-caps !text-[8px] py-2 px-2 text-right">Proj</th>
-                  <th class="label-caps !text-[8px] py-2 px-2 text-right">Edge</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="s in todaySecondaries" :key="`${s.player_id}_${s.market}`"
-                    class="border-b border-bg-200/40 hover:bg-bg-100/40 transition cursor-pointer"
-                    @click="openPlayer(s.player_mlbam_id)">
-                  <td class="py-2 px-3">
-                    <span class="text-fg-700">{{ s.player_name }}</span>
-                    <span class="font-mono text-[9px] text-fg-500 ml-2">{{ s.team_abbrev }} vs {{ s.opponent_abbrev }}</span>
-                  </td>
-                  <td class="py-2 px-2 text-right label-caps !text-[9px]">{{ marketLabel(s.market) }}</td>
-                  <td class="py-2 px-2 text-right display-num text-signal-200">{{ fmtOdds(s.american_odds) }}</td>
-                  <td class="py-2 px-2 text-right display-num text-fg-700">{{ fmtPct(s.projected_prob) }}</td>
-                  <td class="py-2 px-2 text-right display-num text-signal-400">{{ fmtEdge(s.edge) }}</td>
-                </tr>
-              </tbody>
-            </table>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <CardBlock
+              v-for="card in twoLegCards"
+              :key="card.id"
+              :card="card"
+              :legs="legsByCard[card.id] || []"
+              :games-by-id="gamesById"
+            />
           </div>
+        </div>
+
+        <!-- ── 3-LEGGERS ─────────────────────────────────────── -->
+        <div v-if="threeLegCards.length" class="mb-6">
+          <div class="tier-header">
+            <span class="tier-label">3-LEGGERS</span>
+            <span class="tier-sublabel">{{ threeLegCards.length }} card{{ threeLegCards.length === 1 ? '' : 's' }} · $5 stake</span>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <CardBlock
+              v-for="card in threeLegCards"
+              :key="card.id"
+              :card="card"
+              :legs="legsByCard[card.id] || []"
+              :games-by-id="gamesById"
+            />
+          </div>
+        </div>
+
+        <!-- ── LOTTERY ───────────────────────────────────────── -->
+        <div v-if="fourLegCards.length" class="mb-6">
+          <div class="tier-header">
+            <span class="tier-label">LOTTERY</span>
+            <span class="tier-sublabel">{{ fourLegCards.length }} ticket · $1 stake</span>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <CardBlock
+              v-for="card in fourLegCards"
+              :key="card.id"
+              :card="card"
+              :legs="legsByCard[card.id] || []"
+              :games-by-id="gamesById"
+            />
+          </div>
+        </div>
+
+        <!-- Empty -->
+        <div v-if="!todaysPods.length && !twoLegCards.length && !threeLegCards.length && !fourLegCards.length"
+             class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
+          <div class="display-text text-lg text-fg-500 italic mb-1">No cards yet for today</div>
+          <p class="text-fg-500 text-xs">
+            The card picker runs daily at 2:45 AM ET. Check back after lock time.
+          </p>
         </div>
       </section>
 
-      <!-- ── HISTORICAL LEDGER ───────────────────────────────── -->
+      <!-- ── CARD HISTORY ──────────────────────────────────── -->
       <section class="px-4 sm:px-6 mb-10">
         <div class="flex items-baseline gap-3 mb-3">
           <h2 class="display-text text-xl text-fg-800">Card History</h2>
           <span class="label-bracket !text-[8px] text-fg-500">M.03.b</span>
-          <span class="text-fg-500 text-xs">·  {{ historicalPods.length }} settled</span>
+          <span class="text-fg-500 text-xs">·  {{ historicalCards.length + historicalPods.length }} settled</span>
         </div>
 
-        <div v-if="!historicalPods.length"
+        <div v-if="!historicalCards.length && !historicalPods.length"
              class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
           <div class="display-text text-lg text-fg-500 italic mb-1">No settled cards yet</div>
           <p class="text-fg-500 text-xs">
-            Once today's picks settle (post-game), the historical ledger will start populating here.
+            Once today's picks settle (post-game), the historical ledger populates here.
           </p>
         </div>
 
@@ -381,35 +429,65 @@ function openPlayer(mlbamId) {
             <thead>
               <tr class="text-left border-b border-bg-200">
                 <th class="label-caps !text-[8px] py-2 px-3">Date</th>
-                <th class="label-caps !text-[8px] py-2 px-3">Player</th>
-                <th class="label-caps !text-[8px] py-2 px-2 text-right">Market</th>
+                <th class="label-caps !text-[8px] py-2 px-3">Card</th>
                 <th class="label-caps !text-[8px] py-2 px-2 text-right">Odds</th>
-                <th class="label-caps !text-[8px] py-2 px-2 text-right">Proj</th>
                 <th class="label-caps !text-[8px] py-2 px-2 text-center">Result</th>
                 <th class="label-caps !text-[8px] py-2 px-2 text-right">P&amp;L</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="pod in historicalPods" :key="pod.id"
+              <!-- Settled Cards -->
+              <tr v-for="card in historicalCards" :key="`hc-${card.id}`"
+                  class="border-b border-bg-200/40 hover:bg-bg-100/40 transition">
+                <td class="py-2 px-3 text-fg-500 font-mono text-[11px]">{{ fmtDate(card.card_date) }}</td>
+                <td class="py-2 px-3">
+                  <div class="flex items-baseline gap-2">
+                    <span class="label-caps !text-[9px] text-fg-500">{{ tierLabel(card.tier) }}</span>
+                    <span class="text-fg-700">{{ card.label || tierLabel(card.tier) }}</span>
+                  </div>
+                  <div class="text-[9px] text-fg-500 font-mono mt-0.5">
+                    <span v-for="(leg, idx) in (legsByCard[card.id] || [])" :key="leg.id">
+                      <span :class="leg.status === 'win' ? 'text-signal-400' : leg.status === 'loss' ? 'text-edge-cold-1' : 'text-fg-500'">
+                        {{ leg.player_name }}
+                      </span>
+                      <span v-if="idx < (legsByCard[card.id] || []).length - 1" class="text-fg-400"> + </span>
+                    </span>
+                  </div>
+                </td>
+                <td class="py-2 px-2 text-right display-num text-signal-200">{{ fmtOdds(card.combined_odds) }}</td>
+                <td class="py-2 px-2 text-center">
+                  <span class="badge !text-[9px]" :class="`badge-${cardStatusBadge(card).kind}`">
+                    {{ cardStatusBadge(card).label }}
+                  </span>
+                </td>
+                <td class="py-2 px-2 text-right display-num"
+                    :class="card.status === 'win' ? 'text-signal-400' : (card.status === 'loss' ? 'text-edge-cold-1' : 'text-fg-500')">
+                  {{ fmtMoney(card.payout, true) }}
+                </td>
+              </tr>
+              <!-- Settled PODs (legacy) -->
+              <tr v-for="pod in historicalPods" :key="`hp-${pod.id}`"
                   class="border-b border-bg-200/40 hover:bg-bg-100/40 transition cursor-pointer"
                   @click="openPlayer(pod.player_mlbam_id)">
                 <td class="py-2 px-3 text-fg-500 font-mono text-[11px]">{{ fmtDate(pod.pod_date) }}</td>
                 <td class="py-2 px-3">
-                  <span class="text-fg-700">{{ pod.player_name }}</span>
-                  <span class="font-mono text-[9px] text-fg-500 ml-2">{{ pod.team_abbrev }} vs {{ pod.opponent_abbrev }}</span>
+                  <div class="flex items-baseline gap-2">
+                    <span class="label-caps !text-[9px] text-fg-500">STRAIGHT</span>
+                    <span class="text-fg-700">{{ pod.player_name }}</span>
+                  </div>
+                  <div class="text-[9px] text-fg-500 font-mono mt-0.5">
+                    {{ pod.team_abbrev }} vs {{ pod.opponent_abbrev }} · {{ marketLabel(pod.market) }}
+                  </div>
                 </td>
-                <td class="py-2 px-2 text-right label-caps !text-[9px]">{{ marketLabel(pod.market) }}</td>
-                <td class="py-2 px-2 text-right display-num">{{ fmtOdds(pod.american_odds) }}</td>
-                <td class="py-2 px-2 text-right display-num text-fg-700">{{ fmtPct(pod.projected_prob) }}</td>
+                <td class="py-2 px-2 text-right display-num text-signal-200">{{ fmtOdds(pod.american_odds) }}</td>
                 <td class="py-2 px-2 text-center">
-                  <span class="badge !text-[9px]" :class="statusBadgeClass(pod.status)">
-                    {{ statusLabel(pod.status) }}
+                  <span class="badge !text-[9px]" :class="`badge-${cardStatusBadge({status: pod.status, id: 0}).kind}`">
+                    {{ cardStatusBadge({status: pod.status, id: 0}).label }}
                   </span>
                 </td>
                 <td class="py-2 px-2 text-right display-num"
                     :class="pod.status === 'win' ? 'text-signal-400' : (pod.status === 'loss' ? 'text-edge-cold-1' : 'text-fg-500')">
-                  <span v-if="pod.status === 'pending'">—</span>
-                  <span v-else>{{ fmtMoney(pod.payout) }}</span>
+                  {{ fmtMoney(pod.payout, true) }}
                 </td>
               </tr>
             </tbody>
@@ -421,57 +499,212 @@ function openPlayer(mlbamId) {
 </template>
 
 <style scoped>
-.card-slot {
+/* ── Tier section headers ─────────────────────────────────── */
+.tier-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--bg-200, #1c1c20);
+}
+.tier-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: #FF6B6B;
+}
+.tier-sublabel {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── Card frame ───────────────────────────────────────────── */
+.card-frame {
   border: 1px solid var(--bg-200, #1c1c20);
-  background: rgba(255, 42, 42, 0.03);
-  padding: 12px 14px;
+  background: rgba(255, 42, 42, 0.025);
+  padding: 14px 16px 12px;
   position: relative;
 }
-.card-slot::before {
+.card-frame::before {
   content: '';
   position: absolute;
   top: 0; left: 0;
   width: 2px; height: 100%;
-  background: linear-gradient(to bottom, #FF2A2A, rgba(255, 42, 42, 0.20));
+  background: linear-gradient(to bottom, #FF2A2A, rgba(255, 42, 42, 0.15));
 }
-.card-headshot {
-  width: 56px;
-  height: 56px;
+
+.card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.card-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: #FF6B6B;
+}
+
+.card-footer {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 10px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+/* ── Leg row ──────────────────────────────────────────────── */
+.leg-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.leg-row:hover { opacity: 0.85; }
+.leg-row + .leg-row { border-top: 1px dashed rgba(255, 255, 255, 0.06); }
+
+.leg-headshot {
+  width: 44px;
+  height: 44px;
   object-fit: cover;
   border-radius: 50%;
   border: 1px solid var(--bg-300, #26262c);
+  flex-shrink: 0;
 }
 
-/* Badges — match PODView convention so badges feel consistent across pages */
+.leg-body {
+  flex: 1;
+  min-width: 0;
+}
+.leg-name {
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.leg-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  margin-top: 1px;
+}
+.leg-market {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  margin-left: 4px;
+}
+.leg-numbers {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 3px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+}
+.leg-proj { color: rgba(255, 255, 255, 0.55); }
+.leg-odds {
+  color: rgba(255, 107, 107, 0.95);
+  font-weight: 500;
+}
+.leg-edge { font-weight: 500; }
+
+/* ── Leg status indicator (right side of leg row) ─────────── */
+.leg-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 3px 7px;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.leg-status-pregame {
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.02);
+}
+.leg-status-live {
+  color: rgba(255, 200, 80, 0.95);
+  background: rgba(255, 200, 80, 0.10);
+  animation: leg-status-pulse 2.2s ease-in-out infinite;
+}
+.leg-status-hit {
+  color: rgba(80, 220, 130, 1);
+  background: rgba(80, 220, 130, 0.10);
+}
+.leg-status-busted {
+  color: rgba(255, 95, 95, 1);
+  background: rgba(255, 95, 95, 0.10);
+}
+.leg-status-void,
+.leg-status-awaiting {
+  color: rgba(255, 255, 255, 0.40);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+@keyframes leg-status-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* ── Card-level badge ─────────────────────────────────────── */
 .badge {
   display: inline-block;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 9px;
+  font-weight: 600;
   letter-spacing: 0.10em;
-  padding: 2px 6px;
+  padding: 2px 7px;
   border-radius: 2px;
   line-height: 1;
   border: 1px solid currentColor;
-}
-.badge-win {
-  color: rgba(255, 42, 42, 1);
-  background: rgba(255, 42, 42, 0.10);
-}
-.badge-loss {
-  color: rgba(95, 165, 255, 0.95);
-  background: rgba(95, 165, 255, 0.08);
-}
-.badge-push {
-  color: rgba(255, 255, 255, 0.65);
-  background: rgba(255, 255, 255, 0.04);
-}
-.badge-void {
-  color: rgba(255, 255, 255, 0.45);
-  background: rgba(255, 255, 255, 0.02);
 }
 .badge-pending {
   color: rgba(255, 200, 80, 0.85);
   background: rgba(255, 200, 80, 0.08);
   border-color: rgba(255, 200, 80, 0.45);
+}
+.badge-live {
+  color: rgba(80, 220, 130, 1);
+  background: rgba(80, 220, 130, 0.10);
+  animation: leg-status-pulse 2.2s ease-in-out infinite;
+}
+.badge-win {
+  color: rgba(80, 220, 130, 1);
+  background: rgba(80, 220, 130, 0.10);
+}
+.badge-loss {
+  color: rgba(255, 95, 95, 1);
+  background: rgba(255, 95, 95, 0.10);
+}
+.badge-void {
+  color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.02);
 }
 </style>
