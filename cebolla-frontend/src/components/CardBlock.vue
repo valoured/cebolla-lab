@@ -118,6 +118,20 @@ function marketLabel(market, line) {
   }
   return market || '?'
 }
+
+// Color-code market labels so users can scan a card and immediately see
+// what types of bets are stacked. Heat-map intuition: green = safest
+// ("will hit"), through yellow/orange = medium, red = HR longshot.
+function marketColorClass(market) {
+  if (market === 'hr_anytime')    return 'market-hr'
+  if (market === 'hits_yes')      return 'market-hits'
+  if (market === 'rbi_yes')       return 'market-rbi'
+  if (market === 'h_r_rbi_1.5')   return 'market-hrr-low'
+  if (market === 'h_r_rbi_2.5')   return 'market-hrr-mid'
+  if (market === 'h_r_rbi_3.5')   return 'market-hrr-high'
+  if (market && market.startsWith('h_r_rbi_')) return 'market-hrr-mid'
+  return 'market-default'
+}
 </script>
 
 <template>
@@ -150,7 +164,7 @@ function marketLabel(market, line) {
             <span class="label-bracket text-signal-400">{{ leg.team_abbrev }}</span>
             <span class="text-fg-500 italic">vs</span>
             <span class="label-bracket text-fg-600">{{ leg.opponent_abbrev }}</span>
-            <span class="leg-market">{{ marketLabel(leg.market, leg.line) }}</span>
+            <span class="leg-market" :class="marketColorClass(leg.market)">{{ marketLabel(leg.market, leg.line) }}</span>
           </div>
           <div class="leg-numbers">
             <span class="leg-proj">{{ fmtPct(leg.projected_prob) }} proj</span>
@@ -279,6 +293,41 @@ function marketLabel(market, line) {
   color: rgba(255, 255, 255, 0.45);
   text-transform: uppercase;
   margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  font-weight: 600;
+}
+/* Market color heat-map: green = safest, yellow/orange = medium,
+   red = HR longshot. Borders + dim background give a chip feel without
+   overpowering the other leg details. */
+.market-hits {
+  color: #4ade80;  /* signal green — "will hit" */
+  background: rgba(74, 222, 128, 0.08);
+}
+.market-rbi {
+  color: #c084fc;  /* purple — RBI specialty */
+  background: rgba(192, 132, 252, 0.08);
+}
+.market-hrr-low {
+  color: #fbbf24;  /* amber — 1.5 line, medium */
+  background: rgba(251, 191, 36, 0.08);
+}
+.market-hrr-mid {
+  color: #fb923c;  /* orange — 2.5 line, longer */
+  background: rgba(251, 146, 60, 0.08);
+}
+.market-hrr-high {
+  color: #f87171;  /* light red — 3.5 line, lottery */
+  background: rgba(248, 113, 113, 0.08);
+}
+.market-hr {
+  color: #ef4444;  /* red — HR anytime, longest */
+  background: rgba(239, 68, 68, 0.10);
+}
+.market-default {
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
 }
 .leg-numbers {
   display: flex;

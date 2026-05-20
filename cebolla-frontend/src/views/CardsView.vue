@@ -270,6 +270,16 @@ function marketLabel(market, line) {
   }
   return market || '?'
 }
+function marketColorClass(market) {
+  if (market === 'hr_anytime')    return 'market-hr'
+  if (market === 'hits_yes')      return 'market-hits'
+  if (market === 'rbi_yes')       return 'market-rbi'
+  if (market === 'h_r_rbi_1.5')   return 'market-hrr-low'
+  if (market === 'h_r_rbi_2.5')   return 'market-hrr-mid'
+  if (market === 'h_r_rbi_3.5')   return 'market-hrr-high'
+  if (market && market.startsWith('h_r_rbi_')) return 'market-hrr-mid'
+  return 'market-default'
+}
 function tierLabel(tier) {
   switch (tier) {
     case 'straight':  return 'STRAIGHT'
@@ -344,7 +354,7 @@ function openPlayer(mlbamId) {
                     <span class="label-bracket text-signal-400">{{ pod.team_abbrev }}</span>
                     <span class="text-fg-500 italic">vs</span>
                     <span class="label-bracket text-fg-600">{{ pod.opponent_abbrev }}</span>
-                    <span class="leg-market">{{ marketLabel(pod.market) }}</span>
+                    <span class="leg-market" :class="marketColorClass(pod.market)">{{ marketLabel(pod.market) }}</span>
                   </div>
                   <div class="leg-numbers">
                     <span class="leg-proj">{{ fmtPct(pod.projected_prob) }} proj</span>
@@ -505,7 +515,7 @@ function openPlayer(mlbamId) {
                     <span class="text-fg-700">{{ pod.player_name }}</span>
                   </div>
                   <div class="text-[9px] text-fg-500 font-mono mt-0.5">
-                    {{ pod.team_abbrev }} vs {{ pod.opponent_abbrev }} · {{ marketLabel(pod.market) }}
+                    {{ pod.team_abbrev }} vs {{ pod.opponent_abbrev }} · <span class="leg-market" :class="marketColorClass(pod.market)">{{ marketLabel(pod.market) }}</span>
                   </div>
                 </td>
                 <td class="py-2 px-2 text-right display-num text-signal-200">{{ fmtOdds(pod.american_odds) }}</td>
@@ -638,6 +648,41 @@ function openPlayer(mlbamId) {
   color: rgba(255, 255, 255, 0.45);
   text-transform: uppercase;
   margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  font-weight: 600;
+}
+/* Market color heat-map (mirrors CardBlock.vue exactly).
+   green = safest "will hit", through yellow/orange = medium,
+   red = HR longshot. */
+.market-hits {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.08);
+}
+.market-rbi {
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.08);
+}
+.market-hrr-low {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+}
+.market-hrr-mid {
+  color: #fb923c;
+  background: rgba(251, 146, 60, 0.08);
+}
+.market-hrr-high {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+}
+.market-hr {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.10);
+}
+.market-default {
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
 }
 .leg-numbers {
   display: flex;
