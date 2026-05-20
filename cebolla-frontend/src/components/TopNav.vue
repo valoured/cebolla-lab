@@ -6,13 +6,32 @@ import { useRealtimePulse } from '../composables/useRealtimePulse.js'
 const route = useRoute()
 const { isPulsing } = useRealtimePulse()
 
+// Primary nav items — order matters (left to right).
+// The 'methodology' tab lives in a secondary hidden-on-mobile bucket so
+// the top bar stays scannable on small screens.
 const navItems = [
-  { name: 'slate',        label: 'Slate',        code: 'M.01' },
-  { name: 'pod',          label: 'POD',          code: 'M.02' },
-  { name: 'methodology',  label: 'Methodology',  code: 'M.03' },
+  { name: 'slate',       label: 'Slate',       code: 'M.01' },
+  { name: 'pod',         label: 'POD',         code: 'M.02' },
+  { name: 'cards',       label: 'Cards',       code: 'M.03' },
+  { name: 'stats',       label: 'Stats',       code: 'M.04' },
+  { name: 'methodology', label: 'How',         code: 'M.05' },
 ]
 
+// Sport selector — MLB is live today. NFL is scaffolded so users know it's
+// coming. Click on a 'coming soon' sport does nothing yet.
+const sports = [
+  { key: 'mlb', label: 'MLB', live: true },
+  { key: 'nfl', label: 'NFL', live: false },
+]
+const activeSport = ref('mlb')
+
+function selectSport(s) {
+  if (!s.live) return    // disabled — coming soon
+  activeSport.value = s.key
+}
+
 function isActive(name) {
+  // Slate covers slate + game deep dive + player view (all sport-content pages)
   if (name === 'slate' && (route.name === 'slate' || route.name === 'hr-report' || route.name === 'player')) {
     return true
   }
@@ -28,19 +47,12 @@ const burstKey = ref(0)
 watch(isPulsing, (v) => {
   if (v) burstKey.value++
 })
-
-function openSearch() {
-  if (typeof window.__openCebollaSearch === 'function') {
-    window.__openCebollaSearch()
-  }
-}
 </script>
 
 <template>
   <header class="sticky top-0 z-50 bg-bg-0/95 backdrop-blur border-b border-bg-200">
-    <!-- px-3 mobile / px-6 desktop. Gap collapses on mobile. -->
-    <div class="px-3 sm:px-6 h-16 sm:h-20 flex items-center gap-3 sm:gap-8">
-      <!-- Brand: wordmark only (icon removed — now lives as the realtime indicator). -->
+    <div class="px-3 sm:px-6 h-16 sm:h-20 flex items-center gap-3 sm:gap-6">
+      <!-- Brand -->
       <router-link to="/" class="flex items-center group shrink-0">
         <img
           src="/cebolla-wordmark.png"
@@ -50,22 +62,21 @@ function openSearch() {
       </router-link>
 
       <!-- Nav tabs -->
-      <nav class="flex items-center gap-0 sm:gap-1 sm:ml-4">
+      <nav class="flex items-center gap-0 sm:gap-1 sm:ml-2 overflow-x-auto scrollbar-none">
         <router-link
           v-for="item in navItems"
           :key="item.name"
           :to="{ name: item.name }"
-          class="px-2.5 sm:px-4 py-2 text-sm transition relative group"
+          class="px-2 sm:px-3 py-2 text-sm transition relative group shrink-0"
           :class="[
             isActive(item.name)
               ? 'text-fg-700'
               : 'text-fg-500 hover:text-fg-700'
           ]"
         >
-          <span class="flex items-baseline gap-1.5 sm:gap-2">
+          <span class="flex items-baseline gap-1 sm:gap-1.5">
             <span class="font-medium">{{ item.label }}</span>
-            <!-- Hide the M.0X code on mobile to save space -->
-            <span class="hidden sm:inline label-bracket !text-[8px] opacity-60">{{ item.code }}</span>
+            <span class="hidden md:inline label-bracket !text-[8px] opacity-60">{{ item.code }}</span>
           </span>
           <span
             v-if="isActive(item.name)"
@@ -74,26 +85,30 @@ function openSearch() {
         </router-link>
       </nav>
 
-      <!-- Right side -->
-      <div class="ml-auto flex items-center gap-2 sm:gap-6">
-        <!-- Search trigger.
-             Mobile: just the magnifying glass icon, no Ctrl+K hint (no keyboard).
-             Desktop (sm+): icon + Ctrl+K hint. -->
-        <button
-          type="button"
-          @click="openSearch"
-          class="search-trigger"
-          aria-label="Search players and teams"
-          title="Search players and teams"
-        >
-          <span class="search-trigger-icon" aria-hidden="true">⌕</span>
-          <span class="search-trigger-hint hidden sm:inline">
-            <kbd>Ctrl</kbd><kbd>K</kbd>
-          </span>
-        </button>
+      <!-- Right side: sport selector + live indicator + clock -->
+      <div class="ml-auto flex items-center gap-2 sm:gap-4 shrink-0">
+        <!-- Sport selector pills -->
+        <div class="flex items-center gap-1">
+          <button
+            v-for="s in sports"
+            :key="s.key"
+            type="button"
+            @click="selectSport(s)"
+            class="sport-pill"
+            :class="{
+              'sport-pill--active': s.live && activeSport === s.key,
+              'sport-pill--soon':   !s.live,
+            }"
+            :title="s.live ? `${s.label} (active)` : `${s.label} — coming soon`"
+            :aria-disabled="!s.live"
+          >
+            <span>{{ s.label }}</span>
+            <span v-if="!s.live" class="sport-pill__soon-dot" aria-hidden="true"></span>
+          </button>
+        </div>
 
-        <!-- Live status: pulsing onion icon as realtime indicator -->
-        <div class="hidden md:flex items-center gap-2">
+        <!-- Live realtime indicator -->
+        <div class="hidden md:flex items-center gap-1.5">
           <img
             :key="burstKey"
             src="/cebolla-icon-64-transparent.png"
@@ -112,8 +127,9 @@ function openSearch() {
             :class="{ 'is-burst': isPulsing }"
           />
         </div>
-        <!-- UTC clock: hidden on mobile (phone already shows time in status bar). -->
-        <div class="hidden sm:flex items-baseline gap-1.5 sm:gap-2">
+
+        <!-- UTC clock — hidden on small mobile to save room -->
+        <div class="hidden sm:flex items-baseline gap-1.5">
           <span class="label-caps">UTC</span>
           <span class="display-num text-xs text-fg-600">{{ now }}</span>
         </div>
@@ -123,68 +139,7 @@ function openSearch() {
 </template>
 
 <style scoped>
-/* Search trigger — a thin slot button next to the live indicator.
-   Compact icon-only target on mobile; expands to icon + Ctrl+K hint at sm+. */
-.search-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.02);
-  color: rgba(255, 255, 255, 0.55);
-  cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
-  font-family: 'JetBrains Mono', monospace;
-  line-height: 1;
-  min-width: 32px;
-  justify-content: center;
-}
-@media (min-width: 640px) {
-  .search-trigger {
-    padding: 4px 10px;
-    min-width: 0;
-  }
-}
-.search-trigger:hover {
-  border-color: rgba(255, 42, 42, 0.50);
-  color: rgba(255, 42, 42, 0.95);
-  background: rgba(255, 42, 42, 0.06);
-}
-.search-trigger-icon {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1;
-  display: inline-block;
-  transform: translateY(-1px);
-}
-@media (min-width: 640px) {
-  .search-trigger-icon {
-    font-size: 14px;
-  }
-}
-.search-trigger-hint {
-  display: inline-flex;
-  gap: 2px;
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  opacity: 0.85;
-}
-.search-trigger-hint kbd {
-  display: inline-block;
-  padding: 1px 4px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.03);
-  color: inherit;
-  font-family: inherit;
-  font-size: 9px;
-  line-height: 1;
-}
-
 .cebolla-wordmark-nav {
-  /* Full wordmark is 1024x254 (~4:1). At 56px tall ≈ 226px wide.
-     Tagline portion renders at ~12-14px which is comfortably legible. */
   height: 44px;
   width: auto;
   filter: drop-shadow(0 0 4px rgba(255, 42, 42, 0.20));
@@ -201,8 +156,51 @@ function openSearch() {
   filter: drop-shadow(0 0 8px rgba(255, 42, 42, 0.55));
 }
 
+/* Hide overflow scrollbar on the nav row for clean overflow on narrow screens */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* Sport selector pills */
+.sport-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 7px;
+  border: 1px solid var(--bg-200, #1c1c20);
+  color: var(--fg-500, #8a8a92);
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+.sport-pill:hover:not(.sport-pill--soon) {
+  border-color: rgba(255, 42, 42, 0.40);
+  color: var(--fg-700, #c0c0c8);
+}
+.sport-pill--active {
+  border-color: #FF2A2A;
+  background: rgba(255, 42, 42, 0.10);
+  color: #FF6B6B;
+}
+.sport-pill--soon {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.sport-pill__soon-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 200, 80, 0.65);
+  display: inline-block;
+}
+
 /* Live realtime indicator: tiny glowing onion that pulses ambient,
-   then bursts brighter when Supabase realtime fires (data arriving). */
+   then bursts brighter when Supabase realtime fires. */
 .live-onion {
   width: 18px;
   height: 18px;
@@ -212,11 +210,9 @@ function openSearch() {
   animation: onion-ambient 3s ease-in-out infinite;
   filter: drop-shadow(0 0 3px rgba(255, 42, 42, 0.35));
 }
-
 .live-onion.is-burst {
   animation: onion-burst 1.5s ease-out;
 }
-
 @keyframes onion-ambient {
   0%, 100% {
     transform: scale(0.95);
@@ -227,7 +223,6 @@ function openSearch() {
     filter: drop-shadow(0 0 6px rgba(255, 42, 42, 0.70));
   }
 }
-
 @keyframes onion-burst {
   0% {
     transform: scale(0.85);
