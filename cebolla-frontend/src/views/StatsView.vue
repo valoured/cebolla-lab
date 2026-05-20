@@ -12,8 +12,14 @@
  *   4. Per-odds-tier breakdown — how do longshots vs favorites perform?
  *   5. Monthly P&L timeline
  *
- * Source: pods table. Reads only settled rows (status IN win/loss/push/void).
- * Everything is computed client-side — no backend math.
+ * Sources: BOTH `pods` (straights/single-leg picks) AND `cards` (parlays).
+ * Normalized into a unified `picks` array so all downstream math treats
+ * them uniformly.
+ *
+ * Cards count as ONE pick each (the parlay as a unit), not N picks for N
+ * legs. Calibration uses combined_prob; tier breakdown uses combined_odds.
+ * This matches how a real bettor would evaluate their record — by the
+ * tickets they wrote, not the legs on them.
  */
 
 import { ref, computed, onMounted } from 'vue'
@@ -21,6 +27,7 @@ import { supabase } from '../supabase.js'
 import LoadingBrand from '../components/LoadingBrand.vue'
 
 const pods = ref([])
+const cards = ref([])
 const loading = ref(true)
 const error = ref(null)
 
@@ -29,15 +36,26 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const { data, error: dbErr } = await supabase
-      .from('pods')
-      .select('id, pod_date, market_class, market, projected_prob, no_vig_prob, ' +
-              'edge, american_odds, status, payout, stake, contact_score, combined_score, ' +
-              'player_name, team_abbrev, opponent_abbrev, settled_at')
-      .order('pod_date', { ascending: true })
-      .limit(2000)
-    if (dbErr) throw dbErr
-    pods.value = data || []
+    const [podsRes, cardsRes] = await Promise.all([
+      supabase
+        .from('pods')
+        .select('id, pod_date, market_class, market, projected_prob, no_vig_prob, ' +
+                'edge, american_odds, status, payout, stake, contact_score, combined_score, ' +
+                'player_name, team_abbrev, opponent_abbrev, settled_at')
+        .order('pod_date', { ascending: true })
+        .limit(2000),
+      supabase
+        .from('cards')
+        .select('id, card_date, tier, label, leg_count, combined_prob, ' +
+                'combined_odds, decimal_odds, edge, ev_per_dollar, stake_rec, ' +
+                'payout_if_hit, status, payout, settled_at')
+        .order('card_date', { ascending: true })
+        .limit(2000),
+    ])
+    if (podsRes.error) throw podsRes.error
+    if (cardsRes.error) throw cardsRes.error
+    pods.value = podsRes.data || []
+    cards.value = cardsRes.data || []
   } catch (e) {
     console.error('[StatsView] load failed:', e)
     error.value = e.message || String(e)
@@ -47,9 +65,48 @@ async function load() {
 }
 onMounted(load)
 
-// ── Derived: settled pods ─────────────────────────────────────
+// ── Normalize pods + cards into unified `picks` ───────────────
+// Each pick has: date, market_class, projected_prob, american_odds,
+// status, payout, stake.
+const picks = computed(() => {
+  const out = []
+  for (const p of pods.value) {
+    out.push({
+      kind: 'pod',
+      tier: 'straight',
+      date: p.pod_date,
+      market_class: p.market_class || 'hr',
+      projected_prob: Number(p.projected_prob),
+      american_odds: Number(p.american_odds),
+      status: p.status,
+      payout: Number(p.payout) || 0,
+      stake: Number(p.stake) || 10,
+      settled_at: p.settled_at,
+    })
+  }
+  for (const c of cards.value) {
+    // Cards count as one pick each (the parlay as a unit). market_class
+    // = the tier ('two_leg' etc.) so per-market breakdown can split
+    // straights vs parlays cleanly.
+    out.push({
+      kind: 'card',
+      tier: c.tier,
+      date: c.card_date,
+      market_class: c.tier,  // 'straight' | 'two_leg' | 'three_leg' | 'four_leg'
+      projected_prob: Number(c.combined_prob),
+      american_odds: Number(c.combined_odds),
+      status: c.status,
+      payout: Number(c.payout) || 0,
+      stake: Number(c.stake_rec) || 10,
+      settled_at: c.settled_at,
+    })
+  }
+  return out
+})
+
+// ── Derived: settled picks ────────────────────────────────────
 const settled = computed(() =>
-  pods.value.filter(p => ['win', 'loss', 'push', 'void'].includes(p.status))
+  picks.value.filter(p => ['win', 'loss', 'push', 'void'].includes(p.status))
 )
 const settledNonVoid = computed(() =>
   settled.value.filter(p => p.status !== 'void')
@@ -95,27 +152,37 @@ const overallRoi = computed(() => roiFor(settled.value))
 const overallHitRate = computed(() => hitRateFor(settled.value))
 
 // ── Per-market breakdown ──────────────────────────────────────
+// Slices the unified settled picks by their market_class:
+//   - PODs use 'hr' / 'hrr'
+//   - Cards use 'straight' / 'two_leg' / 'three_leg' / 'four_leg'
+// (After unification, every pick has a market_class. Card 'straight' tier
+// would only show up if we start writing pods to the cards table too —
+// for now PODs live in pods, cards live in cards, so cards.tier never =
+// 'straight' in practice.)
 function marketSlice(mc) {
   return settled.value.filter(p => (p.market_class || 'hr') === mc)
 }
-const hrStats = computed(() => {
-  const list = marketSlice('hr')
+function buildStats(list) {
   return {
     record: recordFor(list),
     pnl: pnlFor(list),
     roi: roiFor(list),
     hitRate: hitRateFor(list),
   }
-})
-const hrrStats = computed(() => {
-  const list = marketSlice('hrr')
-  return {
-    record: recordFor(list),
-    pnl: pnlFor(list),
-    roi: roiFor(list),
-    hitRate: hitRateFor(list),
-  }
-})
+}
+const hrStats        = computed(() => buildStats(marketSlice('hr')))
+const hrrStats       = computed(() => buildStats(marketSlice('hrr')))
+const twoLegStats    = computed(() => buildStats(marketSlice('two_leg')))
+const threeLegStats  = computed(() => buildStats(marketSlice('three_leg')))
+const fourLegStats   = computed(() => buildStats(marketSlice('four_leg')))
+
+// Convenience flag — only show parlay breakdown section if there's any
+// parlay activity in the data set.
+const hasParlayData = computed(() =>
+  twoLegStats.value.record.settled +
+  threeLegStats.value.record.settled +
+  fourLegStats.value.record.settled > 0
+)
 
 // ── Calibration plot ──────────────────────────────────────────
 // Bucket settled picks by projected_prob in 10pp ranges. For each bucket,
@@ -182,8 +249,8 @@ const tierBreakdown = computed(() => {
 // ── Monthly P&L timeline ──────────────────────────────────────
 const monthlyPnl = computed(() => {
   const byMonth = new Map()
-  for (const pod of settled.value) {
-    const dt = pod.settled_at || pod.pod_date
+  for (const pick of settled.value) {
+    const dt = pick.settled_at || pick.date
     if (!dt) continue
     const key = String(dt).slice(0, 7) // YYYY-MM
     if (!byMonth.has(key)) {
@@ -191,8 +258,8 @@ const monthlyPnl = computed(() => {
     }
     const bucket = byMonth.get(key)
     bucket.picks++
-    if (pod.status === 'win') bucket.wins++
-    bucket.pnl += Number(pod.payout) || 0
+    if (pick.status === 'win') bucket.wins++
+    bucket.pnl += Number(pick.payout) || 0
   }
   return Array.from(byMonth.values()).sort((a, b) => a.month.localeCompare(b.month))
 })
@@ -363,6 +430,88 @@ function barY(pnl) {
                 <div class="display-num mt-0.5"
                      :class="hrrStats.pnl >= 0 ? 'text-signal-400' : 'text-edge-cold-1'">
                   {{ fmtMoney(hrrStats.pnl) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Parlay breakdown — only render if we have any parlay data -->
+        <div v-if="hasParlayData" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+          <div class="bg-bg-50 border border-bg-200 px-4 py-3">
+            <div class="flex items-baseline justify-between mb-2">
+              <div class="display-text text-sm text-fg-800">2-Leggers</div>
+              <span class="label-caps !text-[9px] text-fg-500">{{ twoLegStats.record.settled }} settled</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-xs">
+              <div>
+                <div class="label-caps !text-[8px]">W-L</div>
+                <div class="display-num text-fg-800 mt-0.5">{{ twoLegStats.record.w }}-{{ twoLegStats.record.l }}</div>
+              </div>
+              <div>
+                <div class="label-caps !text-[8px]">ROI</div>
+                <div class="display-num mt-0.5"
+                     :class="twoLegStats.roi == null ? 'text-fg-500' : (twoLegStats.roi >= 0 ? 'text-signal-400' : 'text-edge-cold-1')">
+                  {{ twoLegStats.roi != null ? (twoLegStats.roi >= 0 ? '+' : '') + fmtPct(twoLegStats.roi) : '—' }}
+                </div>
+              </div>
+              <div>
+                <div class="label-caps !text-[8px]">P&amp;L</div>
+                <div class="display-num mt-0.5"
+                     :class="twoLegStats.pnl >= 0 ? 'text-signal-400' : 'text-edge-cold-1'">
+                  {{ fmtMoney(twoLegStats.pnl) }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="bg-bg-50 border border-bg-200 px-4 py-3">
+            <div class="flex items-baseline justify-between mb-2">
+              <div class="display-text text-sm text-fg-800">3-Leggers</div>
+              <span class="label-caps !text-[9px] text-fg-500">{{ threeLegStats.record.settled }} settled</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-xs">
+              <div>
+                <div class="label-caps !text-[8px]">W-L</div>
+                <div class="display-num text-fg-800 mt-0.5">{{ threeLegStats.record.w }}-{{ threeLegStats.record.l }}</div>
+              </div>
+              <div>
+                <div class="label-caps !text-[8px]">ROI</div>
+                <div class="display-num mt-0.5"
+                     :class="threeLegStats.roi == null ? 'text-fg-500' : (threeLegStats.roi >= 0 ? 'text-signal-400' : 'text-edge-cold-1')">
+                  {{ threeLegStats.roi != null ? (threeLegStats.roi >= 0 ? '+' : '') + fmtPct(threeLegStats.roi) : '—' }}
+                </div>
+              </div>
+              <div>
+                <div class="label-caps !text-[8px]">P&amp;L</div>
+                <div class="display-num mt-0.5"
+                     :class="threeLegStats.pnl >= 0 ? 'text-signal-400' : 'text-edge-cold-1'">
+                  {{ fmtMoney(threeLegStats.pnl) }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="bg-bg-50 border border-bg-200 px-4 py-3">
+            <div class="flex items-baseline justify-between mb-2">
+              <div class="display-text text-sm text-fg-800">Lottery</div>
+              <span class="label-caps !text-[9px] text-fg-500">{{ fourLegStats.record.settled }} settled</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-xs">
+              <div>
+                <div class="label-caps !text-[8px]">W-L</div>
+                <div class="display-num text-fg-800 mt-0.5">{{ fourLegStats.record.w }}-{{ fourLegStats.record.l }}</div>
+              </div>
+              <div>
+                <div class="label-caps !text-[8px]">ROI</div>
+                <div class="display-num mt-0.5"
+                     :class="fourLegStats.roi == null ? 'text-fg-500' : (fourLegStats.roi >= 0 ? 'text-signal-400' : 'text-edge-cold-1')">
+                  {{ fourLegStats.roi != null ? (fourLegStats.roi >= 0 ? '+' : '') + fmtPct(fourLegStats.roi) : '—' }}
+                </div>
+              </div>
+              <div>
+                <div class="label-caps !text-[8px]">P&amp;L</div>
+                <div class="display-num mt-0.5"
+                     :class="fourLegStats.pnl >= 0 ? 'text-signal-400' : 'text-edge-cold-1'">
+                  {{ fmtMoney(fourLegStats.pnl) }}
                 </div>
               </div>
             </div>

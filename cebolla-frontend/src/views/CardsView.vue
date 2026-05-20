@@ -137,16 +137,19 @@ onUnmounted(() => {
 
 // ── Derived: today vs history ─────────────────────────────────
 const todaysCards = computed(() =>
-  cards.value.filter(c => c.card_date === todayIso)
+  cards.value.filter(c => c.card_date === todayIso && c.status === 'pending')
 )
 const todaysPods = computed(() =>
-  pods.value.filter(p => p.pod_date === todayIso)
+  pods.value.filter(p => p.pod_date === todayIso && p.status === 'pending')
 )
+// History: ANY settled card (win/loss/void), regardless of date.
+// Today's settled cards belong in history immediately so users see results
+// as games finalize, not just the next day. Sorted newest first.
 const historicalCards = computed(() =>
-  cards.value.filter(c => c.card_date !== todayIso && c.status !== 'pending')
+  cards.value.filter(c => c.status !== 'pending')
 )
 const historicalPods = computed(() =>
-  pods.value.filter(p => p.pod_date !== todayIso && p.status !== 'pending')
+  pods.value.filter(p => p.status !== 'pending')
 )
 
 // ── Group today's by tier ─────────────────────────────────────
