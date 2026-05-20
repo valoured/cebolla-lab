@@ -287,7 +287,7 @@ jobs:
   # Lineups for tonight's games aren't posted yet at this hour, so
   # compute_projections falls back to each team's last-known lineup
   # (~85% accurate) so projections still produce values.
-    pick-pod:
+  pick-pod:
     if: |
       always() && (
         (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
@@ -323,7 +323,7 @@ jobs:
   # latest odds, scores, settle, etc.) WITHOUT inadvertently re-picking
   # locked daily cards. Manual re-pick requires explicit inputs.job ==
   # 'pick_cards' — a deliberate action, not a side-effect of "refresh all".
-    pick-cards:
+  pick-cards:
     if: |
       always() && (
         (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
