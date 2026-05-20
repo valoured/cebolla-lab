@@ -289,10 +289,8 @@ jobs:
   # (~85% accurate) so projections still produce values.
   pick-pod:
     if: |
-      always() && (
-        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
-        || inputs.job == 'all' || inputs.job == 'pick_pod'
-      )
+      (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
+      || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'pick_pod'))
     runs-on: ubuntu-latest
     needs: compute-projections
     steps:
@@ -306,12 +304,21 @@ jobs:
         run: python scripts/pick_pod.py
 
   # ── PICK CARDS: AI-built daily parlays, runs after PODs ──
+  # 06:45 UTC = 2:45 AM ET — same window as pick-pod. Real reason for the
+  # hour: by 2:45 AM the previous day's late games are Final, the next
+  # day's odds have populated, and we lock our picks before any line
+  # movement.
+  #
+  # Why the explicit event_name check (no always()): GitHub Actions has a
+  # known issue where `always() && (...)` jobs with `needs:` can fire on
+  # cascade-skipped parents at non-matching cron schedules. The bug bit us
+  # tonight — pick_cards fired at 12:27 AM ET via the 5-min pull-scores
+  # cron path. Replacing always() with explicit event_name + schedule
+  # checks blocks the cascade.
   pick-cards:
     if: |
-      always() && (
-        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
-        || inputs.job == 'all' || inputs.job == 'pick_cards'
-      )
+      (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
+      || (github.event_name == 'workflow_dispatch' && (inputs.job == 'all' || inputs.job == 'pick_cards'))
     runs-on: ubuntu-latest
     needs: pick-pod
     steps:

@@ -20,56 +20,59 @@ export function useSlate(dateStr) {
   let channel = null
 
   // Step 1: figure out which date to load
+  //
+  // Real MLB-aware logic — a "slate day" doesn't end at midnight UTC or
+  // midnight ET, it ends when all that day's games are FINAL. West-coast
+  // night games routinely run past midnight ET; the slate should stay
+  // "yesterday" until those games settle, not flip to "today" just because
+  // the clock rolled over.
+  //
+  // Algorithm:
+  //   1. Get today's ET date (DST-safe via Intl.DateTimeFormat)
+  //   2. Compute yesterday's ET date
+  //   3. If yesterday has ANY non-final games → slate = yesterday (still active)
+  //   4. Otherwise → slate = earliest date >= today with non-final games
+  //   5. Final fallback → today (empty state)
   async function pickActiveDate() {
     if (dateStr) return dateStr
 
-    // ET-relative "today" — same convention used by the picker scripts and PODView.
-    // BUG fix: previously used toISOString() which returns UTC. In ET evenings
-    // (after 8 PM ET = midnight UTC) that flipped the date to tomorrow and the
-    // slate auto-advanced before the day was over. Always use the ET calendar.
-    const today = etTodayStr()
+    // ET date today (not UTC — DST-safe)
+    const todayET = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date())
 
-    // Does today's slate still have ANY game that hasn't finalized?
-    // If so, stay on today — even if the only remaining games are mid-inning.
-    // Only advance to tomorrow once today's entire slate is settled.
-    const { data: todayData, error: todayErr } = await supabase
+    // Yesterday's ET date (subtract one day from todayET)
+    const yesterdayDate = new Date(todayET + 'T12:00:00Z')  // noon UTC anchor avoids TZ-edge weirdness
+    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1)
+    const yesterdayET = yesterdayDate.toISOString().slice(0, 10)
+
+    // (1) Check yesterday — if any game is still non-final, slate is yesterday
+    const { data: yData, error: yErr } = await supabase
       .from('games')
-      .select('id, status')
-      .eq('game_date', today)
-      .not('status', 'in', '("Final","Game Over","Completed Early")')
+      .select('game_date, status')
+      .eq('game_date', yesterdayET)
+      .not('status', 'in', '("Final","Game Over","Completed Early","Postponed","Cancelled","Forfeit")')
       .limit(1)
 
-    if (!todayErr && todayData && todayData.length > 0) {
-      return today
+    if (!yErr && yData && yData.length > 0) {
+      return yesterdayET
     }
 
-    // Today's slate is fully settled (or has zero games). Look forward for the
-    // earliest upcoming date with a non-final game.
+    // (2) Today or future — earliest date with at least one non-final game
     const { data, error: e } = await supabase
       .from('games')
       .select('game_date, status')
-      .gt('game_date', today)
-      .not('status', 'in', '("Final","Game Over","Completed Early")')
+      .gte('game_date', todayET)
+      .not('status', 'in', '("Final","Game Over","Completed Early","Postponed","Cancelled","Forfeit")')
       .order('game_date', { ascending: true })
       .limit(1)
 
     if (e || !data || data.length === 0) {
-      // No upcoming games — keep showing today (will render empty/settled state)
-      return today
+      // (3) Final fallback: today (will show empty state if nothing scheduled)
+      return todayET
     }
     return data[0].game_date
-  }
-
-  // ET-relative YYYY-MM-DD (DST-safe via Intl.DateTimeFormat).
-  // 'en-CA' locale happens to format as YYYY-MM-DD which is exactly what
-  // we need to compare against game_date strings in Supabase.
-  function etTodayStr() {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date())
   }
 
   async function load() {
@@ -90,7 +93,6 @@ export function useSlate(dateStr) {
         status,
         temp_f,
         wind_mph,
-        wind_dir_deg,
         wind_label,
         precip_pct,
         hr_factor_overall,
@@ -101,7 +103,7 @@ export function useSlate(dateStr) {
         current_inning,
         inning_state,
         away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
-        home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium, mlb_id, home_plate_bearing ),
+        home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
         away_pitcher:players!games_away_pitcher_id_fkey ( id, name ),
         home_pitcher:players!games_home_pitcher_id_fkey ( id, name )
       `)
