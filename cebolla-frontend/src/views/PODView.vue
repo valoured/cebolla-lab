@@ -29,6 +29,7 @@ import { playerHeadshotUrl, teamLogoUrl, hideOnError } from '../utils/mlbImages.
 import LoadingBrand from '../components/LoadingBrand.vue'
 
 const pods = ref([])           // all PODs, newest first
+const todayGames = ref([])     // today's games keyed for status lookup
 const loading = ref(true)
 const error = ref(null)
 
@@ -44,6 +45,14 @@ function saveStake(v) {
   }
 }
 
+// Helper: ET-relative today (used by load() and derived constants below).
+function todayIsoFn() {
+  const now = new Date()
+  const offsetMs = -4 * 60 * 60 * 1000
+  const et = new Date(now.getTime() + offsetMs)
+  return et.toISOString().slice(0, 10)
+}
+
 // ── Load ───────────────────────────────────────────────────────
 async function load() {
   loading.value = true
@@ -56,6 +65,16 @@ async function load() {
       .limit(200)
     if (dbErr) throw dbErr
     pods.value = data || []
+
+    // Fetch today's game statuses so we can show STARTING SOON / LIVE
+    // on pending PODs based on whether the game has actually started.
+    const today = todayIsoFn()
+    const { data: gamesData } = await supabase
+      .from('games')
+      .select('id, status, game_time')
+      .eq('game_date', today)
+    todayGames.value = gamesData || []
+
     loading.value = false
   } catch (e) {
     console.error('[PODView] load failed:', e)
@@ -67,13 +86,7 @@ async function load() {
 onMounted(load)
 
 // ── Derived ────────────────────────────────────────────────────
-const todayIso = (() => {
-  // ET-relative baseball day — same convention as the picker script.
-  const now = new Date()
-  const offsetMs = -4 * 60 * 60 * 1000
-  const et = new Date(now.getTime() + offsetMs)
-  return et.toISOString().slice(0, 10)
-})()
+const todayIso = todayIsoFn()
 
 const todayPod = computed(() => pods.value.find(p => p.pod_date === todayIso) || null)
 const historicalPods = computed(() => pods.value.filter(p => p.pod_date !== todayIso))
@@ -275,6 +288,56 @@ function statusLabel(status) {
     default:        return (status || '?').toUpperCase()
   }
 }
+
+// Look up the live game.status string for a POD's game.
+// Returns null if the game isn't in our cached set.
+function gameStatusFor(pod) {
+  if (!pod || !pod.game_id) return null
+  const g = todayGames.value.find(x => x.id === pod.game_id)
+  return g ? (g.status || null) : null
+}
+
+// True if the game hasn't started yet — covers Scheduled/Warmup/Pre-Game
+// plus the empty/null default case before pull_scores updates the row.
+function gameIsPregame(gameStatus) {
+  if (!gameStatus) return true
+  const s = String(gameStatus).toLowerCase()
+  // Anything containing "scheduled", "pre-game", "warmup", "delayed start"
+  // (before first pitch) counts as pre-game.
+  if (s.includes('scheduled')) return true
+  if (s.includes('pre-game') || s.includes('pre game') || s.includes('pregame')) return true
+  if (s.includes('warmup')) return true
+  if (s.includes('delayed start')) return true
+  return false
+}
+
+// True if the game is currently live (first pitch thrown, not yet Final).
+function gameIsLive(gameStatus) {
+  if (!gameStatus) return false
+  const s = String(gameStatus).toLowerCase()
+  if (s === 'final' || s.includes('game over') || s.includes('completed early')) return false
+  if (gameIsPregame(gameStatus)) return false
+  // Anything else with a real status (In Progress, Manager Challenge, suspended, etc.)
+  return true
+}
+
+// Smart label for a pending POD based on its game's live status.
+//   game not started → STARTING SOON
+//   game live        → LIVE
+//   game final but pod still pending → PENDING (settle job hasn't run yet)
+function pendingLabelFor(pod) {
+  const gs = gameStatusFor(pod)
+  if (gameIsPregame(gs)) return 'STARTING SOON'
+  if (gameIsLive(gs))    return 'LIVE'
+  return 'PENDING'
+}
+
+// Smart badge class for pending PODs — different visual treatment for LIVE.
+function pendingBadgeClass(pod) {
+  const gs = gameStatusFor(pod)
+  if (gameIsLive(gs)) return 'badge-live'
+  return 'badge-pending'
+}
 function marketLabel(m) {
   if (m === 'hr_0.5') return 'To Hit a HR'
   return m
@@ -320,9 +383,13 @@ function marketLabel(m) {
             <span
               v-if="todayPodForMarket('hr')"
               class="badge"
-              :class="statusBadgeClass(todayPodForMarket('hr').status)"
+              :class="todayPodForMarket('hr').status === 'pending'
+                ? pendingBadgeClass(todayPodForMarket('hr'))
+                : statusBadgeClass(todayPodForMarket('hr').status)"
             >
-              {{ statusLabel(todayPodForMarket('hr').status) }}
+              {{ todayPodForMarket('hr').status === 'pending'
+                ? pendingLabelFor(todayPodForMarket('hr'))
+                : statusLabel(todayPodForMarket('hr').status) }}
             </span>
           </div>
 
@@ -398,14 +465,24 @@ function marketLabel(m) {
           </div>
         </section>
 
-        <!-- HRR POD (placeholder — model not yet shipping picks) -->
+        <!-- HRR POD (live) -->
         <section class="mb-6">
           <div class="flex items-baseline justify-between mb-2 flex-wrap gap-2">
             <div class="flex items-baseline gap-2">
               <h2 class="label-bracket text-signal-400">today · hrr · {{ fmtDate(todayIso) }}</h2>
               <span class="label-caps !text-[8px] text-fg-500">hits + runs + rbis</span>
             </div>
-            <span class="badge badge-pending">COMING SOON</span>
+            <span
+              v-if="todayPodForMarket('hrr')"
+              class="badge"
+              :class="todayPodForMarket('hrr').status === 'pending'
+                ? pendingBadgeClass(todayPodForMarket('hrr'))
+                : statusBadgeClass(todayPodForMarket('hrr').status)"
+            >
+              {{ todayPodForMarket('hrr').status === 'pending'
+                ? pendingLabelFor(todayPodForMarket('hrr'))
+                : statusLabel(todayPodForMarket('hrr').status) }}
+            </span>
           </div>
 
           <div
@@ -722,5 +799,15 @@ function marketLabel(m) {
   color: rgba(255, 200, 80, 0.85);
   background: rgba(255, 200, 80, 0.08);
   border-color: rgba(255, 200, 80, 0.45);
+}
+.badge-live {
+  color: rgba(80, 220, 130, 0.95);
+  background: rgba(80, 220, 130, 0.10);
+  border-color: rgba(80, 220, 130, 0.50);
+  animation: live-pulse 2.2s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.6; }
 }
 </style>
