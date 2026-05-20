@@ -7,7 +7,15 @@ name: Cebolla — Daily Data Pulls
 on:
   schedule:
     # Overnight + morning heavy jobs
-    - cron: '13 6 * * *'   # 06:13 UTC = 2:13 AM ET — schedule, savant, arsenals, pitcher_stats, weather, settle
+    - cron: '13 6 * * *'   # 06:13 UTC = 2:13 AM ET — schedule, savant, arsenals, pitcher_stats, batter_counting_stats, weather, settle
+
+    # ── EARLY POD LOCK ──
+    # 06:45 UTC = 2:45 AM ET — locks today's POD picks before any line movement.
+    # MLB lineups aren't posted yet at this hour; compute_projections falls back
+    # to each team's last-known lineup (~85% accuracy) so projections still run.
+    # Chain: lineups (best-effort) → dk_odds → projections → pick_pod
+    - cron: '45 6 * * *'
+
     - cron: '13 14 * * *'  # 14:13 UTC = 10:13 AM ET — schedule, lineups, weather, settle (East Coast finals)
 
     # Hourly slate window (15 UTC = 11 AM ET through 03 UTC = 11 PM ET)
@@ -147,7 +155,7 @@ jobs:
   pull-lineups:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+       contains(fromJSON('["45 6 * * *", "13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'lineups'
     runs-on: ubuntu-latest
     steps:
@@ -160,11 +168,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_lineups.py
 
-  # ── DK ODDS: hourly during slate window ──
+  # ── DK ODDS: hourly during slate window + 2:45 AM early-lock pull ──
   pull-dk-odds:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
+       contains(fromJSON('["45 6 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'dk_odds'
     runs-on: ubuntu-latest
     steps:
@@ -194,12 +202,14 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_scores.py
 
-  # ── PROJECTIONS: hourly after odds + lineups ──
+  # ── PROJECTIONS: hourly after odds + lineups, plus 2:45 AM early-lock ──
   compute-projections:
     if: |
-      (github.event_name == 'schedule' &&
-       contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
-      || inputs.job == 'all' || inputs.job == 'projections'
+      always() && (
+        (github.event_name == 'schedule' &&
+         contains(fromJSON('["45 6 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+        || inputs.job == 'all' || inputs.job == 'projections'
+      )
     runs-on: ubuntu-latest
     needs: [pull-dk-odds, pull-lineups]
     steps:
@@ -231,13 +241,15 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/settle_bets.py
 
-  # ── PICK POD: Cebolla's Play of the Day, 1x daily morning ──
-  # Must run after compute-projections so today's edges are fresh.
-  # 14:13 UTC (10:13 AM ET) is well before first pitch on East Coast.
+  # ── PICK POD: Cebolla's Play of the Day, 1x daily early-AM ──
+  # 06:45 UTC = 2:45 AM ET — locks picks before any line movement.
+  # Lineups for tonight's games aren't posted yet at this hour, so
+  # compute_projections falls back to each team's last-known lineup
+  # (~85% accurate) so projections still produce values.
   pick-pod:
     if: |
       always() && (
-        (github.event_name == 'schedule' && github.event.schedule == '13 14 * * *')
+        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
         || inputs.job == 'all' || inputs.job == 'pick_pod'
       )
     runs-on: ubuntu-latest

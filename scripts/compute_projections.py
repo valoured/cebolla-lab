@@ -42,7 +42,7 @@ import os
 import sys
 import math
 import logging
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from collections import defaultdict
 
 from supabase import create_client
@@ -347,10 +347,88 @@ def get_todays_games() -> list[dict]:
 
 
 def get_lineups_for_game(game_id: int) -> list[dict]:
+    """
+    Return lineups for a game, falling back to each team's last-known lineup
+    if today's is empty.
+
+    Real-world need: pick_pod runs at 3 AM ET to lock POD picks before any
+    line movement. At 3 AM today's lineups are NEVER posted yet — teams
+    typically post 2-4 hours before first pitch. Without fallback, the
+    projection model fails to produce anything early-morning.
+
+    Fallback strategy: for any team in this game where today's lineup is
+    empty, pull that team's most recent lineup from the last 14 days. MLB
+    lineups are sticky — ~85% of starters repeat day-to-day — so this gives
+    us realistic batting-order spots + player IDs.
+
+    Each fallback row is tagged `is_estimated=True` so downstream code (and
+    any audit query) can tell which projections came from estimated lineups.
+
+    Returns a list of lineup-row dicts.
+    """
+    # First try: today's confirmed/posted lineup
     res = sb.table("lineups").select(
         "id, team_id, batting_order, position, bats, player_id, is_confirmed"
     ).eq("game_id", game_id).execute()
-    return res.data
+    rows = res.data or []
+
+    # Figure out which teams DO have lineups
+    game_res = sb.table("games").select("away_team_id, home_team_id") \
+        .eq("id", game_id).single().execute()
+    game = game_res.data or {}
+    needed_teams = {game.get("away_team_id"), game.get("home_team_id")} - {None}
+    have_teams = {r["team_id"] for r in rows}
+    missing_teams = needed_teams - have_teams
+
+    if not missing_teams:
+        # Tag rows as not estimated for consistency
+        for r in rows:
+            r["is_estimated"] = False
+        return rows
+
+    # Fall back per missing team. Use each team's most recent lineup snapshot.
+    log.info("Lineup fallback for game %d: %d/%d teams missing — using last-known",
+             game_id, len(missing_teams), len(needed_teams))
+
+    fourteen_days_ago = (date.today() - timedelta(days=14)).isoformat()
+    for team_id in missing_teams:
+        # Find the most recent game that team had a lineup for
+        recent_lineup_res = sb.table("lineups") \
+            .select("id, team_id, batting_order, position, bats, player_id, is_confirmed, game_id, "
+                    "games!inner(game_date)") \
+            .eq("team_id", team_id) \
+            .gte("games.game_date", fourteen_days_ago) \
+            .order("games(game_date)", desc=True) \
+            .limit(20) \
+            .execute()
+        recent = recent_lineup_res.data or []
+        if not recent:
+            log.warning("  Team %d has no lineup in last 14 days — skipping", team_id)
+            continue
+
+        # The first row is the most recent game; grab ALL rows for that game
+        most_recent_game_id = recent[0]["game_id"]
+        team_recent = [r for r in recent if r["game_id"] == most_recent_game_id]
+
+        # Reshape to look like a "today's lineup" row for THIS game
+        for r in team_recent:
+            rows.append({
+                "id": None,                  # not a real lineup row in DB for this game
+                "team_id": r["team_id"],
+                "batting_order": r["batting_order"],
+                "position": r["position"],
+                "bats": r["bats"],
+                "player_id": r["player_id"],
+                "is_confirmed": False,       # by definition, estimated
+                "is_estimated": True,
+            })
+
+    # Tag any non-fallback rows
+    for r in rows:
+        if "is_estimated" not in r:
+            r["is_estimated"] = False
+
+    return rows
 
 
 def get_batter_stats_map(batter_ids: list[int]) -> dict[int, dict]:
