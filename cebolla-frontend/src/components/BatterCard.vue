@@ -13,7 +13,17 @@
 import { ref, computed } from 'vue'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import { statColor, fmtStat } from '../utils/percentileColors.js'
+import { useFavorites } from '../composables/useFavorites.js'
+import { useTodaysPOD } from '../composables/useTodaysPOD.js'
+import {
+  formatScore,
+  formatTrend,
+  scoreColorClass,
+} from '../composables/useContactScore.js'
 import InfoTooltip from './InfoTooltip.vue'
+
+const { isPlayerFav } = useFavorites()
+const { isPOD } = useTodaysPOD()
 
 const props = defineProps({
   row:        { type: Object, required: true },
@@ -61,7 +71,11 @@ const projDisplay = computed(() => {
       tone: hrPctTone(proj.projected_prob * 100),
     }
   }
-  const fallback = props.marketMode === 'hits' ? props.row.hits_per_pa : props.row.hr_pct
+  // Fallback to L14 per-PA stat when projection is missing.
+  // HRR doesn't have a clean per-PA fallback (it's a composite), so just show —.
+  let fallback = null
+  if (props.marketMode === 'hits') fallback = props.row.hits_per_pa
+  else if (props.marketMode === 'hr') fallback = props.row.hr_pct
   return {
     value: fallback != null ? fallback.toFixed(1) + '%' : '—',
     tone: hrPctTone(fallback),
@@ -78,29 +92,69 @@ const marketLabel = computed(() => {
 
 <template>
   <div class="border-b border-bg-200/40 last:border-0">
-    <!-- Primary row: tap-to-expand -->
-    <button
-      type="button"
+    <!-- Primary row: tap-to-expand.
+         Uses a div with role="button" instead of a real <button> so that
+         the nested router-link tap targets (headshot, name) are valid HTML —
+         <a> can't nest inside <button>. Keyboard a11y preserved with
+         tabindex + keydown handler. -->
+    <div
+      role="button"
+      tabindex="0"
       @click="toggle"
-      class="w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-bg-100/40 transition-colors"
+      @keydown.enter.prevent="toggle"
+      @keydown.space.prevent="toggle"
+      class="w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-bg-100/40 transition-colors cursor-pointer focus:outline-none focus-visible:bg-bg-100/40"
+      :aria-expanded="expanded"
+      :aria-label="`${row.name} — tap to ${expanded ? 'collapse' : 'expand'}`"
     >
       <!-- Order # -->
       <span class="display-num text-xs text-fg-500 shrink-0 w-4">{{ row.batting_order }}</span>
 
-      <!-- Headshot -->
-      <img
-        v-if="row.mlbam_id"
-        :src="playerHeadshotUrl(row.mlbam_id)"
-        :alt="row.name"
-        class="player-headshot"
-        loading="lazy"
-        @error="hideOnError"
-      />
+      <!-- Headshot is a separate tap target → player profile.
+           @click.stop so the surrounding button's toggle() doesn't fire. -->
+      <router-link
+        :to="{ name: 'player', params: { playerId: row.player_id } }"
+        class="player-link"
+        :aria-label="`Open ${row.name} profile`"
+        @click.stop
+      >
+        <img
+          v-if="row.mlbam_id"
+          :src="playerHeadshotUrl(row.mlbam_id)"
+          :alt="row.name"
+          class="player-headshot"
+          loading="lazy"
+          @error="hideOnError"
+        />
+        <span v-else class="player-headshot player-headshot--fallback">
+          <span class="font-mono text-[10px] text-fg-500">→</span>
+        </span>
+      </router-link>
 
       <!-- Name + bats -->
       <div class="flex-1 min-w-0">
         <div class="flex items-baseline gap-1.5">
-          <span class="text-fg-700 text-sm truncate">{{ row.name }}</span>
+          <!-- Name is also a tap target → player profile.
+               Inline so the card's toggle still fires for the rest of the row. -->
+          <router-link
+            :to="{ name: 'player', params: { playerId: row.player_id } }"
+            class="player-name-link truncate"
+            @click.stop
+          >
+            {{ row.name }}
+          </router-link>
+          <span
+            v-if="isPOD(row.player_id)"
+            class="display-num text-[8px] font-bold px-1 py-0.5 rounded-sm bg-amber-400/20 text-amber-300 border border-amber-400/40 leading-none shrink-0"
+            title="Today's Play of the Day"
+            aria-label="Today's Play of the Day"
+          >★ POD</span>
+          <span
+            v-if="isPlayerFav(row.player_id)"
+            class="fav-row-marker shrink-0"
+            title="Favorite player"
+            aria-label="Favorite player"
+          >★</span>
           <span class="font-mono text-[9px] text-fg-500 shrink-0">{{ row.bats || '?' }}</span>
         </div>
         <div class="flex items-baseline gap-2 mt-0.5">
@@ -136,6 +190,30 @@ const marketLabel = computed(() => {
         </template>
       </div>
 
+      <!-- Contact score + trend (composite contact signal) -->
+      <div class="shrink-0 text-right">
+        <template v-if="row.contact_score != null">
+          <div
+            class="display-num text-[11px] font-medium inline-flex items-baseline gap-0.5 justify-end"
+            :title="`${formatScore(row.contact_score)}/100 contact score (L14 percentile vs all qualified MLB batters)`"
+          >
+            <span :class="scoreColorClass(row.contact_score)">{{ formatScore(row.contact_score) }}</span>
+            <span
+              v-if="formatTrend(row.contact_trend).show"
+              class="!text-[8px] font-mono"
+              :class="formatTrend(row.contact_trend).direction === 'up' ? 'text-signal-400' : 'text-edge-cold-1'"
+            >
+              {{ formatTrend(row.contact_trend).direction === 'up' ? '▲' : '▼' }}{{ formatTrend(row.contact_trend).magnitude }}
+            </span>
+          </div>
+          <div class="label-caps !text-[7px] mt-0.5">contact</div>
+        </template>
+        <template v-else>
+          <div class="display-num text-xs text-fg-400">—</div>
+          <div class="label-caps !text-[7px] mt-0.5 opacity-60">contact</div>
+        </template>
+      </div>
+
       <!-- Proj% (secondary key signal) -->
       <div class="shrink-0 text-right w-12">
         <div class="display-num text-sm font-medium" :class="projDisplay.tone">
@@ -149,7 +227,7 @@ const marketLabel = computed(() => {
         class="shrink-0 text-fg-500 text-xs transition-transform duration-200"
         :class="{ 'rotate-180': expanded }"
       >▾</span>
-    </button>
+    </div>
 
     <!-- Expanded detail (4 Statcast cells + BvP + LOG) -->
     <div v-if="expanded" class="px-3 pb-3 pt-1 bg-bg-50/60 border-t border-bg-200/40">
@@ -229,6 +307,62 @@ const marketLabel = computed(() => {
 </template>
 
 <style scoped>
+/* Tap target wrapping the headshot — when tapped, navigates to the
+   player profile. @click.stop on the link prevents the outer button's
+   expand-toggle from firing on the same tap. */
+.player-link {
+  display: inline-flex;
+  flex-shrink: 0;
+  border-radius: 50%;
+  outline: none;
+  transition: transform 120ms ease;
+}
+.player-link:active {
+  transform: scale(0.94);
+}
+.player-link:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255, 42, 42, 0.55);
+}
+.player-link:hover .player-headshot {
+  filter: grayscale(0) brightness(1.10);
+  border-color: rgba(255, 42, 42, 0.40);
+}
+
+/* Fallback "headshot" when no mlbam_id — keeps the tap target visible */
+.player-headshot--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 42, 42, 0.05);
+  border: 1px dashed rgba(255, 42, 42, 0.30);
+}
+
+/* Player name is also a tap target → profile. Visual hint on hover/active
+   so users know it's clickable, but it stays styled like the surrounding text. */
+.player-name-link {
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  font-size: 14px;
+  line-height: 1.2;
+  transition: color 120ms ease;
+  min-width: 0;
+}
+.player-name-link:hover,
+.player-name-link:active {
+  color: rgba(255, 42, 42, 0.95);
+  text-decoration: underline;
+}
+
+/* Inline star for favorited players. Same treatment as BatterTable. */
+.fav-row-marker {
+  font-size: 10px;
+  line-height: 1;
+  color: #FFD23F;
+  filter: drop-shadow(0 0 2px rgba(255, 210, 63, 0.5));
+  user-select: none;
+  margin-left: -2px;
+}
+
 .player-headshot {
   width: 28px;
   height: 28px;
