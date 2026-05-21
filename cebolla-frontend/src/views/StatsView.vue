@@ -41,7 +41,8 @@ async function load() {
         .from('pods')
         .select('id, pod_date, market_class, market, projected_prob, no_vig_prob, ' +
                 'edge, american_odds, status, payout, stake, contact_score, combined_score, ' +
-                'player_name, team_abbrev, opponent_abbrev, settled_at')
+                'player_name, team_abbrev, opponent_abbrev, settled_at, ' +
+                'closing_odds, closing_implied, closing_no_vig, clv_raw, clv_no_vig')
         .order('pod_date', { ascending: true })
         .limit(2000),
       supabase
@@ -223,7 +224,79 @@ const calibration = computed(() => {
   return out
 })
 
-// ── Per-odds-tier breakdown ───────────────────────────────────
+// ── Closing Line Value (CLV) ──────────────────────────────────
+// CLV measures whether we locked at a better price than where the market
+// ultimately settled. Positive CLV = we beat the close = strong signal of
+// model edge. Stabilizes much faster than W/L (50-100 picks vs months).
+//
+// We use clv_no_vig (de-vigged) as the canonical metric. clv_raw is also
+// available but less reliable for one-sided markets (HR Anytime).
+//
+// Only includes pods that have captured closing odds (filtered on clv_no_vig
+// being non-null). Card-leg CLV is computed but not yet displayed — a future
+// iteration can add per-tier card CLV.
+const podsWithCLV = computed(() =>
+  pods.value.filter(p => p.clv_no_vig != null)
+)
+
+function mean(arr) {
+  if (!arr.length) return null
+  return arr.reduce((s, v) => s + v, 0) / arr.length
+}
+
+const clvSummary = computed(() => {
+  const all = podsWithCLV.value.map(p => Number(p.clv_no_vig))
+  const total = all.length
+  if (!total) return { total: 0, mean: null, positive: 0, pctPositive: null, hr: null, hrr: null }
+
+  const positive = all.filter(v => v > 0).length
+  const hr = podsWithCLV.value
+    .filter(p => (p.market_class || 'hr') === 'hr')
+    .map(p => Number(p.clv_no_vig))
+  const hrr = podsWithCLV.value
+    .filter(p => (p.market_class || 'hr') === 'hrr')
+    .map(p => Number(p.clv_no_vig))
+
+  return {
+    total,
+    mean: mean(all),
+    positive,
+    pctPositive: (positive / total) * 100,
+    hr: hr.length ? { count: hr.length, mean: mean(hr) } : null,
+    hrr: hrr.length ? { count: hrr.length, mean: mean(hrr) } : null,
+  }
+})
+
+// Histogram bins in percentage-point terms.
+// CLV is typically in [-0.10, +0.10] range (i.e., ±10 percentage points of
+// implied probability). Bin in 1pp steps to match human intuition.
+const CLV_BINS = [
+  { lo: -0.10, hi: -0.05, label: '<-5pp'  },
+  { lo: -0.05, hi: -0.03, label: '-5/-3'  },
+  { lo: -0.03, hi: -0.01, label: '-3/-1'  },
+  { lo: -0.01, hi:  0.01, label: '-1/+1'  },
+  { lo:  0.01, hi:  0.03, label: '+1/+3'  },
+  { lo:  0.03, hi:  0.05, label: '+3/+5'  },
+  { lo:  0.05, hi:  0.10, label: '+5/+10' },
+  { lo:  0.10, hi:  1.00, label: '>+10pp' },
+]
+const clvHistogram = computed(() => {
+  const data = podsWithCLV.value
+  return CLV_BINS.map(b => {
+    const inBin = data.filter(p => {
+      const v = Number(p.clv_no_vig)
+      return v >= b.lo && v < b.hi
+    })
+    return { ...b, count: inBin.length }
+  })
+})
+
+// Convenience: max bar height for histogram rendering
+const clvHistogramMax = computed(() =>
+  Math.max(1, ...clvHistogram.value.map(b => b.count))
+)
+
+
 const ODDS_TIERS = [
   { key: 'fav',  label: 'Favorite (sub +150)',    test: o => o < 150 },
   { key: 'mid',  label: 'Mid (+150 to +299)',     test: o => o >= 150 && o < 300 },
@@ -600,6 +673,92 @@ function barY(pnl) {
                 <span v-else>—</span>
               </div>
             </template>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── CLOSING LINE VALUE ──────────────────────────────── -->
+      <section v-if="clvSummary.total > 0" class="px-4 sm:px-6 mb-8">
+        <div class="flex items-baseline gap-3 mb-1">
+          <h2 class="display-text text-xl text-fg-800">Closing Line Value</h2>
+          <span class="label-bracket !text-[8px] text-fg-500">M.04.b2</span>
+        </div>
+        <p class="text-fg-500 text-xs max-w-2xl mb-3">
+          The sharpest short-term signal of model quality &mdash; long before settlement variance
+          smooths out. Positive CLV means we locked at a better price than where the market ultimately
+          settled. Consistently positive across many picks = the model is finding real mispricing
+          that the rest of the market subsequently agrees with.
+        </p>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <!-- Summary stats -->
+          <div class="bg-bg-50 border border-bg-200 p-4">
+            <div class="label-caps mb-3">Overall</div>
+
+            <div class="mb-3">
+              <div class="label-caps !text-[9px] opacity-70 mb-0.5">Mean CLV (no-vig)</div>
+              <div class="display-num text-2xl"
+                   :class="clvSummary.mean > 0 ? 'text-signal-300' : clvSummary.mean < 0 ? 'text-edge-cold-1' : 'text-fg-600'">
+                {{ clvSummary.mean !== null
+                   ? (clvSummary.mean > 0 ? '+' : '') + (clvSummary.mean * 100).toFixed(2) + 'pp'
+                   : '—' }}
+              </div>
+              <div class="text-[10px] text-fg-400 mt-0.5">
+                across {{ clvSummary.total }} pod{{ clvSummary.total === 1 ? '' : 's' }} with captured closing odds
+              </div>
+            </div>
+
+            <div class="mb-3 pb-3 border-b border-bg-200">
+              <div class="label-caps !text-[9px] opacity-70 mb-0.5">% Positive</div>
+              <div class="display-num text-xl"
+                   :class="clvSummary.pctPositive >= 55 ? 'text-signal-300' : clvSummary.pctPositive >= 45 ? 'text-fg-600' : 'text-edge-cold-1'">
+                {{ clvSummary.pctPositive !== null ? clvSummary.pctPositive.toFixed(0) + '%' : '—' }}
+              </div>
+              <div class="text-[10px] text-fg-400 mt-0.5">
+                {{ clvSummary.positive }} of {{ clvSummary.total }} beat their close
+              </div>
+            </div>
+
+            <div v-if="clvSummary.hr || clvSummary.hrr" class="space-y-2">
+              <div v-if="clvSummary.hr" class="flex items-baseline justify-between">
+                <span class="label-caps !text-[9px]">HR ({{ clvSummary.hr.count }})</span>
+                <span class="display-num text-sm"
+                      :class="clvSummary.hr.mean > 0 ? 'text-signal-300' : 'text-edge-cold-1'">
+                  {{ (clvSummary.hr.mean > 0 ? '+' : '') + (clvSummary.hr.mean * 100).toFixed(2) }}pp
+                </span>
+              </div>
+              <div v-if="clvSummary.hrr" class="flex items-baseline justify-between">
+                <span class="label-caps !text-[9px]">HRR ({{ clvSummary.hrr.count }})</span>
+                <span class="display-num text-sm"
+                      :class="clvSummary.hrr.mean > 0 ? 'text-signal-300' : 'text-edge-cold-1'">
+                  {{ (clvSummary.hrr.mean > 0 ? '+' : '') + (clvSummary.hrr.mean * 100).toFixed(2) }}pp
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Histogram -->
+          <div class="bg-bg-50 border border-bg-200 p-4 lg:col-span-2">
+            <div class="label-caps mb-3">Distribution</div>
+            <div class="space-y-1.5">
+              <div v-for="bin in clvHistogram" :key="bin.label" class="grid grid-cols-[60px_1fr_30px] items-center gap-2">
+                <span class="display-num text-[10px] text-right pr-1"
+                      :class="bin.lo >= 0.01 ? 'text-signal-300' : bin.hi <= -0.01 ? 'text-edge-cold-1' : 'text-fg-500'">
+                  {{ bin.label }}
+                </span>
+                <div class="h-4 bg-bg-100 rounded-sm overflow-hidden">
+                  <div class="h-full transition-all"
+                       :class="bin.lo >= 0.01 ? 'bg-signal-400/70' : bin.hi <= -0.01 ? 'bg-edge-cold-2/70' : 'bg-fg-400/40'"
+                       :style="{ width: ((bin.count / clvHistogramMax) * 100) + '%' }">
+                  </div>
+                </div>
+                <span class="display-num text-[10px] text-fg-500 text-right">{{ bin.count }}</span>
+              </div>
+            </div>
+            <div class="mt-3 pt-3 border-t border-bg-200 text-[10px] text-fg-400 leading-relaxed">
+              CLV = closing implied probability &minus; lock-time implied probability. Bins in percentage points.
+              Numbers right of zero mean we found edges the market later agreed with.
+            </div>
           </div>
         </div>
       </section>

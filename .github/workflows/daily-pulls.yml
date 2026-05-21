@@ -62,7 +62,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, schedule, rosters, savant, arsenals, pitcher_stats, batter_counting_stats, batter_game_log, batter_trends, weather, dk_odds, lineups, bvp, scores, projections, pick_pod, pick_cards, settle_bets, settle_pods, settle_cards]
+        options: [all, schedule, rosters, savant, arsenals, pitcher_stats, batter_counting_stats, batter_game_log, batter_trends, weather, dk_odds, lineups, bvp, scores, projections, pick_pod, pick_cards, capture_closing_lines, settle_bets, settle_pods, settle_cards]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -439,3 +439,29 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/settle_cards.py
+  # ── CAPTURE CLOSING LINES: for pending PODs and card_legs, find the latest
+  # odds_snapshot before first pitch and copy it as the "closing" line.
+  # Also computes CLV (Closing Line Value) inline. Run hourly during the
+  # slate window — each run captures any game now within the closing window
+  # that hasn't been captured yet. Idempotent.
+  #
+  # The cron list piggybacks on existing hourly :17 crons so we don't add
+  # extra scheduler load. Capturing twice for the same game is fine
+  # (script checks closing_captured_at and skips if already set).
+  capture-closing-lines:
+    if: |
+      always() && (
+        (github.event_name == 'schedule' &&
+         contains(fromJSON('["17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
+        || inputs.job == 'all' || inputs.job == 'capture_closing_lines'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/capture_closing_lines.py
