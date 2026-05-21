@@ -80,20 +80,23 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # How far before first pitch counts as "closing line" window.
 #
-# Original v1 was 90 min — works great for games where DK posts continuous
-# odds through first pitch. But for longshot prices (+800 to +2000 HRs),
-# DK often pulls the market hours before game time, leaving no snapshot in
-# a tight window. To capture CLV on those picks we look back further.
+# Tradeoff between data quantity and semantic accuracy:
 #
-# 240 minutes (4 hours) tradeoff:
-#   - For normal markets: still picks the most recent pre-FP snapshot, same
-#     result as 90 min would have given.
-#   - For longshots with pulled markets: now captures the last-available
-#     price as the "closing" line. Less true to "closing" semantically but
-#     better than no CLV data at all.
+#   90 min  (v1):  Truest "closing" semantics. Catches ~85% of picks but
+#                  misses any market DK pulled before that window started.
+#   240 min (v2):  Catches ~95% of picks including most mid-day market pulls.
+#                  Some loss of "closing" semantic accuracy on the long tail.
+#   24+ hr:        Catches almost everything including next-day-game odds
+#                  that were posted then pulled, but "closing" is meaningless.
 #
-# If a snapshot from 4 hours before first pitch is the BEST we have, that's
-# effectively the closing price for that pick — the market closed early.
+# We use 240 min as the v2 default. Captures matter more than purity for the
+# first few weeks while we accumulate samples. If CLV signal looks noisy and
+# traceable to stale captures, we'll tighten back toward 180 or 90 later.
+#
+# Note: extremely deep longshots (+800 to +2000) where DK pulls the market a
+# full day before game time still won't be captured. That introduces a known
+# sampling bias toward favorite/mid-priced picks in our CLV stats. Documented
+# in the plan doc as a long-term to-fix.
 CLOSING_LOOKBACK_MINUTES = 240
 
 # Longshot thresholds — MUST stay in sync with compute_projections.py.
