@@ -35,6 +35,12 @@ on:
     # Hourly slate window (15 UTC = 11 AM ET through 03 UTC = 11 PM ET)
     # These trigger the FULL slate update chain (odds, lineups, projections, settle).
     # pull-scores ALSO matches these (covered separately via dense schedule above).
+    # Morning dk_odds-only pulls (added 2026-05-21) — fill the 3:13 AM → 11:17 AM
+    # gap so the site shows fresh odds for users waking up to bet.
+    - cron: '17 11 * * *'  # 7:17 AM ET — morning dk_odds
+    - cron: '17 12 * * *'  # 8:17 AM ET — morning dk_odds
+    - cron: '17 13 * * *'  # 9:17 AM ET — morning dk_odds
+    - cron: '17 14 * * *'  # 10:17 AM ET — morning dk_odds
     - cron: '17 15 * * *'  # 11:17 AM ET
     - cron: '17 16 * * *'  # 12:17 PM ET
     - cron: '17 17 * * *'  # 1:17 PM ET
@@ -260,11 +266,14 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_bvp.py
 
-  # ── DK ODDS: hourly during slate window + 3:13 AM unified data refresh ──
+  # ── DK ODDS: 3:13 AM unified data refresh + 7 AM → 11 PM hourly (every :17) ──
+  # Pulls 17x daily. 3:13 AM feeds the pick-lock chain. Morning 7-10 AM pulls
+  # added 2026-05-21 to fill the gap when users wake up. Afternoon/evening
+  # hourly keeps lines fresh as books move them through the slate.
   pull-dk-odds:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["13 7 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
+       contains(fromJSON('["13 7 * * *", "17 11 * * *", "17 12 * * *", "17 13 * * *", "17 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'dk_odds'
     runs-on: ubuntu-latest
     steps:
