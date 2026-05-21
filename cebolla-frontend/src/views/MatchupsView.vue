@@ -315,6 +315,19 @@ const matchupGames = computed(() => {
     const awayPitcher = players.value[g.away_pitcher_id]
     const homePitcher = players.value[g.home_pitcher_id]
 
+    // Arsenal availability flags. A pitcher has no usable arsenal data when
+    // pitcher_arsenals returned zero rows (rookies, recent call-ups, pitchers
+    // returning from IL who haven't accumulated enough Statcast pitches yet).
+    // Without this data, danger-pitch computation can't run for any batter
+    // facing them. We surface that explicitly in the UI instead of showing a
+    // wall of dashes with no explanation.
+    const awayHasArsenal = !!(arsenals.value[g.away_pitcher_id]
+      && ((arsenals.value[g.away_pitcher_id].L || []).length
+        || (arsenals.value[g.away_pitcher_id].R || []).length))
+    const homeHasArsenal = !!(arsenals.value[g.home_pitcher_id]
+      && ((arsenals.value[g.home_pitcher_id].L || []).length
+        || (arsenals.value[g.home_pitcher_id].R || []).length))
+
     return {
       id: gameId,
       mlb_game_pk: g.mlb_game_pk,
@@ -335,6 +348,8 @@ const matchupGames = computed(() => {
       home_pitcher: homePitcher,
       away_pitcher_top: topPitches(g.away_pitcher_id),
       home_pitcher_top: topPitches(g.home_pitcher_id),
+      away_pitcher_has_arsenal: awayHasArsenal,
+      home_pitcher_has_arsenal: homeHasArsenal,
 
       home_lineup: buildBatterRows(homeLineupRows, g.away_pitcher_id),
       away_lineup: buildBatterRows(awayLineupRows, g.home_pitcher_id),
@@ -552,10 +567,10 @@ onMounted(loadAll)
             <div class="mt-3 mb-1.5 flex items-center gap-1.5">
               <img v-if="teamLogo(game.home_team)" :src="teamLogo(game.home_team)" :alt="game.home_team?.abbrev" class="w-3.5 h-3.5 object-contain shrink-0 opacity-80" loading="lazy" @error="hideOnError" />
               <span class="label-caps">{{ game.home_team?.abbrev }} batting</span>
-              <span v-if="!game.home_confirmed && game.home_lineup.length" class="text-[9px] font-mono italic px-1.5 py-0 rounded-sm bg-edge-hot-1/12 text-edge-hot-1 ml-auto" title="Lineup is predicted from recent games &mdash; not yet officially posted by MLB">predicted</span>
+              <span v-if="!game.home_confirmed && game.home_lineup.length" class="text-[9px] font-mono uppercase tracking-wide font-medium px-2 py-0.5 rounded-sm bg-edge-hot-1/20 text-edge-hot-1 border border-edge-hot-1/30 ml-auto" title="Lineup is predicted from recent games &mdash; not yet officially posted by MLB">predicted</span>
             </div>
 
-            <div v-if="game.home_lineup.length">
+            <div v-if="game.home_lineup.length && game.away_pitcher_has_arsenal">
               <div class="grid grid-cols-[14px_24px_1fr_auto_60px] gap-2 items-center pb-1 border-b border-bg-200 mb-1">
                 <span></span>
                 <span></span>
@@ -574,6 +589,17 @@ onMounted(loadAll)
                 <span v-else class="text-fg-400 text-[10px] text-right">&mdash;</span>
                 <span v-if="b.danger" class="display-num text-[10px] px-1.5 py-0.5 rounded-sm text-right whitespace-nowrap" :class="TIER_CLASS[colorTier(b.danger.ratio_to_overall, b.danger.small_sample)]" :title="`${TIER_LABEL[colorTier(b.danger.ratio_to_overall, b.danger.small_sample)]}\nSample: ${b.danger.batter_pa_vs_pitch} PA vs ${b.danger.pitch_type} this season\nBatter season HR/PA: ${b.season_hr_pct?.toFixed(1)}%`">{{ b.danger.batter_hr_pct.toFixed(1) }}%</span>
                 <span v-else class="text-fg-400 text-[10px] text-right">&mdash;</span>
+              </div>
+            </div>
+            <div v-else-if="game.home_lineup.length && !game.away_pitcher_has_arsenal" class="rounded-sm border border-bg-200 bg-bg-100/50 p-3 mt-1">
+              <div class="flex items-start gap-2 mb-2">
+                <span class="text-edge-hot-1 text-[12px] leading-none mt-0.5">&#9888;</span>
+                <div class="text-[11px] text-fg-500 leading-snug">
+                  <span class="text-fg-700">Arsenal data unavailable</span> for <span class="text-fg-600">{{ game.away_pitcher?.name || 'this pitcher' }}</span>. Matchup math needs Statcast pitch tracking (typically ~50+ pitches this season). Likely a recent call-up or returning from injury.
+                </div>
+              </div>
+              <div class="text-[10px] text-fg-400 mt-2 pt-2 border-t border-bg-200">
+                {{ game.home_team?.abbrev }} batting order: <span class="display-num text-fg-500">{{ game.home_lineup.map(b => b.name).join(' &middot; ') }}</span>
               </div>
             </div>
             <p v-else class="text-fg-500 text-[11px] italic py-2">Lineup not yet posted.</p>
@@ -602,10 +628,10 @@ onMounted(loadAll)
             <div class="mt-3 mb-1.5 flex items-center gap-1.5">
               <img v-if="teamLogo(game.away_team)" :src="teamLogo(game.away_team)" :alt="game.away_team?.abbrev" class="w-3.5 h-3.5 object-contain shrink-0 opacity-80" loading="lazy" @error="hideOnError" />
               <span class="label-caps">{{ game.away_team?.abbrev }} batting</span>
-              <span v-if="!game.away_confirmed && game.away_lineup.length" class="text-[9px] font-mono italic px-1.5 py-0 rounded-sm bg-edge-hot-1/12 text-edge-hot-1 ml-auto" title="Lineup is predicted from recent games &mdash; not yet officially posted by MLB">predicted</span>
+              <span v-if="!game.away_confirmed && game.away_lineup.length" class="text-[9px] font-mono uppercase tracking-wide font-medium px-2 py-0.5 rounded-sm bg-edge-hot-1/20 text-edge-hot-1 border border-edge-hot-1/30 ml-auto" title="Lineup is predicted from recent games &mdash; not yet officially posted by MLB">predicted</span>
             </div>
 
-            <div v-if="game.away_lineup.length">
+            <div v-if="game.away_lineup.length && game.home_pitcher_has_arsenal">
               <div class="grid grid-cols-[14px_24px_1fr_auto_60px] gap-2 items-center pb-1 border-b border-bg-200 mb-1">
                 <span></span>
                 <span></span>
@@ -624,6 +650,17 @@ onMounted(loadAll)
                 <span v-else class="text-fg-400 text-[10px] text-right">&mdash;</span>
                 <span v-if="b.danger" class="display-num text-[10px] px-1.5 py-0.5 rounded-sm text-right whitespace-nowrap" :class="TIER_CLASS[colorTier(b.danger.ratio_to_overall, b.danger.small_sample)]" :title="`${TIER_LABEL[colorTier(b.danger.ratio_to_overall, b.danger.small_sample)]}\nSample: ${b.danger.batter_pa_vs_pitch} PA vs ${b.danger.pitch_type} this season\nBatter season HR/PA: ${b.season_hr_pct?.toFixed(1)}%`">{{ b.danger.batter_hr_pct.toFixed(1) }}%</span>
                 <span v-else class="text-fg-400 text-[10px] text-right">&mdash;</span>
+              </div>
+            </div>
+            <div v-else-if="game.away_lineup.length && !game.home_pitcher_has_arsenal" class="rounded-sm border border-bg-200 bg-bg-100/50 p-3 mt-1">
+              <div class="flex items-start gap-2 mb-2">
+                <span class="text-edge-hot-1 text-[12px] leading-none mt-0.5">&#9888;</span>
+                <div class="text-[11px] text-fg-500 leading-snug">
+                  <span class="text-fg-700">Arsenal data unavailable</span> for <span class="text-fg-600">{{ game.home_pitcher?.name || 'this pitcher' }}</span>. Matchup math needs Statcast pitch tracking (typically ~50+ pitches this season). Likely a recent call-up or returning from injury.
+                </div>
+              </div>
+              <div class="text-[10px] text-fg-400 mt-2 pt-2 border-t border-bg-200">
+                {{ game.away_team?.abbrev }} batting order: <span class="display-num text-fg-500">{{ game.away_lineup.map(b => b.name).join(' &middot; ') }}</span>
               </div>
             </div>
             <p v-else class="text-fg-500 text-[11px] italic py-2">Lineup not yet posted.</p>

@@ -160,6 +160,25 @@ onUnmounted(() => {
 // ── Derived ────────────────────────────────────────────────────
 const todayIso = todayIsoFn()
 
+// Hour of the day in ET (0-23). Used to switch the empty-state copy:
+// before the morning lock window we show "check back after morning lock",
+// after it we show "no batter cleared thresholds today" since pick_pod
+// has already run and either failed to find candidates or skipped due to
+// insufficient projections.
+//
+// We compute it once at script-setup time which is fine — users coming back
+// later in the day will see the right message because Cebolla's a SPA that
+// re-mounts on every navigation, and PODView reloads on every visit.
+function currentETHour() {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    hour12: false,
+  })
+  return parseInt(fmt.format(new Date()), 10)
+}
+const pastMorningLock = currentETHour() >= 11   // 11 AM ET — pick_pod fires by ~3:43 AM, but allow buffer
+
 const todayPod = computed(() => pods.value.find(p => p.pod_date === todayIso) || null)
 const historicalPods = computed(() => pods.value.filter(p => p.pod_date !== todayIso))
 const settledPods = computed(() => pods.value.filter(p => ['win', 'loss', 'push'].includes(p.status)))
@@ -562,10 +581,21 @@ function marketLabel(m) {
 
           <!-- No HR POD yet -->
           <div v-else class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
-            <div class="display-text text-lg text-fg-500 italic mb-1">No projection locked yet</div>
-            <p class="text-fg-500 text-xs">
-              Cebolla locks the day's HR POD by ~10:30 AM ET. Check back after morning projections run.
-            </p>
+            <template v-if="!pastMorningLock">
+              <div class="display-text text-lg text-fg-500 italic mb-1">No projection locked yet</div>
+              <p class="text-fg-500 text-xs">
+                Cebolla locks the day's HR POD by ~10:30 AM ET. Check back after morning projections run.
+              </p>
+            </template>
+            <template v-else>
+              <div class="display-text text-lg text-fg-500 italic mb-1">No HR POD today</div>
+              <p class="text-fg-500 text-xs max-w-md mx-auto">
+                The model didn't find a batter who cleared today's confidence thresholds &mdash; combined projected probability + edge floors weren't met by any candidate on this slate.
+              </p>
+              <p class="text-fg-400 text-[10px] mt-2 italic">
+                Tomorrow's slate offers fresh candidates. The HRR POD is still live below.
+              </p>
+            </template>
           </div>
         </section>
 
@@ -657,19 +687,23 @@ function marketLabel(m) {
             </div>
           </div>
 
-          <!-- No HRR POD — placeholder while model is in development -->
+          <!-- No HRR POD locked today -->
           <div v-else class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
-            <div class="display-text text-lg text-fg-500 italic mb-1">
-              H + R + RBI model in development
-            </div>
-            <p class="text-fg-500 text-xs max-w-md mx-auto">
-              The HRR projection model (Poisson over expected PAs) is being built and
-              calibrated. Once it ships, a second POD will lock here daily — same
-              combined edge × contact logic as the HR pick, applied to the H+R+RBI market.
-            </p>
-            <p class="text-fg-400 text-[10px] mt-3">
-              See <router-link :to="{ name: 'methodology', hash: '#hrr-pod' }" class="text-signal-400 hover:underline">methodology · M.03</router-link> for the plan.
-            </p>
+            <template v-if="!pastMorningLock">
+              <div class="display-text text-lg text-fg-500 italic mb-1">No projection locked yet</div>
+              <p class="text-fg-500 text-xs">
+                Cebolla locks the day's HRR POD by ~10:30 AM ET. Check back after morning projections run.
+              </p>
+            </template>
+            <template v-else>
+              <div class="display-text text-lg text-fg-500 italic mb-1">No HRR POD today</div>
+              <p class="text-fg-500 text-xs max-w-md mx-auto">
+                The model didn't find a batter who cleared today's confidence thresholds across the H+R+RBI lines. Edge floor and per-line projection floors weren't met by any candidate.
+              </p>
+              <p class="text-fg-400 text-[10px] mt-2 italic">
+                Tomorrow's slate offers fresh candidates.
+              </p>
+            </template>
           </div>
         </section>
 
