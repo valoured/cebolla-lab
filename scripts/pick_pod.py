@@ -72,7 +72,12 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ─── Market definitions ───────────────────────────────────────────────────────
 
 HR_MARKET = "hr_anytime"
-HR_MIN_PROJECTED_PROB = 0.20
+# Lowered from 0.20 → 0.15 on 2026-05-21. 20% only catches elite sluggers
+# in elite matchups (Judge, Ohtani, Schwarber, etc.). 15% captures the
+# above-average + good-matchup tier and produces consistent picks across
+# more slates. Real-world slate distributions show 0–3 candidates clear 20%
+# but typically 5–10 clear 15%.
+HR_MIN_PROJECTED_PROB = 0.15
 
 # Minimum edge to qualify as a POD candidate. Below this, even great contact
 # wouldn't make this a safe-to-play recommendation. Without this floor, a
