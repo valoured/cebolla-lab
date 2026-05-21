@@ -6,15 +6,19 @@ name: Cebolla — Daily Data Pulls
 
 on:
   schedule:
-    # Overnight + morning heavy jobs
-    - cron: '13 6 * * *'   # 06:13 UTC = 2:13 AM ET — schedule, savant, arsenals, pitcher_stats, batter_counting_stats, weather, settle
+    # ── 3:13 AM ET — UNIFIED DATA REFRESH ──
+    # All data the picks need lands in this window: schedule, rosters, savant,
+    # batter_trends, lineups, bvp, dk_odds, projections. Heaviest job is
+    # compute-projections (~5-10 min). The 3:13 trigger gives the entire chain
+    # ~30 minutes to complete before pick-pod fires at 3:43 AM.
+    - cron: '13 7 * * *'   # 07:13 UTC = 3:13 AM ET — full data refresh
 
-    # ── EARLY POD LOCK ──
-    # 06:45 UTC = 2:45 AM ET — locks today's POD picks before any line movement.
-    # MLB lineups aren't posted yet at this hour; compute_projections falls back
-    # to each team's last-known lineup (~85% accuracy) so projections still run.
-    # Chain: lineups (best-effort) → dk_odds → projections → pick_pod
-    - cron: '45 6 * * *'
+    # ── 3:43 AM ET — PICK LOCK ──
+    # 07:43 UTC = 3:43 AM ET — locks today's POD + Cards picks. Runs ~30 minutes
+    # after the 3:13 data refresh, which is plenty of buffer for projections to
+    # finish writing. Pick scripts read projections + batter_trends + batter_stats
+    # from tables already populated by the 3:13 chain.
+    - cron: '43 7 * * *'
 
     - cron: '13 14 * * *'  # 14:13 UTC = 10:13 AM ET — schedule, lineups, weather, settle (East Coast finals)
 
@@ -62,7 +66,7 @@ jobs:
   pull-schedule:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["13 6 * * *", "13 14 * * *", "17 22 * * *"]'), github.event.schedule))
+       contains(fromJSON('["13 7 * * *", "13 14 * * *", "17 22 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -80,7 +84,7 @@ jobs:
   # depends on roster membership (e.g. team-page leaderboards).
   pull-rosters:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 7 * * *')
       || inputs.job == 'all' || inputs.job == 'rosters'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -97,7 +101,7 @@ jobs:
   # ── SAVANT: heavy Statcast, 1x daily overnight ──
   pull-savant:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 7 * * *')
       || inputs.job == 'all' || inputs.job == 'savant'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -114,7 +118,7 @@ jobs:
   # ── ARSENALS: pitcher pitch-type splits, 1x daily ──
   pull-arsenals:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 7 * * *')
       || inputs.job == 'all' || inputs.job == 'arsenals'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -131,7 +135,7 @@ jobs:
   # ── PITCHER STATS: clean season stats from MLB API, 1x daily ──
   pull-pitcher-stats:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 7 * * *')
       || inputs.job == 'all' || inputs.job == 'pitcher_stats'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -153,7 +157,7 @@ jobs:
   # × ~0.5s = under 10 minutes).
   pull-batter-game-log:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+      (github.event_name == 'schedule' && github.event.schedule == '13 7 * * *')
       || inputs.job == 'all' || inputs.job == 'batter_game_log'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -173,7 +177,7 @@ jobs:
   # Combined view on /trends and the multi-signal tiebreaker for card
   # selection. Fast (~5s, all-in-memory math, no MLB API calls).
   #
-  # `needs: pull-savant` enforces ordering on the 06:13 UTC scheduled run
+  # `needs: pull-savant` enforces ordering on the 07:13 UTC scheduled run
   # (savant populates batter_stats first). `if: always() && ...` lets the
   # job still run when savant is SKIPPED (manual `inputs.job=batter_trends`
   # dispatch) — without this, GitHub Actions auto-skips dependent jobs
@@ -181,7 +185,7 @@ jobs:
   compute-batter-trends:
     if: |
       always() && (
-        (github.event_name == 'schedule' && github.event.schedule == '13 6 * * *')
+        (github.event_name == 'schedule' && github.event.schedule == '13 7 * * *')
         || inputs.job == 'all' || inputs.job == 'batter_trends'
       ) && (needs['pull-savant'].result == 'success' || needs['pull-savant'].result == 'skipped')
     runs-on: ubuntu-latest
@@ -200,7 +204,7 @@ jobs:
   pull-weather:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["13 6 * * *", "13 14 * * *", "17 20 * * *"]'), github.event.schedule))
+       contains(fromJSON('["13 7 * * *", "13 14 * * *", "17 20 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'weather'
     runs-on: ubuntu-latest
     needs: pull-schedule
@@ -218,7 +222,7 @@ jobs:
   pull-lineups:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["45 6 * * *", "13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+       contains(fromJSON('["13 7 * * *", "13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'lineups'
     runs-on: ubuntu-latest
     steps:
@@ -234,14 +238,14 @@ jobs:
   # ── BvP: career batter-vs-pitcher splits ──
   # Runs after lineups so we know which batter/pitcher pairs to fetch.
   # Career stats change slowly — fewer firings than lineups is fine:
-  #   - 2:45 AM ET (POD lock chain)
+  #   - 3:13 AM ET (unified data refresh)
   #   - 17 17 (1:17 PM ET, late-morning lineup confirmations)
   #   - 17 21 (5:17 PM ET, final pre-game lineup updates)
   pull-bvp:
     if: |
       always() && (
         (github.event_name == 'schedule' &&
-         contains(fromJSON('["45 6 * * *", "17 17 * * *", "17 21 * * *"]'), github.event.schedule))
+         contains(fromJSON('["13 7 * * *", "17 17 * * *", "17 21 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'bvp'
       )
     runs-on: ubuntu-latest
@@ -256,11 +260,11 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_bvp.py
 
-  # ── DK ODDS: hourly during slate window + 2:45 AM early-lock pull ──
+  # ── DK ODDS: hourly during slate window + 3:13 AM unified data refresh ──
   pull-dk-odds:
     if: |
       (github.event_name == 'schedule' &&
-       contains(fromJSON('["45 6 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
+       contains(fromJSON('["13 7 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'dk_odds'
     runs-on: ubuntu-latest
     steps:
@@ -294,12 +298,12 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pull_scores.py
 
-  # ── PROJECTIONS: hourly after odds + lineups, plus 2:45 AM early-lock ──
+  # ── PROJECTIONS: hourly after odds + lineups, plus 3:13 AM unified data refresh ──
   compute-projections:
     if: |
       always() && (
         (github.event_name == 'schedule' &&
-         contains(fromJSON('["45 6 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+         contains(fromJSON('["13 7 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'projections'
       )
     runs-on: ubuntu-latest
@@ -319,7 +323,7 @@ jobs:
     if: |
       always() && (
         (github.event_name == 'schedule' &&
-         contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 6 * * *", "13 14 * * *"]'), github.event.schedule))
+         contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 7 * * *", "13 14 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'settle_bets'
       )
     runs-on: ubuntu-latest
@@ -334,18 +338,18 @@ jobs:
         run: python scripts/settle_bets.py
 
   # ── PICK POD: Cebolla's Play of the Day, 1x daily early-AM ──
-  # 06:45 UTC = 2:45 AM ET — locks picks before any line movement.
-  # Lineups for tonight's games aren't posted yet at this hour, so
-  # compute_projections falls back to each team's last-known lineup
-  # (~85% accurate) so projections still produce values.
+  # 07:43 UTC = 3:43 AM ET — locks picks ~30 min after the 3:13 unified data
+  # refresh chain completes. The 3:13 chain populates projections, batter_trends,
+  # batter_stats, lineups, dk_odds — everything pick_pod needs.
+  #
+  # No `needs:` clause: compute-projections runs in a DIFFERENT cron trigger
+  # (3:13 AM), so GitHub Actions `needs:` doesn't apply across runs. The 30-min
+  # buffer is plenty for the 3:13 chain to finish before 3:43 fires.
   pick-pod:
     if: |
-      always() && (
-        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
-        || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_pod')
-      )
+      (github.event_name == 'schedule' && github.event.schedule == '43 7 * * *')
+      || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_pod')
     runs-on: ubuntu-latest
-    needs: compute-projections
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -356,18 +360,15 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/pick_pod.py
 
-  # ── PICK CARDS: AI-built daily parlays, runs after PODs ──
-  # 06:45 UTC = 2:45 AM ET — same window as pick-pod. Real reason for the
-  # hour: by 2:45 AM the previous day's late games are Final, the next
-  # day's odds have populated, and we lock our picks before any line
-  # movement.
+  # ── PICK CARDS: AI-built daily parlays, runs after PODs in same trigger ──
+  # 07:43 UTC = 3:43 AM ET — fires in the same workflow run as pick-pod.
+  # `needs: pick-pod` enforces ordering WITHIN this run so cards don't pick
+  # while pods is still inserting.
   #
   # Why the explicit event_name check (no always()): GitHub Actions has a
   # known issue where `always() && (...)` jobs with `needs:` can fire on
-  # cascade-skipped parents at non-matching cron schedules. The bug bit us
-  # tonight — pick_cards fired at 12:27 AM ET via the 5-min pull-scores
-  # cron path. Replacing always() with explicit event_name + schedule
-  # checks blocks the cascade.
+  # cascade-skipped parents at non-matching cron schedules. Explicit
+  # event_name + schedule checks block the cascade.
   #
   # Why pick_cards is EXCLUDED from inputs.job == 'all': running "all" via
   # manual workflow_dispatch should be safe for data-refresh purposes (pull
@@ -377,7 +378,7 @@ jobs:
   pick-cards:
     if: |
       always() && (
-        (github.event_name == 'schedule' && github.event.schedule == '45 6 * * *')
+        (github.event_name == 'schedule' && github.event.schedule == '43 7 * * *')
         || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_cards')
       )
     runs-on: ubuntu-latest
@@ -397,7 +398,7 @@ jobs:
     if: |
       always() && (
         (github.event_name == 'schedule' &&
-         contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 6 * * *", "13 14 * * *"]'), github.event.schedule))
+         contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 7 * * *", "13 14 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'settle_pods'
       )
     runs-on: ubuntu-latest
@@ -416,7 +417,7 @@ jobs:
     if: |
       always() && (
         (github.event_name == 'schedule' &&
-         contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 6 * * *", "13 14 * * *"]'), github.event.schedule))
+         contains(fromJSON('["17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *", "13 7 * * *", "13 14 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'settle_cards'
       )
     runs-on: ubuntu-latest
