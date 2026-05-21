@@ -13,24 +13,29 @@ Why this approach:
     odds, we don't overwrite. If not yet captured, we try.
   - Simple — pure SQL/query work
 
-When this should run:
-  - Cron every 15 min during slate window (e.g. 1pm-11pm ET)
-  - OR once after the slate is fully complete (more reliable, less stale)
-  - Currently we run every 30 min from 1pm-11pm ET via daily-pulls.yml
+When this runs:
+  - Hourly at :17 past the hour, 1 PM ET through 11 PM ET (covers the
+    slate window).
+  - Each run captures any pending picks now within the closing window
+    that haven't been captured yet. Idempotent — already-captured rows
+    are filtered out at query time via `closing_odds IS NULL`.
 
 What gets captured:
   - For each pending pod/card_leg
   - Find the latest odds_snapshot for that (game_id, player_id, market) tuple
   - Where snapshot_time < first_pitch_utc (game hasn't started yet)
-  - Where snapshot_time >= first_pitch_utc - CLOSING_WINDOW (recent enough)
+  - Where snapshot_time >= first_pitch_utc - CLOSING_LOOKBACK_MINUTES (recent enough)
   - Copy american_odds → closing_odds
   - Compute closing_implied + closing_no_vig
   - Compute clv_raw + clv_no_vig (vs the lock-time american_odds/no_vig_prob)
 
 Output columns written:
   - closing_odds (INT)
-  - closing_implied (NUMERIC)
-  - closing_no_vig (NUMERIC) — for one-sided markets, uses standard overround estimate
+  - closing_implied (NUMERIC) — raw implied prob from closing_odds
+  - closing_no_vig (NUMERIC) — de-vigged using the SAME dynamic vig curve
+    that compute_projections.devig_anytime() uses at lock time. Critical
+    for CLV to be meaningful (both sides of comparison must use the same
+    method).
   - closing_captured_at (TIMESTAMPTZ)
   - clv_raw (NUMERIC) — closing_implied - lock_implied (positive = we beat the close)
   - clv_no_vig (NUMERIC) — closing_no_vig - no_vig_prob (preferred CLV measure)
@@ -70,49 +75,56 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ────────────────────────────────────────────────────────────────────────
-# CONSTANTS
+# CONSTANTS — kept in sync with compute_projections.py's devig_anytime()
 # ────────────────────────────────────────────────────────────────────────
 
-# How recent does the closing snapshot need to be (before first pitch)?
+# How far before first pitch counts as "closing line" window.
 # A snapshot from 4 hours ago isn't really "closing odds" — it's mid-day odds.
-# We want the LAST snapshot before first pitch, which on our hourly cron is
-# at most 60 minutes old. 90 min ceiling gives some slack.
-CLOSING_WINDOW_MINUTES = 90
-
-# How many minutes before first pitch does the "closing line" window start?
-# After this point, snapshots count as "closing odds" — we'll prefer the
-# latest one in the window.
+# We want the LAST snapshot before first pitch. With hourly snapshot crons,
+# the most recent pre-FP snapshot is at most 60 min old in practice. 90 min
+# ceiling gives slack for late cron runs / partial outages.
 CLOSING_LOOKBACK_MINUTES = 90
 
-# HR Anytime is a one-sided market on DK (no "won't HR" leg posted).
-# We approximate de-vigging by dividing by the typical HR market overround.
-# Standard DK juice on HR props is ~108-110% total book — i.e. ~8-10% over-
-# round on a single-sided market is the implicit "yes + no" inflation.
-# We use 4.5% as a conservative single-side overround estimate.
-HR_ANYTIME_OVERROUND = 0.045
+# Longshot thresholds — MUST stay in sync with compute_projections.py.
+# If the values in compute_projections.py ever change, update them here too,
+# otherwise CLV computation will use a different "trust range" than lock-time
+# projections — leading to silently inconsistent results.
+#
+# Verify on every change:
+#   grep -n "HR_LONGSHOT_THRESHOLD\|HITS_LONGSHOT_THRESHOLD" scripts/compute_projections.py
+#
+# Picks past these thresholds have lock_no_vig = None at lock time
+# (compute_projections.devig_anytime returns None), so they wouldn't produce
+# clv_no_vig anyway. We match the threshold here so closing-side de-vig
+# behaves identically.
+HR_LONGSHOT_THRESHOLD = 2000      # match compute_projections.py:139
+HITS_LONGSHOT_THRESHOLD = 600     # match compute_projections.py:140
 
-# Market name mapping: pods.market and card_legs.market sometimes differ
-# from odds_snapshots.market by suffix. Build a lookup so we match cleanly.
+# Market name mapping: pods.market and card_legs.market differ from
+# odds_snapshots.market by a "_yes" suffix. Build a lookup so we match
+# cleanly across the two tables.
 #
-# pods.market values seen in production:
-#   'hr_anytime'         — single-sided
-#   'h_r_rbi_1.5_yes'    — HRR line 1.5
-#   'h_r_rbi_2.5_yes'    — HRR line 2.5
-#   'h_r_rbi_3.5_yes'    — HRR line 3.5
-#   'hits_yes'           — 1+ hits
-#   'rbi_yes'            — 1+ RBI
+# pods.market / card_legs.market values (as written by compute_projections
+# and persisted by pick_pod / pick_cards):
+#   'hr_anytime'         — single-sided HR Anytime
+#   'h_r_rbi_1.5'        — HRR line 1.5  (HRR markets have NO _yes suffix
+#   'h_r_rbi_2.5'        —                here despite being yes-side picks)
+#   'h_r_rbi_3.5'
+#   'hits_yes'           — 1+ hits (yes-side, suffix INCLUDED)
+#   'rbi_yes'            — 1+ RBI  (never actually written by projections,
+#                                   listed for completeness)
 #
-# odds_snapshots.market values used by pull_dk_odds.py:
-#   'hr_anytime_yes', 'hr_anytime_no'
-#   'h_r_rbi_yes', 'h_r_rbi_no'  (with .line column for the 1.5/2.5/3.5 split)
-#   'hits_yes', 'hits_no'
-#   'rbi_yes', 'rbi_no'
+# odds_snapshots.market values written by pull_dk_odds.py:
+#   'hr_anytime_yes'     — line=0.5  (HR is always 1+ ladder, line=0.5)
+#   'h_r_rbi_yes'        — line=1.5 | 2.5 | 3.5  (line column differentiates)
+#   'hits_yes'           — line=0.5  (also 1.5/2.5/3.5 exist for higher ladders)
+#   'rbi_yes'            — line=0.5
 #
-# So the join is:
-#   - For HR: market='hr_anytime_yes'
-#   - For HRR: market='h_r_rbi_yes' AND line=<1.5|2.5|3.5>
-#   - For hits: market='hits_yes' AND line=0.5
-#   - For rbi: market='rbi_yes' AND line=0.5
+# So the join from pick-table to snapshot table is:
+#   - HR Anytime:  market='hr_anytime_yes'   (line implicitly 0.5)
+#   - HRR:         market='h_r_rbi_yes' AND line=<1.5|2.5|3.5>
+#   - Hits 1+:     market='hits_yes'         (line=0.5)
+#   - RBI 1+:      market='rbi_yes'          (line=0.5)
 
 
 def american_to_implied(american: int | None) -> float | None:
@@ -126,22 +138,75 @@ def american_to_implied(american: int | None) -> float | None:
     return None
 
 
-def devig_two_sided(yes_implied: float, no_implied: float | None) -> float | None:
+def devig_anytime(american_odds: int | None, implied: float | None,
+                   market: str = "hr_anytime") -> float | None:
     """
-    De-vig a two-sided market by normalizing yes+no=1.
+    De-vig single-sided Yes props using the SAME curve as
+    compute_projections.devig_anytime(). This MUST stay in sync — if the
+    lock-time and closing-time de-vig methods diverge, CLV becomes
+    apples-to-oranges and meaningless.
 
-    If we don't have the 'no' side, fall back to single-side approximation
-    using HR_ANYTIME_OVERROUND.
+    Returns no_vig probability, or None if outside trust range (longshot
+    filter — matches compute_projections behavior).
     """
-    if yes_implied is None:
+    if american_odds is None or implied is None or implied <= 0 or implied >= 1:
         return None
-    if no_implied is None:
-        # Single-sided — approximate
-        return yes_implied / (1.0 + HR_ANYTIME_OVERROUND)
-    total = yes_implied + no_implied
-    if total <= 0:
-        return None
-    return yes_implied / total
+
+    if market == "hits_yes":
+        if american_odds >= HITS_LONGSHOT_THRESHOLD:
+            return None
+        if american_odds <= -150:
+            vig = 0.04
+        elif american_odds <= 100:
+            vig = 0.05
+        elif american_odds <= 300:
+            vig = 0.06
+        else:  # +300 to +600
+            vig = 0.08
+    else:
+        # HR Anytime — wider price range, steeper longshot vig.
+        # NOTE: HRR does NOT come through here; HRR is routed to the
+        # "hits_yes" branch above by closing_market_for_devig() to match
+        # how compute_projections.py handles HRR (see line ~1063 in
+        # compute_projections, devig_anytime called with market="hits_yes").
+        if american_odds >= HR_LONGSHOT_THRESHOLD:
+            return None
+        if american_odds <= 200:
+            vig = 0.05
+        elif american_odds <= 500:
+            vig = 0.07
+        elif american_odds <= 1000:
+            vig = 0.10
+        else:  # +1000 to +2000
+            vig = 0.13
+
+    return implied / (1 + vig)
+
+
+def closing_market_for_devig(snapshot_market: str) -> str:
+    """
+    Map an odds_snapshots.market value to the market key used by devig_anytime.
+    The vig curve differs per market — Hits has tighter vig than HR.
+
+    Mapping (matches compute_projections.py exactly):
+        hits_yes        → "hits_yes"        (hits curve)
+        h_r_rbi_yes     → "hits_yes"        (HRR uses the hits curve per
+                                             compute_projections.py ~line 1063
+                                             where HRR projections call
+                                             devig_anytime with market="hits_yes")
+        rbi_yes         → "hits_yes"        (RBI props price similarly to hits;
+                                             not currently written by projections
+                                             but mapped here for future-proofing)
+        hr_anytime_yes  → "hr_anytime"      (HR curve, steeper longshot vig)
+        anything else   → "hr_anytime"      (defensive fallback)
+    """
+    if snapshot_market == "hits_yes":
+        return "hits_yes"
+    if snapshot_market == "h_r_rbi_yes":
+        return "hits_yes"
+    if snapshot_market == "rbi_yes":
+        return "hits_yes"
+    return "hr_anytime"
 
 
 def market_lookup(pod_or_leg_market: str, line: float | None = None) -> tuple[str, float | None]:
@@ -180,12 +245,16 @@ def get_today_iso() -> str:
 # ────────────────────────────────────────────────────────────────────────
 
 def fetch_pending_pods(date_iso: str) -> list[dict]:
-    """All PODs from today/recent dates with status='pending' and no closing_odds yet."""
+    """
+    All PODs from today/recent dates with status='pending' that haven't yet
+    had closing odds captured. Filtering on closing_odds IS NULL at query
+    time means we don't re-fetch already-processed rows.
+    """
     res = sb.table("pods").select(
-        "id, pod_date, game_id, player_id, market, american_odds, no_vig_prob, "
-        "closing_odds, closing_captured_at"
+        "id, pod_date, game_id, player_id, market, american_odds, no_vig_prob"
     ).eq("status", "pending") \
      .gte("pod_date", date_iso) \
+     .is_("closing_odds", "null") \
      .execute()
     return res.data or []
 
@@ -195,9 +264,9 @@ def fetch_pending_card_legs(date_iso: str) -> list[dict]:
 
     Done as two queries (matches settle_cards.py pattern):
       1. Pull pending cards within date window
-      2. Pull their legs by card_id
+      2. Pull their legs filtered to those without closing_odds yet
     """
-    cards_res = sb.table("cards").select("id, card_date, status") \
+    cards_res = sb.table("cards").select("id") \
         .eq("status", "pending") \
         .gte("card_date", date_iso) \
         .execute()
@@ -207,14 +276,23 @@ def fetch_pending_card_legs(date_iso: str) -> list[dict]:
     card_ids = [c["id"] for c in cards]
 
     legs_res = sb.table("card_legs").select(
-        "id, card_id, game_id, player_id, market, line, american_odds, no_vig_prob, "
-        "closing_odds, closing_captured_at"
-    ).in_("card_id", card_ids).execute()
+        "id, card_id, game_id, player_id, market, line, american_odds, no_vig_prob"
+    ).in_("card_id", card_ids) \
+     .is_("closing_odds", "null") \
+     .execute()
     return legs_res.data or []
 
 
 def fetch_game_first_pitches(game_ids: list[int]) -> dict[int, datetime]:
-    """Map game_id → first_pitch UTC datetime."""
+    """
+    Map game_id → first_pitch UTC datetime (always timezone-aware).
+
+    Postgres TIMESTAMPTZ is returned by supabase-py as an ISO string with
+    timezone offset (e.g. '2026-05-22T17:05:00+00:00' or '...Z'). We parse
+    and normalize to UTC. If for any reason the string is naive (no offset
+    AND no Z), we attach UTC explicitly so downstream comparisons with
+    `datetime.now(timezone.utc)` don't TypeError.
+    """
     if not game_ids:
         return {}
     res = sb.table("games").select("id, game_time_utc, status") \
@@ -222,10 +300,20 @@ def fetch_game_first_pitches(game_ids: list[int]) -> dict[int, datetime]:
         .execute()
     out = {}
     for g in res.data or []:
-        if g.get("game_time_utc"):
-            # Postgres TIMESTAMPTZ comes back as ISO string with offset
-            fp = datetime.fromisoformat(g["game_time_utc"].replace("Z", "+00:00"))
-            out[g["id"]] = fp
+        raw = g.get("game_time_utc")
+        if not raw:
+            continue
+        # Normalize trailing Z to +00:00 for fromisoformat compatibility.
+        normalized = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+        try:
+            fp = datetime.fromisoformat(normalized)
+        except ValueError:
+            log.warning("Could not parse game_time_utc for game %s: %r", g.get("id"), raw)
+            continue
+        # Force timezone-aware (defensive — if string somehow lacked offset)
+        if fp.tzinfo is None:
+            fp = fp.replace(tzinfo=timezone.utc)
+        out[g["id"]] = fp
     return out
 
 
@@ -245,12 +333,11 @@ def fetch_closing_snapshot(
     snapshot_time < first_pitch and snapshot_time >= (first_pitch - lookback).
 
     Returns the snapshot row dict, or None if no qualifying snapshot exists.
-    Also looks up the "no" side counterpart for de-vigging.
     """
     window_start = first_pitch - timedelta(minutes=CLOSING_LOOKBACK_MINUTES)
 
     q = sb.table("odds_snapshots").select(
-        "american_odds, decimal_odds, implied_prob, line, market, snapshot_time"
+        "american_odds"
     ).eq("game_id", game_id) \
      .eq("player_id", player_id) \
      .eq("market", snapshot_market) \
@@ -268,32 +355,7 @@ def fetch_closing_snapshot(
     if not rows:
         return None
 
-    snapshot = rows[0]
-
-    # Try to also find the "no" side at the same snapshot_time for de-vig.
-    # Markets ending in "_yes" have a corresponding "_no" sister.
-    no_implied = None
-    if snapshot_market.endswith("_yes"):
-        no_market = snapshot_market[:-4] + "_no"
-        q2 = sb.table("odds_snapshots").select("implied_prob") \
-            .eq("game_id", game_id) \
-            .eq("player_id", player_id) \
-            .eq("market", no_market) \
-            .eq("book", "draftkings") \
-            .lt("snapshot_time", first_pitch.isoformat()) \
-            .gte("snapshot_time", window_start.isoformat()) \
-            .order("snapshot_time", desc=True) \
-            .limit(1)
-        if snapshot_line is not None:
-            q2 = q2.eq("line", snapshot_line)
-        res2 = q2.execute()
-        if res2.data:
-            no_implied = res2.data[0].get("implied_prob")
-            if no_implied is not None:
-                no_implied = float(no_implied)
-
-    snapshot["_no_implied"] = no_implied
-    return snapshot
+    return rows[0]
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -304,19 +366,34 @@ def compute_clv_fields(
     lock_american: int,
     lock_no_vig: float | None,
     closing_american: int,
-    closing_no_implied: float | None,
+    snapshot_market: str,
 ) -> dict:
     """
-    Given lock-time american odds + lock-time no_vig probability,
-    and closing american odds + closing 'no' side implied (for de-vig),
-    compute all the calibration columns.
+    Compute calibration columns for a single pick.
 
-    Returns dict with keys: closing_implied, closing_no_vig, clv_raw, clv_no_vig.
+    Uses the SAME de-vig curve at closing time as compute_projections.py uses
+    at lock time. This is critical — if the methods diverge, CLV becomes
+    apples-to-oranges and meaningless.
+
+    Args:
+        lock_american:    American odds at lock time (from pod/leg row).
+        lock_no_vig:      No-vig prob at lock time (from pod/leg row, computed
+                          by compute_projections.devig_anytime at the time).
+        closing_american: American odds at closing time (from odds_snapshots).
+        snapshot_market:  The odds_snapshots.market value (e.g. 'hr_anytime_yes',
+                          'hits_yes', 'h_r_rbi_yes'). Used to pick the right
+                          vig curve for the closing de-vig.
+
+    Returns:
+        Dict with closing_implied, closing_no_vig, clv_raw, clv_no_vig.
+        Any field that can't be computed is None.
     """
     closing_implied = american_to_implied(closing_american)
     lock_implied = american_to_implied(lock_american)
 
-    closing_no_vig = devig_two_sided(closing_implied, closing_no_implied)
+    # De-vig closing using the SAME curve compute_projections uses for lock.
+    devig_market = closing_market_for_devig(snapshot_market)
+    closing_no_vig = devig_anytime(closing_american, closing_implied, market=devig_market)
 
     clv_raw = None
     if closing_implied is not None and lock_implied is not None:
@@ -369,10 +446,21 @@ def process_row(
 ):
     """
     Generic row processor for pods or card_legs.
-    Returns 'captured' | 'too_early' | 'too_late' | 'no_snapshot' | 'no_lock_odds' | 'skip'.
+
+    Returns one of:
+      'captured'      — successfully wrote closing_odds + CLV fields
+      'too_early'     — game is more than CLOSING_LOOKBACK_MINUTES out;
+                        no closing snapshot exists yet
+      'no_snapshot'   — game time is in/past the window but we have no
+                        qualifying pre-FP snapshot (DK pulled the market,
+                        rare data gap, or first pitch was missed)
+      'no_lock_odds'  — pod/leg has no american_odds (unusual; shouldn't
+                        happen for picks that made it through pick_pod)
+      'skip'          — already captured, or missing context (no game row,
+                        no market mapping)
     """
     if row.get("closing_odds") is not None and row.get("closing_captured_at") is not None:
-        return "skip"   # already captured
+        return "skip"   # already captured (also filtered at query time)
 
     if row.get("american_odds") is None:
         return "no_lock_odds"
@@ -386,27 +474,26 @@ def process_row(
     if now < first_pitch - timedelta(minutes=CLOSING_LOOKBACK_MINUTES):
         return "too_early"
 
-    if now >= first_pitch + timedelta(minutes=120):
-        # Game well in progress or over — no point capturing now,
-        # but we COULD if a snapshot exists from before first pitch.
-        # We allow it because the snapshot itself is timestamped pre-FP.
-        pass
+    # Note: we DON'T early-return if game has already started. Closing
+    # snapshots are taken BEFORE first_pitch and may be queryable for
+    # hours/days afterward. If a previous capture run missed the window
+    # we want to try again on later runs.
 
     market = row.get("market")
     line = row.get("line")   # only card_legs have a `line` field on the row itself
 
-    # For pods, line is encoded in the market string (e.g. 'h_r_rbi_1.5_yes').
+    # For pods, line is encoded in the market string (e.g. 'h_r_rbi_1.5').
     # market_lookup() handles both cases.
     snapshot_market, snapshot_line = market_lookup(market, line)
     if snapshot_market is None:
         log.warning("[%s id=%s] couldn't map market '%s' line=%s", table, row.get("id"), market, line)
         return "skip"
 
-    # If the row's `line` was None but market_lookup inferred one (e.g. 1.5),
-    # use the inferred one. If row.line is set, prefer it (card_legs).
-    if line is None and snapshot_line is not None:
-        snapshot_line = snapshot_line
-    elif line is not None:
+    # The `line` value in the snapshot query is normally derived from
+    # market_lookup() based on the market string. card_legs ALSO carries
+    # an explicit `line` column — if present, it overrides the lookup's
+    # inferred line (defensive: trust the source row over our inference).
+    if line is not None:
         snapshot_line = line
 
     snapshot = fetch_closing_snapshot(
@@ -427,7 +514,7 @@ def process_row(
         lock_american=row["american_odds"],
         lock_no_vig=row.get("no_vig_prob"),
         closing_american=closing_american,
-        closing_no_implied=snapshot.get("_no_implied"),
+        snapshot_market=snapshot_market,
     )
 
     if table == "pods":
@@ -461,7 +548,7 @@ def main():
     log.info("Loaded first-pitch times for %d games", len(first_pitches))
 
     counters = {
-        "captured": 0, "too_early": 0, "too_late": 0,
+        "captured": 0, "too_early": 0,
         "no_snapshot": 0, "no_lock_odds": 0, "skip": 0,
     }
 

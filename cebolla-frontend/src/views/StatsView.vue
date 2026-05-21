@@ -230,7 +230,10 @@ const calibration = computed(() => {
 // model edge. Stabilizes much faster than W/L (50-100 picks vs months).
 //
 // We use clv_no_vig (de-vigged) as the canonical metric. clv_raw is also
-// available but less reliable for one-sided markets (HR Anytime).
+// available but it doesn't normalize for changes in market vig — if the
+// book just tightened/loosened juice between lock and close, clv_raw will
+// move even though no real edge changed. clv_no_vig isolates the real
+// probability shift.
 //
 // Only includes pods that have captured closing odds (filtered on clv_no_vig
 // being non-null). Card-leg CLV is computed but not yet displayed — a future
@@ -268,17 +271,19 @@ const clvSummary = computed(() => {
 })
 
 // Histogram bins in percentage-point terms.
-// CLV is typically in [-0.10, +0.10] range (i.e., ±10 percentage points of
-// implied probability). Bin in 1pp steps to match human intuition.
+// CLV is theoretically in [-1, +1] (difference of two probabilities).
+// Practically observed range is roughly [-0.10, +0.10]. We use sentinel
+// outer bounds well past observed values so no real CLV value can fall
+// outside a bin. Upper bound is 1.01 (not 1.00) so exact-1.0 still matches.
 const CLV_BINS = [
-  { lo: -0.10, hi: -0.05, label: '<-5pp'  },
+  { lo: -1.01, hi: -0.05, label: '<-5pp'  },  // catch-all for big negatives
   { lo: -0.05, hi: -0.03, label: '-5/-3'  },
   { lo: -0.03, hi: -0.01, label: '-3/-1'  },
   { lo: -0.01, hi:  0.01, label: '-1/+1'  },
   { lo:  0.01, hi:  0.03, label: '+1/+3'  },
   { lo:  0.03, hi:  0.05, label: '+3/+5'  },
   { lo:  0.05, hi:  0.10, label: '+5/+10' },
-  { lo:  0.10, hi:  1.00, label: '>+10pp' },
+  { lo:  0.10, hi:  1.01, label: '>+10pp' },  // catch-all for big positives
 ]
 const clvHistogram = computed(() => {
   const data = podsWithCLV.value
@@ -723,14 +728,14 @@ function barY(pnl) {
               <div v-if="clvSummary.hr" class="flex items-baseline justify-between">
                 <span class="label-caps !text-[9px]">HR ({{ clvSummary.hr.count }})</span>
                 <span class="display-num text-sm"
-                      :class="clvSummary.hr.mean > 0 ? 'text-signal-300' : 'text-edge-cold-1'">
+                      :class="clvSummary.hr.mean > 0 ? 'text-signal-300' : clvSummary.hr.mean < 0 ? 'text-edge-cold-1' : 'text-fg-600'">
                   {{ (clvSummary.hr.mean > 0 ? '+' : '') + (clvSummary.hr.mean * 100).toFixed(2) }}pp
                 </span>
               </div>
               <div v-if="clvSummary.hrr" class="flex items-baseline justify-between">
                 <span class="label-caps !text-[9px]">HRR ({{ clvSummary.hrr.count }})</span>
                 <span class="display-num text-sm"
-                      :class="clvSummary.hrr.mean > 0 ? 'text-signal-300' : 'text-edge-cold-1'">
+                      :class="clvSummary.hrr.mean > 0 ? 'text-signal-300' : clvSummary.hrr.mean < 0 ? 'text-edge-cold-1' : 'text-fg-600'">
                   {{ (clvSummary.hrr.mean > 0 ? '+' : '') + (clvSummary.hrr.mean * 100).toFixed(2) }}pp
                 </span>
               </div>
@@ -756,7 +761,8 @@ function barY(pnl) {
               </div>
             </div>
             <div class="mt-3 pt-3 border-t border-bg-200 text-[10px] text-fg-400 leading-relaxed">
-              CLV = closing implied probability &minus; lock-time implied probability. Bins in percentage points.
+              CLV (no-vig) = closing no-vig probability &minus; lock-time no-vig probability. Both sides de-vigged
+              with the same curve so the comparison is apples-to-apples. Bins in percentage points.
               Numbers right of zero mean we found edges the market later agreed with.
             </div>
           </div>

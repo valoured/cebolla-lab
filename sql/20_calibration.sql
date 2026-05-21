@@ -3,10 +3,10 @@
 -- ════════════════════════════════════════════════════════════════════════
 --
 -- WHAT THIS DOES
---   Adds 4 columns to each of `pods` and `card_legs`:
---     - closing_odds         INTEGER       — DK american odds captured ~30min before first pitch
+--   Adds 6 columns to each of `pods` and `card_legs`:
+--     - closing_odds         INTEGER       — DK american odds from latest snapshot before first pitch
 --     - closing_implied      NUMERIC(6,4)  — raw implied prob from closing_odds (before de-vig)
---     - closing_no_vig       NUMERIC(6,4)  — de-vigged implied prob (where market structure allows)
+--     - closing_no_vig       NUMERIC(6,4)  — de-vigged using compute_projections.devig_anytime curve
 --     - closing_captured_at  TIMESTAMPTZ   — when we captured the closing odds
 --     - clv_raw              NUMERIC(7,5)  — closing_implied - lock_implied (positive = we beat the close)
 --     - clv_no_vig           NUMERIC(7,5)  — closing_no_vig  - lock_no_vig  (preferred CLV signal)
@@ -47,11 +47,11 @@ ALTER TABLE pods
   ADD COLUMN IF NOT EXISTS clv_no_vig           NUMERIC(7, 5);
 
 COMMENT ON COLUMN pods.closing_odds IS
-  'DraftKings american odds captured ~30 minutes before first pitch. NULL means closing odds were never captured (game already started, or pull_closing_odds failed).';
+  'DraftKings american odds captured from the latest odds_snapshot before first pitch. NULL means closing odds were never captured (game already started before any snapshot in window, or capture_closing_lines.py failed).';
 COMMENT ON COLUMN pods.closing_implied IS
   'Raw implied probability from closing_odds (american_to_implied). Positive odds: 100/(odds+100). Negative: |odds|/(|odds|+100).';
 COMMENT ON COLUMN pods.closing_no_vig IS
-  'De-vigged closing implied probability. For HR Anytime (one-sided market) we approximate using a standard 4.5% overround. For Hits/HRR (two-sided), uses both legs to de-vig properly.';
+  'De-vigged closing implied probability. Uses the same dynamic vig curve as compute_projections.devig_anytime() (4-13% by odds tier and market) — critical that lock-time and closing-time use the SAME de-vig method for CLV to be apples-to-apples.';
 COMMENT ON COLUMN pods.clv_raw IS
   'closing_implied - lock_implied. Positive = we locked at a better price than the close.';
 COMMENT ON COLUMN pods.clv_no_vig IS
@@ -84,7 +84,12 @@ CREATE INDEX IF NOT EXISTS idx_card_legs_clv_no_vig
   WHERE clv_no_vig IS NOT NULL;
 
 -- Index on closing_captured_at for time-window queries
--- ("CLV from last 30 days" needs to filter by pod_date or capture time)
+-- ("CLV from last 30 days" needs to filter by capture time, which the
+-- Stats page might add later).
 CREATE INDEX IF NOT EXISTS idx_pods_closing_captured
   ON pods(closing_captured_at DESC)
+  WHERE closing_captured_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_card_legs_closing_captured
+  ON card_legs(closing_captured_at DESC)
   WHERE closing_captured_at IS NOT NULL;
