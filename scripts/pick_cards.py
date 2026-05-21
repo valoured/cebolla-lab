@@ -35,12 +35,41 @@ CANDIDATE FLOORS (per-market):
   hits_yes     projected_prob >= 0.55, edge >= 0.03
   rbi_yes      projected_prob >= 0.35, edge >= 0.03
 
+COMBINED HEAT FILTER + BONUS (added v8):
+  After candidate floors are applied, each candidate's batter is joined with
+  the latest batter_trends snapshot. Two effects:
+
+    1. FROZEN filter: any candidate whose batter has combined_trend ≤ −50%
+       is dropped entirely. Multi-signal cold is a strong negative signal
+       that overrides positive EV (the model thinks this player is good but
+       four different rolling metrics say they're slumping).
+
+    2. Score bonus: each leg adds a small heat bonus to the combination
+       score (see HEAT_BONUS_BY_TIER below). This is a TIEBREAKER between
+       similarly-EV combos — never enough to override EV by itself, but
+       enough to prefer multi-signal hot batters when two cards look equal.
+
+  Bonuses (per-leg, additive to score_combination output):
+       BLAZING +1.2    HOT +0.8    WARM +0.3    FLAT 0
+       COOL    -0.3    COLD -1.0   (FROZEN is filtered out before scoring)
+
+  Scale calibration: typical score values are 5–25, so per-leg bonuses of
+  ±0.3 to ±1.2 across 2–4 legs add roughly 5–20% movement to the score —
+  enough to break ties, not enough to overturn meaningful EV gaps.
+  COLD bumped to -1.0 (≈ -1% EV equivalent) because the model has a known
+  L14 blind spot and multi-signal cold batters are often overvalued.
+
+  If batter_trends lacks a row for a player (e.g. compute_batter_trends
+  hasn't run on a fresh day), the bonus defaults to 0 and the filter is
+  skipped. The model gracefully degrades to pre-heat behavior.
+
 OBJECTIVE:
-  Mix of EV and "right reads". Each combination scored as:
-    score = ev_per_dollar * 100 + avg_leg_edge * 50
+  Mix of EV, "right reads", and Combined Heat. Each combination scored as:
+    score = ev_per_dollar * 100 + avg_leg_edge * 50 + sum(heat_bonus per leg)
 
   Higher EV preferred, but combined edge also matters (rewards combinations
   where each leg has its own independent edge, not just one carry-leg).
+  Combined Heat nudges toward multi-signal hot batters as a tiebreaker.
 
 DEDUP:
   After scoring, greedy selection: take highest-scoring combo, exclude its
@@ -119,6 +148,37 @@ CORRELATION_PENALTIES = {
     "same_team":   0.15,   # bumped from 0.12
     "same_player": 0.15,
 }
+
+# ── Combined Heat integration ──
+#
+# Per-leg bonus added to score_combination output, keyed by the batter's
+# combined_tier from batter_trends. Calibrated against typical score
+# magnitudes (5-25) — bonuses are small enough to be a tiebreaker, not
+# big enough to overturn meaningful EV differences. See the docstring at
+# the top of this file for the rationale.
+HEAT_BONUS_BY_TIER = {
+    "BLAZING": 1.2,
+    "HOT":     0.8,
+    "WARM":    0.3,
+    "FLAT":    0.0,
+    "COOL":   -0.3,   # bumped from -0.2 — small but meaningful tilt away
+    "COLD":   -1.0,   # bumped from -0.6 — model has known L14 blind spot,
+                      # multi-signal cold batters are often overvalued by
+                      # ~0.5-1.5% EV. The -1.0 (≈ -1% EV equivalent) closes
+                      # that gap without hard-blocking the bet entirely.
+    # FROZEN should never reach scoring (filtered at fetch_candidates), but
+    # included here as a safety net in case data updates mid-run.
+    "FROZEN": -1.5,
+}
+
+# Combined trend threshold below which we filter the candidate entirely.
+# Matches the FROZEN tier (≤ -50%) from useTrends.js / compute_batter_trends.
+HEAT_FROZEN_THRESHOLD = -0.50
+
+# Max age (in days) for a fallback heat snapshot. If today has no rows and
+# the most-recent fallback is older than this, we degrade to no-heat rather
+# than use ancient data.
+HEAT_MAX_STALE_DAYS = 3
 
 # Dedup: max shared legs between selected cards across tiers
 SHARING_LIMITS = {
@@ -199,10 +259,99 @@ def fetch_today_games(date_iso):
     return res.data or []
 
 
+def fetch_batter_heat(player_ids, date_iso):
+    """
+    Pull the latest batter_trends snapshot for the candidate batters.
+    Returns dict { player_id: {combined_trend, combined_tier, ...} }.
+
+    Strategy: try date_iso first (today's snapshot). If that returns nothing
+    (cron may have failed, or we're running off-cycle), fall back to the
+    most-recent available snapshot per batter — staleness < freshness-loss,
+    and a day-old heat read is still useful information. We refuse fallback
+    snapshots older than HEAT_MAX_STALE_DAYS to prevent using ancient data
+    after extended cron outages.
+
+    On any DB error (table doesn't exist, migration not applied), returns
+    an empty dict so card selection falls back to pre-heat behavior.
+    """
+    if not player_ids:
+        return {}
+    columns = ("batter_id, trend_date, combined_trend, combined_tier, " +
+               "hr_trend, hits_trend, barrel_trend, iso_trend, pa_l14")
+    try:
+        # Primary: today's snapshot
+        res = sb.table("batter_trends") \
+            .select(columns) \
+            .in_("batter_id", player_ids) \
+            .eq("trend_date", date_iso) \
+            .execute()
+        rows = res.data or []
+
+        # Fallback: if no rows for today, pull the most-recent snapshot per
+        # batter via descending order and dedupe to first-seen (most recent).
+        if not rows:
+            fb_res = sb.table("batter_trends") \
+                .select(columns) \
+                .in_("batter_id", player_ids) \
+                .order("trend_date", desc=True) \
+                .execute()
+            seen = set()
+            rows_candidate = []
+            for r in fb_res.data or []:
+                bid = r["batter_id"]
+                if bid in seen:
+                    continue
+                seen.add(bid)
+                rows_candidate.append(r)
+            # Staleness guard: reject snapshots older than HEAT_MAX_STALE_DAYS.
+            # Heat data 4+ days old isn't reflecting recent form.
+            today_dt = datetime.fromisoformat(date_iso).date()
+            for r in rows_candidate:
+                td = r.get("trend_date")
+                if not td:
+                    continue
+                try:
+                    snap_dt = datetime.fromisoformat(td).date() if isinstance(td, str) else td
+                    age_days = (today_dt - snap_dt).days
+                    # Require 0 <= age_days <= HEAT_MAX_STALE_DAYS.
+                    # Negative age = snapshot dated in the future (timezone glitch);
+                    # treat as suspicious and skip.
+                    if 0 <= age_days <= HEAT_MAX_STALE_DAYS:
+                        rows.append(r)
+                except (ValueError, TypeError):
+                    continue
+            if rows:
+                log.info("  heat fallback: using snapshots up to %d days old (no rows for %s)",
+                         HEAT_MAX_STALE_DAYS, date_iso)
+
+        out = {}
+        for r in rows:
+            bid = r["batter_id"]
+            # Cast numeric fields explicitly — Supabase returns NUMERIC as str
+            ct = r.get("combined_trend")
+            out[bid] = {
+                "combined_trend": float(ct) if ct is not None else None,
+                "combined_tier":  r.get("combined_tier"),
+                "hr_trend":     float(r["hr_trend"])     if r.get("hr_trend")     is not None else None,
+                "hits_trend":   float(r["hits_trend"])   if r.get("hits_trend")   is not None else None,
+                "barrel_trend": float(r["barrel_trend"]) if r.get("barrel_trend") is not None else None,
+                "iso_trend":    float(r["iso_trend"])    if r.get("iso_trend")    is not None else None,
+                "pa_l14":       r.get("pa_l14"),
+                "trend_date":   r.get("trend_date"),
+            }
+        return out
+    except Exception as e:
+        log.warning("fetch_batter_heat failed (degrading to no-heat): %s", e)
+        return {}
+
+
 def fetch_candidates(date_iso, games):
     """
     Build the unified candidate pool across all markets, applying per-market
-    floors. Returns a flat list of candidate dicts.
+    floors and the FROZEN heat filter. Returns a flat list of candidate dicts.
+
+    Each candidate has heat fields attached (combined_trend, combined_tier)
+    when available, or None when batter_trends has no row for that batter.
     """
     if not games:
         return []
@@ -229,7 +378,18 @@ def fetch_candidates(date_iso, games):
         .in_("id", player_ids).execute()
     players_by_id = {p["id"]: p for p in (players_res.data or [])}
 
+    # ── Heat lookup ──
+    # Pull Combined Heat for all candidate batters in one query. Used to
+    # filter FROZEN players and to attach heat data for the score bonus.
+    heat_by_player = fetch_batter_heat(player_ids, date_iso)
+    if heat_by_player:
+        log.info("Heat snapshot: %d batters with combined_trend rows for %s",
+                 len(heat_by_player), date_iso)
+    else:
+        log.info("Heat snapshot: empty (degrading to pre-heat scoring)")
+
     candidates = []
+    frozen_filtered = 0
     for p in projections:
         # Apply floors
         floor = MARKET_FLOORS.get(p["market"])
@@ -248,6 +408,18 @@ def fetch_candidates(date_iso, games):
         game = games_by_id.get(p["game_id"])
         if not game:
             continue
+
+        # ── FROZEN heat filter ──
+        # Drop multi-signal cold batters even if their projection looks good.
+        # When combined_trend is ≤ HEAT_FROZEN_THRESHOLD, four independent
+        # rolling metrics agree this player is slumping — that's a stronger
+        # signal than a marginal projection edge. Players without heat data
+        # (heat = None) are NOT filtered, they just don't get the bonus.
+        heat = heat_by_player.get(p["player_id"])
+        if heat and heat.get("combined_trend") is not None:
+            if heat["combined_trend"] <= HEAT_FROZEN_THRESHOLD:
+                frozen_filtered += 1
+                continue
 
         # Resolve team + opponent abbrevs
         is_home = player["team_id"] == game["home_team_id"]
@@ -285,7 +457,14 @@ def fetch_candidates(date_iso, games):
             "decimal_odds":    decimal,
             "edge":            edge,
             "book":            p.get("best_book") or "draftkings",
+            # ── Heat fields (None when batter_trends has no row) ──
+            "combined_trend":  heat.get("combined_trend") if heat else None,
+            "combined_tier":   heat.get("combined_tier")  if heat else None,
         })
+
+    if frozen_filtered:
+        log.info("Filtered %d FROZEN candidates (combined_trend <= %.0f%%)",
+                 frozen_filtered, HEAT_FROZEN_THRESHOLD * 100)
 
     # Sort by edge descending — the strongest plays float to top
     candidates.sort(key=lambda c: c["edge"], reverse=True)
@@ -370,16 +549,25 @@ def parlay_math(legs):
 
 def score_combination(math, legs):
     """
-    Objective function: mix of EV and average leg edge.
+    Objective function: mix of EV, average leg edge, and Combined Heat bonus.
 
     Higher EV → bigger payoff at observed probabilities.
     Higher avg leg edge → rewards combos where each leg is independently good
     (not just one carry leg with several mediocre add-ons).
+    Heat bonus → tiebreaker that prefers multi-signal hot batters when EV
+    is similar. See HEAT_BONUS_BY_TIER for the scale.
+
+    Legs without heat data (combined_tier=None) contribute 0 — graceful
+    degradation when batter_trends hasn't run or a player is missing.
     """
     if not math or math["ev_per_dollar"] is None:
         return -999
     avg_edge = sum(l["edge"] for l in legs) / len(legs)
-    return math["ev_per_dollar"] * 100 + avg_edge * 50
+    heat_bonus = sum(
+        HEAT_BONUS_BY_TIER.get(l.get("combined_tier"), 0.0)
+        for l in legs
+    )
+    return math["ev_per_dollar"] * 100 + avg_edge * 50 + heat_bonus
 
 
 def make_combo_record(legs, tier, slate_quality):
@@ -947,12 +1135,20 @@ def main():
                                                   else str(math["american_odds"]),
                      cid)
             for i, leg in enumerate(combo["legs"], 1):
-                log.info("    leg%d: %s %s @ %s (proj=%.2f%%, edge=+%.2f%%)",
+                # Heat marker — visible signal of which legs the bonus
+                # rewarded so we can spot-check the integration in logs.
+                heat_marker = ""
+                if leg.get("combined_tier"):
+                    ct = leg.get("combined_trend")
+                    ct_str = f"{ct*100:+.0f}%" if ct is not None else "?"
+                    heat_marker = f"  [heat={leg['combined_tier']} {ct_str}]"
+                log.info("    leg%d: %s %s @ %s (proj=%.2f%%, edge=+%.2f%%)%s",
                          i, leg["player_name"], leg["market"],
                          "+%d" % leg["american_odds"] if leg["american_odds"] >= 0
                                                        else str(leg["american_odds"]),
                          leg["projected_prob"] * 100,
-                         leg["edge"] * 100)
+                         leg["edge"] * 100,
+                         heat_marker)
 
     log.info("✓ Cards picker complete — inserted=%d, skipped_dups=%d",
              inserted_count, skipped_dups)
