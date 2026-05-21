@@ -105,12 +105,21 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Market floors — each market needs its own min projected_prob because
 # the markets have wildly different base rates. HR is ~10% baseline,
 # Hits 0.5 is ~70% baseline — same floor would be nonsense.
+#
+# min_edge lowered from 0.03 → 0.02 on 2026-05-21:
+#   Cards are a research menu, not a single-best-bet pick. The 3% floor
+#   was producing too-thin candidate pools on slates where the slate is
+#   small (e.g., 7 games) or where books are sharp. Lowering to 2% roughly
+#   doubles the candidate pool which lets the picker build the full 6/4/2
+#   menu. The EV gates (5%/8%/10% per tier) still enforce that no card
+#   ships with negative expected value — the only thing that changed is
+#   which BATTERS are eligible to be legs, not what combos clear.
 MARKET_FLOORS = {
-    "hr_anytime":  {"min_prob": 0.08, "min_edge": 0.03},
-    "h_r_rbi_1.5": {"min_prob": 0.40, "min_edge": 0.03},
-    "h_r_rbi_2.5": {"min_prob": 0.20, "min_edge": 0.03},
-    "hits_yes":    {"min_prob": 0.55, "min_edge": 0.03},
-    "rbi_yes":     {"min_prob": 0.35, "min_edge": 0.03},
+    "hr_anytime":  {"min_prob": 0.08, "min_edge": 0.02},
+    "h_r_rbi_1.5": {"min_prob": 0.40, "min_edge": 0.02},
+    "h_r_rbi_2.5": {"min_prob": 0.20, "min_edge": 0.02},
+    "hits_yes":    {"min_prob": 0.55, "min_edge": 0.02},
+    "rbi_yes":     {"min_prob": 0.35, "min_edge": 0.02},
 }
 
 # Stake recommendations by tier (canonical — frontend can scale linearly)
