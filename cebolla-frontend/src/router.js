@@ -38,6 +38,12 @@ const routes = [
     meta: { title: 'Methodology · Cebolla' },
   },
   {
+    path: '/trends',
+    name: 'trends',
+    component: () => import('./views/TrendsView.vue'),
+    meta: { title: 'Trends · Cebolla' },
+  },
+  {
     path: '/game/:gameId',
     name: 'hr-report',
     component: () => import('./views/HRReportView.vue'),

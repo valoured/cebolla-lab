@@ -55,6 +55,7 @@ const splitVsL = ref(null)
 const splitVsR = ref(null)
 const tonightGame = ref(null)    // {game, pitcher, pitcher_team, lineup_row}
 const pitcherAllowed = ref(null) // L14 pitcher_stats for tonight's pitcher
+const trendData = ref(null)      // latest batter_trends row (Combined Heat + per-metric)
 const loading = ref(true)
 const error = ref(null)
 
@@ -120,6 +121,25 @@ async function load() {
 
     // 4. Tonight's matchup — find if this player is in any upcoming lineup
     await loadTonightMatchup()
+
+    // 5. Latest Combined Heat snapshot. Wrapped in its own try/catch so
+    //    a missing batter_trends table (migration not yet applied) doesn't
+    //    crash the whole page — the panel just won't render.
+    try {
+      const { data: trendRows, error: trendErr } = await supabase
+        .from('batter_trends')
+        .select('*')
+        .eq('batter_id', playerId.value)
+        .order('trend_date', { ascending: false })
+        .limit(1)
+      if (trendErr) {
+        console.warn('[PlayerView] trend query failed (non-fatal):', trendErr.message)
+      } else {
+        trendData.value = trendRows?.[0] || null
+      }
+    } catch (e) {
+      console.warn('[PlayerView] trend fetch failed (non-fatal):', e?.message || e)
+    }
 
     loading.value = false
   } catch (e) {
@@ -291,6 +311,83 @@ const trajectory = computed(() => {
 // ── Season summary (always the season row at vs_hand=A) ────────
 const season = computed(() => {
   return windows.value.find(w => w.window_type === 'season') || null
+})
+
+// ── Combined Heat panel data ───────────────────────────────────
+// Per-metric trend mini-cards, ordered by absolute magnitude so the
+// strongest signal shows leftmost. Uses the same tier system as the
+// Trends page so visual treatment is consistent.
+
+// Tier thresholds (match useTrends.js)
+function tierFromTs(ts) {
+  if (ts == null) return 'flat'
+  if (ts >= 0.50)  return 'blazing'
+  if (ts >= 0.25)  return 'hot'
+  if (ts >= 0.10)  return 'warm'
+  if (ts <= -0.50) return 'frozen'
+  if (ts <= -0.25) return 'cold'
+  if (ts <= -0.10) return 'cool'
+  return 'flat'
+}
+
+function tierLabel(ts) {
+  if (ts == null) return '—'
+  if (ts >= 0.50)  return 'BLAZING'
+  if (ts >= 0.25)  return 'HOT'
+  if (ts >= 0.10)  return 'WARM'
+  if (ts <= -0.50) return 'FROZEN'
+  if (ts <= -0.25) return 'COLD'
+  if (ts <= -0.10) return 'COOL'
+  return 'FLAT'
+}
+
+function fmtTrendPct(ts) {
+  if (ts == null) return '—'
+  const sign = ts > 0 ? '+' : ''
+  return `${sign}${Math.round(ts * 100)}%`
+}
+
+const TREND_METRIC_LABELS = {
+  hr:     { short: 'HR/PA',   label: 'Home Run Rate' },
+  hits:   { short: 'H/PA',    label: 'Hit Rate'      },
+  barrel: { short: 'Barrel%', label: 'Barrel Rate'   },
+  iso:    { short: 'ISO',     label: 'Isolated Power' },
+}
+
+// Per-metric mini cards. Ordered: combined first, then base metrics by
+// absolute trend magnitude (strongest signal first).
+const trendMiniCards = computed(() => {
+  if (!trendData.value) return []
+  const base = ['hr', 'hits', 'barrel', 'iso'].map(m => ({
+    key: m,
+    short: TREND_METRIC_LABELS[m].short,
+    label: TREND_METRIC_LABELS[m].label,
+    ts: trendData.value[`${m}_trend`] != null ? Number(trendData.value[`${m}_trend`]) : null,
+  }))
+  // Strongest absolute trend first, nulls last
+  base.sort((a, b) => {
+    if (a.ts == null && b.ts == null) return 0
+    if (a.ts == null) return 1
+    if (b.ts == null) return -1
+    return Math.abs(b.ts) - Math.abs(a.ts)
+  })
+  return base
+})
+
+// Combined card (the dominant signal at top of the panel)
+const combinedTrend = computed(() => {
+  if (!trendData.value) return null
+  const ts = trendData.value.combined_trend
+  return ts != null ? Number(ts) : null
+})
+
+// Was today's snapshot or older? Used to show "stale" warning if data
+// is older than 24h (rare, but cron could fail).
+const trendIsStale = computed(() => {
+  if (!trendData.value?.trend_date) return false
+  const td = new Date(trendData.value.trend_date + 'T00:00:00Z')
+  const ageDays = (Date.now() - td.getTime()) / (1000 * 60 * 60 * 24)
+  return ageDays > 1.5
 })
 
 // ── Pitch type breakdown ───────────────────────────────────────
@@ -565,6 +662,73 @@ function hrPctTone(pct) {
         </div>
       </section>
 
+      <!-- ── COMBINED HEAT ───────────────────────────────────
+           Cebolla's multi-signal trend score. Shows the player's
+           Combined Heat alongside the four base metrics so users can
+           see WHY they're trending (or whether the signal is real). -->
+      <section
+        v-if="trendData"
+        class="px-4 sm:px-6 py-4 border-b border-bg-200"
+      >
+        <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+          <h2 class="label-bracket text-signal-400">combined heat</h2>
+          <span class="label-caps !text-[8px] opacity-70">
+            L14 vs season · multi-signal
+            <span v-if="trendIsStale" class="text-amber-400 ml-2">
+              · snapshot is stale
+            </span>
+          </span>
+        </div>
+
+        <!-- Dominant: combined chip + tier label -->
+        <div class="flex items-stretch gap-3 mb-4 flex-wrap">
+          <div
+            class="trend-hero-chip"
+            :class="`trend-hero-chip--${tierFromTs(combinedTrend)}`"
+          >
+            <div class="trend-hero-chip__pct display-num">
+              {{ fmtTrendPct(combinedTrend) }}
+            </div>
+            <div class="trend-hero-chip__label">
+              {{ tierLabel(combinedTrend) }}
+            </div>
+          </div>
+          <div class="flex-1 min-w-[200px] flex flex-col justify-center text-fg-500 text-xs sm:text-sm leading-relaxed">
+            <span v-if="combinedTrend == null">
+              Not enough data across multiple metrics to compute combined heat.
+            </span>
+            <span v-else-if="combinedTrend >= 0.25">
+              Multi-signal heat — this player is trending up on multiple
+              independent stats simultaneously, not just one lucky metric.
+            </span>
+            <span v-else-if="combinedTrend <= -0.25">
+              Multi-signal cool-down — multiple metrics softening at once.
+            </span>
+            <span v-else>
+              Roughly aligned with season baseline across signals.
+            </span>
+          </div>
+        </div>
+
+        <!-- Per-metric mini cards (ordered by signal strength) -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div
+            v-for="m in trendMiniCards"
+            :key="m.key"
+            class="trend-mini"
+            :class="`trend-mini--${tierFromTs(m.ts)}`"
+          >
+            <div class="label-caps !text-[8px] opacity-75">{{ m.short }}</div>
+            <div class="display-num text-base sm:text-lg mt-1">
+              {{ fmtTrendPct(m.ts) }}
+            </div>
+            <div class="text-[8px] font-mono uppercase tracking-wider opacity-70 mt-0.5">
+              {{ tierLabel(m.ts) }}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ── STATCAST TRAJECTORY ─────────────────────────── -->
       <section class="px-4 sm:px-6 py-4 border-b border-bg-200">
         <div class="flex items-baseline justify-between mb-3 flex-wrap gap-2">
@@ -799,5 +963,80 @@ function hrPctTone(pct) {
     width: 72px;
     height: 72px;
   }
+}
+
+/* ── Combined Heat panel ──────────────────────────────────────── */
+.trend-hero-chip {
+  border: 1px solid;
+  padding: 14px 22px;
+  min-width: 120px;
+  text-align: center;
+  border-radius: 2px;
+  color: var(--chip-color, #9B9BA8);
+  background: var(--chip-bg, rgba(38, 38, 46, 0.5));
+  border-color: var(--chip-border, #33333D);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.trend-hero-chip__pct {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.trend-hero-chip__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  margin-top: 6px;
+  opacity: 0.85;
+}
+
+.trend-mini {
+  padding: 8px 10px;
+  border: 1px solid;
+  border-radius: 2px;
+  color: var(--chip-color, #9B9BA8);
+  background: var(--chip-bg, rgba(38, 38, 46, 0.4));
+  border-color: var(--chip-border, #33333D);
+  text-align: left;
+}
+
+/* Tier color tokens — match TrendCard/TrendRowCompact exactly */
+.trend-hero-chip--blazing, .trend-mini--blazing {
+  --chip-color: #FFE5E5;
+  --chip-bg: rgba(255, 42, 42, 0.18);
+  --chip-border: rgba(255, 42, 42, 0.65);
+}
+.trend-hero-chip--hot, .trend-mini--hot {
+  --chip-color: #FFB8B8;
+  --chip-bg: rgba(255, 42, 42, 0.12);
+  --chip-border: rgba(255, 42, 42, 0.45);
+}
+.trend-hero-chip--warm, .trend-mini--warm {
+  --chip-color: #FFD3A8;
+  --chip-bg: rgba(255, 168, 74, 0.10);
+  --chip-border: rgba(255, 168, 74, 0.40);
+}
+.trend-hero-chip--flat, .trend-mini--flat {
+  --chip-color: #9B9BA8;
+  --chip-bg: rgba(38, 38, 46, 0.5);
+  --chip-border: #33333D;
+}
+.trend-hero-chip--cool, .trend-mini--cool {
+  --chip-color: #A8D9EE;
+  --chip-bg: rgba(79, 177, 221, 0.08);
+  --chip-border: rgba(79, 177, 221, 0.35);
+}
+.trend-hero-chip--cold, .trend-mini--cold {
+  --chip-color: #4FB1DD;
+  --chip-bg: rgba(58, 141, 188, 0.12);
+  --chip-border: rgba(58, 141, 188, 0.45);
+}
+.trend-hero-chip--frozen, .trend-mini--frozen {
+  --chip-color: #7CC8E5;
+  --chip-bg: rgba(58, 141, 188, 0.18);
+  --chip-border: rgba(58, 141, 188, 0.65);
 }
 </style>

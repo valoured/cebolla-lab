@@ -147,5 +147,23 @@ export function useSlate(dateStr) {
     if (channel) supabase.removeChannel(channel)
   })
 
-  return { games, loading, error, activeDate, reload: load }
+  // Stub fields used by SlateView's date-nav (feature scaffolding incomplete
+  // in this branch — see commit 0fe5bbe). Returning empty array + no-ops so
+  // SlateView's computed `showDateNav` returns false and DateNav stays hidden.
+  // When the full date-nav lands in a future commit, replace these with real
+  // reactive values + the actual setTargetDate handler.
+  const availableDates = ref([])
+  const targetDate = ref(null)
+  const setTargetDate = () => {}
+
+  return {
+    games,
+    loading,
+    error,
+    activeDate,
+    availableDates,
+    targetDate,
+    setTargetDate,
+    reload: load,
+  }
 }

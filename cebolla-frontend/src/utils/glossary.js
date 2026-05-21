@@ -276,4 +276,86 @@ export const glossary = {
     description:
       'Multiplicative composite of normalized edge (0–100) and contact score (0–100). Used as the default sort + POD selection metric. Rewards picks where BOTH signals agree — strong market value AND elite recent contact quality. A single strong signal alone won\'t win; you need both.',
   },
+
+  // ── Trends page ──────────────────────────────────────────
+  trend_combined: {
+    label: 'Combined Heat',
+    unit: '%',
+    description:
+      "Cebolla's multi-signal trend score. Geometric mean of L14-vs-season divergence across HR rate, hit rate, barrel%, and ISO. Surfaces batters trending up on MULTIPLE independent signals at once — far more trustworthy than a single hot stat. A +50% combined means the player is meaningfully hot across the board, not just lucky on one metric.",
+    note: 'Geometric mean punishes disagreement: a player hot on HR but flat on barrel% won\'t score as high as one hot on all four. Per-metric trends are clamped to [-75%, +200%] before combining to prevent single-outlier spikes from dominating.',
+  },
+
+  trend_hr_pa: {
+    label: 'HR Rate (HR/PA)',
+    unit: '%',
+    description:
+      'Home runs per plate appearance. The cleanest measure of a hitter\'s actual HR output. We compare last-14-day rate against season baseline to surface streaks.',
+  },
+
+  trend_h_pa: {
+    label: 'Hit Rate (H/PA)',
+    unit: '%',
+    description:
+      'Hits per plate appearance. Slightly different from batting average (denominator is PA, not AB), but tracks the same signal. We compare last-14-day vs season baseline.',
+  },
+
+  trend_barrel: {
+    label: 'Barrel Rate',
+    unit: '%',
+    description:
+      'Percentage of batted balls "barreled" — Statcast\'s flag for the optimal exit-velo + launch-angle combo. The strongest single predictor of homers. L14 surge here often precedes a power outbreak.',
+  },
+
+  trend_iso: {
+    label: 'ISO (Isolated Power)',
+    unit: 'points',
+    description:
+      'Slugging minus batting average — measures raw power independent of contact. .200+ = real power, .150 = average, sub-.100 = punch-and-judy. L14 vs season gap shows if the power is real or noise.',
+  },
+
+  trend_score: {
+    label: 'Trend Score',
+    unit: '%',
+    description:
+      'Relative divergence of L14 form from season baseline. +100% means the L14 rate is double the season rate. Tiers: BLAZING (+50%+), HOT (+25 to +50), WARM (+10 to +25), FLAT (±10), COOL (-10 to -25), COLD (-25 to -50), FROZEN (-50% or worse).',
+    note: 'Higher PA in the L14 window = more trustworthy signal. Use the min PA slider to filter noise.',
+  },
+
+  platoon_advantage: {
+    label: 'Platoon Advantage',
+    description:
+      'The hitter has the platoon edge in today\'s matchup — LHB vs RHP, RHB vs LHP, or a switch hitter (always platooned). Historically worth +20–40 points of OPS depending on the player. The ▲ pip surfaces this so you don\'t have to cross-reference manually.',
+  },
+
+  bats_hand: {
+    label: 'Batting Handedness',
+    description:
+      '[ LHB ] left-handed batter, [ RHB ] right-handed batter, [ SWITCH ] switch hitter. Switch hitters effectively bat opposite of the pitcher, so they always carry the platoon advantage.',
+  },
+
+  delta_pp: {
+    label: 'Delta (Δ)',
+    unit: 'percentage points',
+    description:
+      'Absolute change in the metric from season to L14. "pp" = percentage points (e.g. +3.5pp means L14 rate is 3.5 points higher than season). Different from the % trend score, which is relative.',
+  },
+
+  l14_window: {
+    label: 'L14 Window',
+    description:
+      'Rolling 14-day window of plate appearances. Long enough to smooth single-game noise, short enough to catch real form changes. Powers the "current" half of every trend comparison.',
+  },
+
+  season_window: {
+    label: 'Season Window',
+    description:
+      'Year-to-date totals for the current MLB season. Serves as the baseline against which L14 form is compared. Updated daily from MLB Stats API.',
+  },
+
+  min_pa: {
+    label: 'Min PA Filter',
+    description:
+      'Minimum L14 plate appearances required to qualify. Below ~20 PA, rates are too noisy to be trustworthy — a single 2-hit game can throw a player onto the leaderboard. Slide higher for stricter filtering.',
+  },
 }

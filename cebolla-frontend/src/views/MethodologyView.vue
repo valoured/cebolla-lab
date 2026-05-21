@@ -239,6 +239,95 @@ function scrollTo(id) {
           </p>
         </section>
 
+        <!-- 3.5 COMBINED HEAT (the flagship trend metric) -->
+        <section id="combined-heat" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">Combined Heat</h2>
+            <span class="label-bracket !text-[8px] text-fg-500">M.03.d</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            Combined Heat is Cebolla's multi-signal trend score. It answers
+            a question single-metric trends can't: <em>is this hitter trending
+            up across multiple independent signals at once, or is it just one
+            lucky stat carrying the read?</em>
+          </p>
+
+          <div class="bg-bg-50 border border-bg-200 px-4 py-3 mb-3">
+            <div class="label-caps text-signal-400 mb-2">The math</div>
+            <ol class="text-fg-600 text-sm leading-relaxed list-decimal pl-5 space-y-1">
+              <li>
+                For each base metric — <span class="font-mono text-fg-700">HR/PA</span>,
+                <span class="font-mono text-fg-700">H/PA</span>,
+                <span class="font-mono text-fg-700">Barrel%</span>,
+                <span class="font-mono text-fg-700">ISO</span> —
+                compute the trend score:
+                <span class="font-mono text-fg-700">(L14 − season) / season</span>
+              </li>
+              <li>
+                Clamp each trend to <span class="font-mono text-fg-700">[−75%, +200%]</span>
+                so a single outlier metric can't dominate.
+              </li>
+              <li>
+                Take the geometric mean of <span class="font-mono text-fg-700">(1 + clamped)</span>
+                across all valid metrics, then subtract 1.
+              </li>
+              <li>
+                Require at least 3 of 4 base metrics to produce a result.
+                Sparse data → no Combined score, rather than a misleading one.
+              </li>
+            </ol>
+          </div>
+
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            <strong class="text-fg-700">Why geometric mean and not arithmetic.</strong>
+            Arithmetic mean rewards spikes — a player at +200% on HR and 0% on
+            everything else would look just as hot as one at +50% across all
+            four. Geometric mean punishes disagreement: the +200% / 0% / 0% / 0%
+            player lands around +30% combined, while the +50% / +50% / +50% / +50%
+            player lands at exactly +50%. Multi-signal agreement wins.
+          </p>
+
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            <strong class="text-fg-700">Why the clamps.</strong>
+            A player with a tiny sample can post a +500% trend on a single
+            metric — usually noise, not signal. Capping per-metric inputs at
+            +200% before the geometric mean keeps one outlier from skewing
+            the combined read. The −75% floor protects against multiplying
+            by near-zero (a player at −100% on one metric would otherwise
+            zero out the entire combined score).
+          </p>
+
+          <div class="bg-bg-50 border border-bg-200 px-4 py-3 mb-3">
+            <div class="label-caps text-signal-400 mb-2">Tier thresholds</div>
+            <p class="text-fg-600 text-xs leading-relaxed mb-2">
+              Combined Heat uses the same tier system as individual trend
+              metrics, so a +50% combined hits the same BLAZING threshold as
+              a +50% on HR/PA — but it means something far stronger because
+              multiple signals agree.
+            </p>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px] font-mono">
+              <div class="px-2 py-1 border border-signal-400/60 text-signal-300">≥ +50% BLAZING</div>
+              <div class="px-2 py-1 border border-signal-400/40 text-signal-300">+25 to +50 HOT</div>
+              <div class="px-2 py-1 border border-amber-400/40 text-amber-300">+10 to +25 WARM</div>
+              <div class="px-2 py-1 border border-bg-300 text-fg-500">±10% FLAT</div>
+              <div class="px-2 py-1 border border-blue-400/30 text-blue-300">−10 to −25 COOL</div>
+              <div class="px-2 py-1 border border-blue-400/45 text-blue-300">−25 to −50 COLD</div>
+              <div class="px-2 py-1 border border-blue-400/60 text-blue-300">≤ −50% FROZEN</div>
+              <div class="px-2 py-1 border border-bg-300 text-fg-500 italic">NULL = no data</div>
+            </div>
+          </div>
+
+          <p class="text-fg-600 text-sm leading-relaxed">
+            <strong class="text-fg-700">Why this matters for bet selection.</strong>
+            A single hot metric can be sample noise — a player goes
+            3-for-7 on barrel% over 14 days and looks like a power surge that
+            was really 4 lucky swings. Combined Heat is harder to fake:
+            the noise on each metric is roughly independent, so seeing
+            agreement across four metrics is meaningful even when any single
+            metric on its own would be uncertain.
+          </p>
+        </section>
+
         <!-- 4. STATCAST STATS -->
         <section id="statcast" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
