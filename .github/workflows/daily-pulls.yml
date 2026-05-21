@@ -441,18 +441,20 @@ jobs:
         run: python scripts/settle_cards.py
   # ── CAPTURE CLOSING LINES: for pending PODs and card_legs, find the latest
   # odds_snapshot before first pitch and copy it as the "closing" line.
-  # Also computes CLV (Closing Line Value) inline. Run hourly during the
-  # slate window — each run captures any game now within the closing window
-  # that hasn't been captured yet. Idempotent.
+  # Also computes CLV (Closing Line Value) inline.
   #
   # The cron list piggybacks on existing hourly :17 crons so we don't add
   # extra scheduler load. Capturing twice for the same game is fine
-  # (script checks closing_captured_at and skips if already set).
+  # (script filters at query time on closing_odds IS NULL).
+  #
+  # Schedule covers 11:17 AM ET → 11:17 PM ET. The early-morning runs catch
+  # afternoon games (e.g. 1:05 PM ET first pitch — capture window 11:35 AM
+  # ET to 1:05 PM ET — needs 11:17 AM or 12:17 PM cron in window).
   capture-closing-lines:
     if: |
       always() && (
         (github.event_name == 'schedule' &&
-         contains(fromJSON('["17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
+         contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'capture_closing_lines'
       )
     runs-on: ubuntu-latest

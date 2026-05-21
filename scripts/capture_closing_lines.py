@@ -79,11 +79,22 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ────────────────────────────────────────────────────────────────────────
 
 # How far before first pitch counts as "closing line" window.
-# A snapshot from 4 hours ago isn't really "closing odds" — it's mid-day odds.
-# We want the LAST snapshot before first pitch. With hourly snapshot crons,
-# the most recent pre-FP snapshot is at most 60 min old in practice. 90 min
-# ceiling gives slack for late cron runs / partial outages.
-CLOSING_LOOKBACK_MINUTES = 90
+#
+# Original v1 was 90 min — works great for games where DK posts continuous
+# odds through first pitch. But for longshot prices (+800 to +2000 HRs),
+# DK often pulls the market hours before game time, leaving no snapshot in
+# a tight window. To capture CLV on those picks we look back further.
+#
+# 240 minutes (4 hours) tradeoff:
+#   - For normal markets: still picks the most recent pre-FP snapshot, same
+#     result as 90 min would have given.
+#   - For longshots with pulled markets: now captures the last-available
+#     price as the "closing" line. Less true to "closing" semantically but
+#     better than no CLV data at all.
+#
+# If a snapshot from 4 hours before first pitch is the BEST we have, that's
+# effectively the closing price for that pick — the market closed early.
+CLOSING_LOOKBACK_MINUTES = 240
 
 # Longshot thresholds — MUST stay in sync with compute_projections.py.
 # If the values in compute_projections.py ever change, update them here too,
