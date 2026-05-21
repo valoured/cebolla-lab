@@ -26,6 +26,12 @@ const routes = [
     meta: { title: 'Daily Parlay Analysis · Cebolla' },
   },
   {
+    path: '/matchups',
+    name: 'matchups',
+    component: () => import('./views/MatchupsView.vue'),
+    meta: { title: 'Matchups · Cebolla' },
+  },
+  {
     path: '/stats',
     name: 'stats',
     component: () => import('./views/StatsView.vue'),
