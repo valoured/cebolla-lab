@@ -15,11 +15,20 @@ Carried over from v0.2.0:
   - Writes `hr_anytime`, `hits_yes`, and now h_r_rbi_* projections
   - Bayesian shrinkage on batter rates per market
 
-HR market formula (unchanged):
+HR market formula:
   shrunk_batter_hr_per_pa = (PA × obs + 200 × LEAGUE) / (PA + 200)
   shrunk_pitcher_hr_per_9 = (BF × obs + 80 × LEAGUE) / (BF + 80)
-  projected_hr_per_pa = shrunk_batter × pitcher_factor × park × arsenal_adj
+  projected_hr_per_pa = shrunk_batter × pitcher_factor × park × arsenal_adj_v2
   projected_anytime = 1 - (1 - per_pa)^expected_PAs
+
+  arsenal_adj_v2 (2026-05-21):
+    per-pitch ratio = (batter_hr_pct + pitcher_hr_allowed_pct) /
+                      (batter_overall_hr_pct + LEAGUE_HR_PCT)
+    weighted by pitcher usage, sample-size-ramped from 10 → 150 PA per pitch.
+    Dynamic clamp by data confidence:
+      HIGH   (covered PA ≥100 AND usage concentration ≥30) → [0.70, 1.30]
+      MEDIUM (covered PA ≥50)                              → [0.80, 1.20]
+      LOW    (default)                                     → [0.85, 1.15]
 
 HITS market formula:
   shrunk_batter_hit_per_pa = (PA × obs + 100 × LEAGUE) / (PA + 100)
@@ -54,7 +63,7 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_VERSION = "v0.3.0"
+MODEL_VERSION = "v0.3.0"   # arsenal v2 in-place upgrade — keep version so picker overwrites old rows cleanly
 
 # ──── HR market constants ────
 LEAGUE_HR_PER_PA = 0.029
@@ -64,6 +73,24 @@ PITCHER_SHRINKAGE_K = 80
 ARSENAL_CAP_LO = 0.85
 ARSENAL_CAP_HI = 1.15
 ARSENAL_MIN_MULT = 0.5
+# ── Arsenal v2 dynamic-clamp tiers (added 2026-05-21) ──
+# When matchup signal has high data confidence (large sample + concentrated
+# pitcher usage), allow a wider swing than the static [0.85, 1.15] cap.
+# Tiers:
+#   HIGH   — batter PA ≥100 vs covered pitches AND usage concentration ≥30 → ±30%
+#   MEDIUM — batter PA ≥ 50 vs covered pitches                              → ±20%
+#   LOW    — anything else                                                  → ±15%  (default)
+ARSENAL_V2_HIGH_PA_THRESHOLD   = 100
+ARSENAL_V2_MEDIUM_PA_THRESHOLD = 50
+ARSENAL_V2_CONCENTRATION_THRESHOLD = 30.0   # HHI-like (sum of usage_pct^2/100)
+ARSENAL_V2_HIGH_CAP_LO   = 0.70
+ARSENAL_V2_HIGH_CAP_HI   = 1.30
+ARSENAL_V2_MEDIUM_CAP_LO = 0.80
+ARSENAL_V2_MEDIUM_CAP_HI = 1.20
+# League average HR-allowed % per pitch (for the two-sided factor denominator).
+# Same as LEAGUE_HR_PER_PA but expressed as a percentage to match how pitcher
+# arsenal hr_pct rows are stored.
+ARSENAL_V2_LEAGUE_HR_PCT = LEAGUE_HR_PER_PA * 100   # ≈ 2.9
 PITCHER_CAP_LO = 0.75
 PITCHER_CAP_HI = 1.40
 PARK_CAP_LO    = 0.80
@@ -259,15 +286,44 @@ def compute_arsenal_adjustment(
     pitcher_arsenal: list,
     batter_overall_hr_pct: float,
 ) -> tuple[float, dict]:
+    """
+    v2 (2026-05-21) — pitcher × batter matchup multiplier on HR rate.
+
+    What's new vs v1:
+      1. TWO-SIDED FACTOR. v1 only used batter's HR rate per pitch:
+             raw_mult = batter_hr_pct / batter_overall_hr_pct
+         v2 also factors in the PITCHER's HR-allowed rate on that pitch:
+             raw_mult = (batter_hr_pct + pitcher_hr_allowed_pct) /
+                        (batter_overall_hr_pct + league_avg_hr_pct)
+         A batter who mashes sliders facing a pitcher who gets crushed on
+         sliders is meaningfully more dangerous than either signal alone.
+
+      2. DYNAMIC CLAMP. v1 hard-capped at [0.85, 1.15] regardless of data
+         quality. v2 widens the cap when matchup confidence is high (large
+         sample of PAs vs the pitcher's actual pitches AND concentrated
+         usage):
+             HIGH confidence   → [0.70, 1.30]
+             MEDIUM confidence → [0.80, 1.20]
+             LOW confidence    → [0.85, 1.15]  (default — matches v1)
+
+    Returns (multiplier, contributions_dict). The dict is for logging/audit
+    — same shape as v1 with two added fields: 'two_sided_mult' (uncombined)
+    and 'pitcher_hr_pct' (the pitcher side of the signal).
+    """
     if not batter_by_pitch or not pitcher_arsenal or batter_overall_hr_pct <= 0:
         return (1.0, {})
 
+    # Aggregate pitcher usage by pitch_type (rows can split across stances).
     usage_map = defaultdict(float)
+    pitcher_hr_map = defaultdict(list)   # collect HR% across stance rows
     for a in pitcher_arsenal:
         pt = a.get("pitch_type")
         u = a.get("usage_pct") or 0
         if pt and u:
             usage_map[pt] += float(u)
+            php = a.get("hr_pct")
+            if php is not None:
+                pitcher_hr_map[pt].append(float(php))
     total_usage = sum(usage_map.values())
     if total_usage <= 0:
         return (1.0, {})
@@ -276,35 +332,103 @@ def compute_arsenal_adjustment(
     weighted_sum = 0.0
     total_weight = 0.0
 
+    # Confidence accumulators — only count pitches the pitcher actually throws
+    # (≥5% usage) AND where the batter has any data on that pitch.
+    covered_pa_total = 0
+    covered_usage_total = 0.0
+    concentration = 0.0   # sum of (usage_pct^2 / 100) — HHI-like
+
     for pitch_label, usage_raw in usage_map.items():
-        usage = usage_raw / total_usage
+        usage = usage_raw / total_usage    # normalized to sum to 1.0
+        usage_pct_display = usage_raw       # original % (for concentration)
+
+        # Pitcher's HR-allowed rate on this pitch (averaged if multiple
+        # stance rows exist). Defaults to league avg if missing.
+        php_samples = pitcher_hr_map.get(pitch_label, [])
+        if php_samples:
+            pitcher_hr_pct = sum(php_samples) / len(php_samples)
+        else:
+            pitcher_hr_pct = ARSENAL_V2_LEAGUE_HR_PCT
+
         batter_stat = batter_by_pitch.get(pitch_label)
         if not batter_stat:
             multiplier = 1.0
+            two_sided_mult = 1.0
             sample_pa = 0
         else:
             b_hr_pct = batter_stat.get("hr_pct", 0) or 0
             sample_pa = batter_stat.get("pa", 0) or 0
             if sample_pa < 10:
                 multiplier = 1.0
+                two_sided_mult = 1.0
             else:
-                raw_mult = b_hr_pct / batter_overall_hr_pct
-                raw_mult = max(ARSENAL_MIN_MULT, min(2.0, raw_mult))
+                # ─── Two-sided ratio (v2 core change) ───
+                # Numerator: combined HR signal (batter side + pitcher side)
+                # Denominator: league baseline + batter's overall (same combination)
+                numerator   = b_hr_pct + pitcher_hr_pct
+                denominator = batter_overall_hr_pct + ARSENAL_V2_LEAGUE_HR_PCT
+                if denominator <= 0:
+                    two_sided_mult = 1.0
+                else:
+                    two_sided_mult = numerator / denominator
+
+                # Same global bounds on raw multiplier as v1 (prevents one
+                # weird pitch from dominating before the per-pitch sample
+                # weight kicks in).
+                two_sided_mult = max(ARSENAL_MIN_MULT, min(2.0, two_sided_mult))
+
+                # Per-pitch sample-size weight (linear ramp from 10 → 150 PAs).
+                # Below 10 PA already returned 1.0 above.
                 weight = min(1.0, max(0, (sample_pa - 10) / 140))
-                multiplier = 1.0 + (raw_mult - 1.0) * weight
+                multiplier = 1.0 + (two_sided_mult - 1.0) * weight
+
+                # Only count toward confidence if we have meaningful batter data
+                covered_pa_total += sample_pa
+                covered_usage_total += usage_pct_display
+                concentration += (usage_pct_display ** 2) / 100.0
+
         weighted_sum += multiplier * usage
         total_weight += usage
         contributions[pitch_label] = {
             "usage": round(usage, 3),
             "mult": round(multiplier, 3),
+            "two_sided_mult": round(two_sided_mult, 3),
             "pa": sample_pa,
+            "pitcher_hr_pct": round(pitcher_hr_pct, 2),
         }
 
     if total_weight <= 0:
         return (1.0, contributions)
 
     adj = weighted_sum / total_weight
-    adj_capped = max(ARSENAL_CAP_LO, min(ARSENAL_CAP_HI, adj))
+
+    # ─── v2 dynamic clamp ───
+    # Determine confidence tier from covered PA + usage concentration.
+    # Only "covered" pitches (batter has ≥10 PA on them) contribute to PA total.
+    if (covered_pa_total >= ARSENAL_V2_HIGH_PA_THRESHOLD
+            and concentration >= ARSENAL_V2_CONCENTRATION_THRESHOLD):
+        cap_lo, cap_hi = ARSENAL_V2_HIGH_CAP_LO, ARSENAL_V2_HIGH_CAP_HI
+        confidence_tier = "HIGH"
+    elif covered_pa_total >= ARSENAL_V2_MEDIUM_PA_THRESHOLD:
+        cap_lo, cap_hi = ARSENAL_V2_MEDIUM_CAP_LO, ARSENAL_V2_MEDIUM_CAP_HI
+        confidence_tier = "MEDIUM"
+    else:
+        cap_lo, cap_hi = ARSENAL_CAP_LO, ARSENAL_CAP_HI
+        confidence_tier = "LOW"
+
+    adj_capped = max(cap_lo, min(cap_hi, adj))
+
+    # Stash confidence info on the contributions dict for audit/logging.
+    contributions["_meta"] = {
+        "covered_pa_total": covered_pa_total,
+        "concentration": round(concentration, 2),
+        "confidence_tier": confidence_tier,
+        "cap_lo": cap_lo,
+        "cap_hi": cap_hi,
+        "adj_raw": round(adj, 3),
+        "adj_capped": round(adj_capped, 3),
+    }
+
     return (adj_capped, contributions)
 
 
