@@ -35,7 +35,6 @@ Run order:
 
 import os
 import sys
-import json
 import logging
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
@@ -68,6 +67,12 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ─── Market definitions & safety floors ───────────────────────────────────────
+
+# Picker reads projections from this model_version. Since compute_projections
+# uses (game_id, player_id, market, model_version) as the upsert conflict key,
+# old v0.3.0 rows coexist with new v0.4.0 rows — must filter here so we don't
+# evaluate the same batter twice (once with park baked in, once without).
+REQUIRED_MODEL_VERSION = "v0.4.0"
 
 HR_MARKET = "hr_anytime"
 
@@ -170,12 +175,13 @@ def existing_pod_for(date_iso, market_class):
 
 
 def fetch_today_games(date_iso):
+    """Today's games not yet started/final, with team abbrevs and probable pitchers."""
     res = sb.table("games") \
-        .select("id, home_team_id, away_team_id, "
+        .select("id, home_team_id, away_team_id, home_pitcher_id, away_pitcher_id, "
                 "home_team:teams!games_home_team_id_fkey(abbrev), "
                 "away_team:teams!games_away_team_id_fkey(abbrev)") \
         .eq("game_date", date_iso) \
-        .in_("status", ["Pre-Game", "Scheduled", "Warmup", "Postponed"]) \
+        .not_.in_("status", ["Final", "Game Over", "Completed Early", "In Progress"]) \
         .execute()
     return res.data or []
 
@@ -196,14 +202,21 @@ def fetch_batter_l14_stats(player_ids, season):
 
 
 def fetch_pitcher_arsenals(pitcher_ids, season):
-    """Pitcher arsenals. Returns {pitcher_id: [arsenal_rows]}."""
+    """
+    Pitcher arsenals across both stances. Returns {pitcher_id: [arsenal_rows]}.
+
+    Note: pitcher_arsenals stores separate rows per vs_stance ('L' / 'R') —
+    there is no 'A' (all) row. We pull both stances and let primary_pitch_type()
+    find the single highest-usage row. Per-pitch HR rate (for HR Tier 1 T1C)
+    similarly aggregates across stances; for the "what's their main pitch"
+    question this is fine — it's the same pitcher in either case.
+    """
     if not pitcher_ids:
         return {}
     res = sb.table("pitcher_arsenals") \
-        .select("pitcher_id, pitch_type, usage_pct, hr_pct") \
+        .select("pitcher_id, pitch_type, vs_stance, usage_pct, hr_pct") \
         .eq("season", season) \
         .eq("window_type", "l50g") \
-        .eq("vs_stance", "A") \
         .in_("pitcher_id", pitcher_ids) \
         .execute()
     out = {}
@@ -224,18 +237,27 @@ def fetch_bvp(batter_ids, pitcher_ids):
     return {(r["batter_id"], r["pitcher_id"]): r for r in (res.data or [])}
 
 
-def fetch_starting_pitcher_for_game(game_ids):
-    """{(game_id, team_id): pitcher_id} — each team's starter."""
-    if not game_ids:
-        return {}
-    res = sb.table("lineups") \
-        .select("game_id, team_id, pitcher_id") \
-        .in_("game_id", game_ids) \
-        .not_.is_("pitcher_id", "null") \
-        .execute()
+def fetch_starting_pitcher_for_game(games):
+    """
+    Build {(game_id, team_id): pitcher_id} from the games table.
+
+    The games table carries home_pitcher_id and away_pitcher_id directly —
+    these are the probable starters. Maps each side's starter so we can
+    look up opposing pitcher by the OPPOSITE team_id.
+
+    NB: earlier draft of this function (pre-bug-fix) tried to read
+    lineups.pitcher_id which does not exist — the lineups table only stores
+    batters. Pitcher assignment lives on games.
+    """
     out = {}
-    for r in res.data or []:
-        out[(r["game_id"], r["team_id"])] = r["pitcher_id"]
+    for g in games:
+        home_pid = g.get("home_pitcher_id")
+        away_pid = g.get("away_pitcher_id")
+        if home_pid:
+            # Home team's pitcher → keyed by (game_id, home_team_id)
+            out[(g["id"], g["home_team_id"])] = home_pid
+        if away_pid:
+            out[(g["id"], g["away_team_id"])] = away_pid
     return out
 
 
@@ -432,6 +454,7 @@ def fetch_hr_candidates(
                 "stake_modifier") \
         .in_("game_id", game_ids) \
         .eq("market", HR_MARKET) \
+        .eq("model_version", REQUIRED_MODEL_VERSION) \
         .gte("projected_prob", HR_MIN_PROJECTED_PROB) \
         .gte("edge", HR_MIN_EDGE) \
         .not_.is_("best_american_odds", "null") \
@@ -465,6 +488,7 @@ def fetch_hrr_candidates(
                 "stake_modifier") \
         .in_("game_id", game_ids) \
         .in_("market", HRR_MARKETS) \
+        .eq("model_version", REQUIRED_MODEL_VERSION) \
         .gte("edge", HRR_MIN_EDGE) \
         .not_.is_("best_american_odds", "null") \
         .execute()
@@ -522,7 +546,10 @@ def insert_pod(pick, date_iso, market_class):
         "tier2_hits": pick["tier2_hits"],
         "tier_score": pick["tier_score"],
         "stake_modifier": pick["stake_modifier"],
-        "tier_metadata": json.dumps(pick["tier_metadata"]),
+        # tier_metadata is JSONB — pass raw dict, supabase-py serializes
+        # automatically. Do NOT json.dumps() or it gets stored as a
+        # string-valued JSON, breaking ->> queries.
+        "tier_metadata": pick["tier_metadata"],
         "stake": 10.00,
         "status": "pending",
     }).execute()
@@ -585,6 +612,7 @@ def main():
         .select("player_id, market, projected_prob, edge, best_american_odds") \
         .in_("game_id", game_ids) \
         .in_("market", [HR_MARKET] + HRR_MARKETS) \
+        .eq("model_version", REQUIRED_MODEL_VERSION) \
         .not_.is_("edge", "null") \
         .execute()
     all_proj_player_ids = list({p["player_id"] for p in (proj_ids_res.data or [])})
@@ -600,7 +628,7 @@ def main():
     batter_stats_l14 = fetch_batter_l14_stats(all_proj_player_ids, season)
     log.info("  L14 stats: %d rows", len(batter_stats_l14))
 
-    starter_by_game_team = fetch_starting_pitcher_for_game(game_ids)
+    starter_by_game_team = fetch_starting_pitcher_for_game(games)
     pitcher_ids = list({pid for pid in starter_by_game_team.values() if pid})
     log.info("  Starting pitchers identified: %d", len(pitcher_ids))
 

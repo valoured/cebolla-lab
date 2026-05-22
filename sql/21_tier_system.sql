@@ -40,11 +40,11 @@ COMMENT ON COLUMN pods.tier1_hits IS
 COMMENT ON COLUMN pods.tier2_hits IS
   'Count of Tier 2 confirming signals at lock time (0-4).';
 COMMENT ON COLUMN pods.tier_score IS
-  'Composite score used to rank Tier-1-qualifying picks. 1.0 base + 0.10 for full triple + 0.05 per Tier 2 hit (cap 0.15).';
+  'Composite score used to rank Tier-1-qualifying picks. Base: 1.10 (3-of-3 T1) | 1.00 (2-of-3) | 0.85 (Stowers: 1-of-3 + 3+ T2). Plus +0.05 per T2 hit, cap +0.15. Range: 0.85 to 1.25.';
 COMMENT ON COLUMN pods.stake_modifier IS
   'Park × weather composite for informational stake recommendation. 1.0 = neutral; 0.7-1.3 range. NOT applied to projection.';
 COMMENT ON COLUMN pods.tier_metadata IS
-  'JSONB structure: {tier1: {barrel: 0.15, xslg: 0.62, hr_vs_pitch: 0.10, passed: 3}, tier2: {...}, conditions: {park: 1.05, wind: "out_8mph"}}';
+  'JSONB. Each Tier 1/2 signal is {"value": X, "passed": bool}. Structure: {"tier1": {"barrel": {...}, "xslg": {...}, "hr_vs_pitch": {..., "pitch_type": "4SM"}}, "tier2": {"heat": {...}, "hh_pct": {...}, "contact": {...}, "bvp": {..., "pa": N}}, "qualification_path": "triple"|"standard"|"stowers", "stake_modifier": 1.05}';
 
 
 -- ──── Card legs ───────────────────────────────────────────────────────────
