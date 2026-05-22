@@ -5,7 +5,6 @@ import { useGame } from '../composables/useGame.js'
 import { useContactPool } from '../composables/useContactPool.js'
 import ArsenalGrid from '../components/ArsenalGrid.vue'
 import BatterTable from '../components/BatterTable.vue'
-import LogBetModal from '../components/LogBetModal.vue'
 import PitcherAllowedStats from '../components/PitcherAllowedStats.vue'
 import InfoTooltip from '../components/InfoTooltip.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
@@ -38,18 +37,6 @@ const secondaryMarket = ref('hits')
 // HRR has 3 lines (1.5 / 2.5 / 3.5). User picks which one to view via sub-toggle.
 // Only relevant when secondaryMarket === 'hrr'.
 const hrrLine = ref(1.5)
-
-// ─── Bet logging state ───
-const showLogModal = ref(false)
-const logBetCtx = ref({ player: {}, proj: {}, marketMode: 'hr' })
-function onLogBet(payload) {
-  logBetCtx.value = payload
-  showLogModal.value = true
-}
-function onBetLogged() {
-  // Could surface a toast here; for now just close
-  showLogModal.value = false
-}
 
 const gameTime = computed(() => {
   return formatGameTime(game.value?.game_time_utc)
@@ -327,7 +314,6 @@ const modelMeta = computed(() => {
             :game-id="gameId"
             :game-time-utc="game.game_time_utc"
             :get-contact-snapshot="getContactSnapshot"
-            @log-bet="onLogBet"
           />
           <BatterTable
             :lineup="homeLineup"
@@ -341,7 +327,6 @@ const modelMeta = computed(() => {
             :game-id="gameId"
             :game-time-utc="game.game_time_utc"
             :get-contact-snapshot="getContactSnapshot"
-            @log-bet="onLogBet"
           />
         </div>
       </section>
@@ -402,7 +387,6 @@ const modelMeta = computed(() => {
               :game-id="gameId"
               :game-time-utc="game.game_time_utc"
               :get-contact-snapshot="getContactSnapshot"
-              @log-bet="onLogBet"
             />
             <BatterTable
               :lineup="homeLineup"
@@ -417,7 +401,6 @@ const modelMeta = computed(() => {
               :game-id="gameId"
               :game-time-utc="game.game_time_utc"
               :get-contact-snapshot="getContactSnapshot"
-              @log-bet="onLogBet"
             />
           </div>
         </div>
@@ -429,18 +412,6 @@ const modelMeta = computed(() => {
         </p>
       </footer>
     </template>
-
-    <!-- Bet logging modal -->
-    <LogBetModal
-      :open="showLogModal"
-      :game-id="gameId"
-      :player="logBetCtx.player"
-      :proj="logBetCtx.proj"
-      :market-mode="logBetCtx.marketMode"
-      :hrr-line="logBetCtx.hrrLine ?? 1.5"
-      @close="showLogModal = false"
-      @logged="onBetLogged"
-    />
   </div>
 </template>
 

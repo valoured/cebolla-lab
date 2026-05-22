@@ -31,8 +31,6 @@ const props = defineProps({
   hrrLine:    { type: Number, default: 1.5 },
 })
 
-const emit = defineEmits(['log-bet'])
-
 const expanded = ref(false)
 function toggle() { expanded.value = !expanded.value }
 
@@ -281,35 +279,28 @@ const marketLabel = computed(() => {
         </div>
       </div>
 
-      <!-- BvP + LOG row -->
-      <div class="flex items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <div class="flex flex-col gap-0.5">
-            <span class="label-caps !text-[7px] inline-flex items-center">
-              <template v-if="marketMode === 'hr'">BvP HR/PA</template>
-              <template v-else-if="marketMode === 'hits'">BvP H/PA</template>
-              <template v-else>BvP AVG</template>
-              <InfoTooltip term="bvp" />
-            </span>
-            <span class="display-num text-xs text-fg-600">
-              <template v-if="row.bvp">
-                <template v-if="marketMode === 'hr'">{{ row.bvp.hr }}/{{ row.bvp.pa }}</template>
-                <template v-else-if="marketMode === 'hits'">{{ row.bvp.hits }}/{{ row.bvp.pa }}</template>
-                <template v-else>{{ row.bvp.avg != null ? Number(row.bvp.avg).toFixed(3).replace(/^0/, '') : '—' }}</template>
-              </template>
-              <template v-else>—</template>
-            </span>
-          </div>
-          <div v-if="row.position" class="flex flex-col gap-0.5">
-            <span class="label-caps !text-[7px]">Pos</span>
-            <span class="display-num text-xs text-fg-600">{{ row.position }}</span>
-          </div>
+      <!-- BvP + Pos row -->
+      <div class="flex items-center gap-3">
+        <div class="flex flex-col gap-0.5">
+          <span class="label-caps !text-[7px] inline-flex items-center">
+            <template v-if="marketMode === 'hr'">BvP HR/PA</template>
+            <template v-else-if="marketMode === 'hits'">BvP H/PA</template>
+            <template v-else>BvP AVG</template>
+            <InfoTooltip term="bvp" />
+          </span>
+          <span class="display-num text-xs text-fg-600">
+            <template v-if="row.bvp">
+              <template v-if="marketMode === 'hr'">{{ row.bvp.hr }}/{{ row.bvp.pa }}</template>
+              <template v-else-if="marketMode === 'hits'">{{ row.bvp.hits }}/{{ row.bvp.pa }}</template>
+              <template v-else>{{ row.bvp.avg != null ? Number(row.bvp.avg).toFixed(3).replace(/^0/, '') : '—' }}</template>
+            </template>
+            <template v-else>—</template>
+          </span>
         </div>
-        <button
-          @click.stop="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode, hrrLine })"
-          class="log-btn"
-          :title="row.odds ? 'Log a bet on this player' : 'Log a bet (no DK odds yet)'"
-        >LOG</button>
+        <div v-if="row.position" class="flex flex-col gap-0.5">
+          <span class="label-caps !text-[7px]">Pos</span>
+          <span class="display-num text-xs text-fg-600">{{ row.position }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -381,22 +372,5 @@ const marketLabel = computed(() => {
   background: rgba(255, 255, 255, 0.04);
   filter: grayscale(0.35) brightness(0.95);
   opacity: 0.85;
-}
-
-.log-btn {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  padding: 4px 10px;
-  border: 1px solid rgba(255,42,42,0.30);
-  background: transparent;
-  color: rgba(255,42,42,0.85);
-  border-radius: 2px;
-  transition: all 0.12s;
-}
-.log-btn:active {
-  border-color: var(--color-accent-red, #FF2A2A);
-  color: var(--color-accent-red, #FF2A2A);
-  background: rgba(255,42,42,0.12);
 }
 </style>

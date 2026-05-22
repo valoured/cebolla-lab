@@ -36,7 +36,6 @@ const props = defineProps({
   // Contact column will render "—" everywhere (graceful no-op).
   getContactSnapshot: { type: Function, default: null },
 })
-const emit = defineEmits(['log-bet'])
 
 // ── Statcast fetch via composable ───────────────────────────────
 const playerIds = computed(() =>
@@ -444,7 +443,6 @@ const badgeLabel = computed(() => {
         :row="row"
         :market-mode="marketMode"
         :hrr-line="hrrLine"
-        @log-bet="emit('log-bet', $event)"
       />
     </div>
 
@@ -556,7 +554,6 @@ const badgeLabel = computed(() => {
                 <span v-if="sortKey === 'xba'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
-            <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-center w-10"></th>
           </tr>
         </thead>
         <tbody>
@@ -737,13 +734,6 @@ const badgeLabel = computed(() => {
                 {{ fmtStat(row.xba, 'xba') }}
               </span>
             </td>
-            <td class="py-2 px-2 border-b border-bg-200/40 text-center">
-              <button
-                @click="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode, hrrLine })"
-                class="log-btn"
-                :title="row.odds ? 'Log a bet on this player' : 'Log a bet (no DK odds yet)'"
-              >LOG</button>
-            </td>
           </tr>
         </tbody>
       </table>
@@ -807,22 +797,5 @@ const badgeLabel = computed(() => {
 .group:hover .player-headshot {
   filter: grayscale(0) brightness(1);
   opacity: 1;
-}
-
-.log-btn {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  padding: 2px 6px;
-  border: 1px solid rgba(255,42,42,0.30);
-  background: transparent;
-  color: rgba(255,42,42,0.75);
-  border-radius: 2px;
-  transition: all 0.12s;
-}
-.log-btn:hover {
-  border-color: var(--color-accent-red, #FF2A2A);
-  color: var(--color-accent-red, #FF2A2A);
-  background: rgba(255,42,42,0.08);
 }
 </style>
