@@ -13,6 +13,7 @@ const navItems = [
   { name: 'slate',       label: 'Slate',       code: 'M.01' },
   { name: 'pod',         label: 'POD',         code: 'M.02' },
   { name: 'cards',       label: 'Cards',       code: 'M.03' },
+  { name: 'matchups',    label: 'Matchups',    code: 'M.06' },
   { name: 'trends',      label: 'Trends',      code: 'M.07' },
   { name: 'stats',       label: 'Stats',       code: 'M.04' },
   { name: 'methodology', label: 'Methodology', code: 'M.05' },

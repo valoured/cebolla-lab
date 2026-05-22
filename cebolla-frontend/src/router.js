@@ -44,6 +44,12 @@ const routes = [
     meta: { title: 'Trends · Cebolla' },
   },
   {
+    path: '/matchups',
+    name: 'matchups',
+    component: () => import('./views/MatchupsView.vue'),
+    meta: { title: 'Matchups · Cebolla' },
+  },
+  {
     path: '/game/:gameId',
     name: 'hr-report',
     component: () => import('./views/HRReportView.vue'),
