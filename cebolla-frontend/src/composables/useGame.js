@@ -2,6 +2,11 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../supabase.js'
 import { ping } from './useRealtimePulse.js'
 
+// Frontend model version — must match the version pick_pod / pick_cards
+// filter on. Both pickers use REQUIRED_MODEL_VERSION = 'v0.4.0' in their
+// Python source. Bump this in lock-step when the model version changes.
+const REQUIRED_MODEL_VERSION = 'v0.4.0'
+
 /**
  * Loads everything the HR Report needs for one game.
  * Now also pulls projections rows so the Edge column can render real values.
@@ -154,17 +159,24 @@ export function useGame(gameId) {
       bvp.value = bvpMap
 
       // 7) Projections — keyed by (player_id + market)
+      //
+      // CRITICAL: filter on model_version. Multiple versions can coexist in DB
+      // (compute_projections includes model_version in its upsert conflict key)
+      // so without this filter we'd surface older rows alongside current ones
+      // depending on which was upserted last. POD and Cards filter on the same
+      // version; the HR Report must match or users see inconsistent numbers.
       if (batterIds.length) {
         const { data: projs } = await supabase
           .from('projections')
           .select('*')
           .eq('game_id', gameId)
+          .eq('model_version', REQUIRED_MODEL_VERSION)
           .in('player_id', batterIds)
           .order('created_at', { ascending: false })
         const projMap = {}
         for (const row of (projs || [])) {
           const key = `${row.player_id}_${row.market}`
-          if (!projMap[key]) projMap[key] = row   // keep newest only
+          if (!projMap[key]) projMap[key] = row   // keep newest only (within filtered version)
         }
         projections.value = projMap
       }

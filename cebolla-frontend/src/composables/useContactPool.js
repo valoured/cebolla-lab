@@ -41,6 +41,7 @@ let _poolPromise = null
 let _lastFetchedAt = null         // ms timestamp of last successful fetch
 const _l14Pool = ref(null)        // { barrel_pct: [...], hard_hit_pct: [...], xslg: [...] }
 const _seasonRowsById = ref(new Map())  // for season scores in trend calc
+let _visibilityListenerAttached = false  // singleton flag — listener attached at most once
 
 async function fetchPool() {
   // L14 — used for the percentile pool AND for scoring.
@@ -120,11 +121,9 @@ export function refreshContactPool() {
  */
 export function useContactPool() {
   const loadError = ref(null)
-  const ready = ref(false)
 
   // Kick off the load if needed
   loadPool()
-    .then(() => { ready.value = true })
     .catch(e => {
       console.error('[useContactPool] failed to load pool:', e)
       loadError.value = e.message || 'pool load failed'
@@ -135,19 +134,16 @@ export function useContactPool() {
   // the 2:13 AM ET pull_savant run). Cheap: ~500-row re-fetch, only when
   // user actively returns.
   //
-  // We attach the listener once per useContactPool call. Multiple components
-  // calling useContactPool will each attach a listener but they all share
-  // the same module-level _poolPromise, so only ONE re-fetch happens per
-  // visibility event regardless of listener count.
-  if (typeof document !== 'undefined') {
+  // Attached ONCE at module level. Previously this lived per-instance and
+  // accumulated listeners on every component mount that used the composable.
+  if (typeof document !== 'undefined' && !_visibilityListenerAttached) {
+    _visibilityListenerAttached = true
     const onVisibility = () => {
       if (document.visibilityState === 'visible' && _l14Pool.value) {
-        // Only re-fetch if data is at least 5 minutes old. Avoids thrashing
-        // when user is tabbing between this and another tab rapidly.
         const ageMs = Date.now() - (_lastFetchedAt || 0)
         if (ageMs > 5 * 60 * 1000) {
           refreshContactPool()
-          loadPool().then(() => { ready.value = true }).catch(() => {})
+          loadPool().catch(() => {})
         }
       }
     }

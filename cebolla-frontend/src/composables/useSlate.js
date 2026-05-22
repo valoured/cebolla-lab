@@ -6,46 +6,58 @@ import { ping } from './useRealtimePulse.js'
  * Loads the active slate for display.
  *
  * Smart date selection:
- * - If `dateStr` is passed, uses that exact date
+ * - If `dateStr` is passed at call time, uses that exact date (legacy path).
+ * - If the user has called setTargetDate(d), uses that.
  * - Otherwise: picks the EARLIEST upcoming date that has at least one non-final game
  *   (so when today's slate is all over, the slate auto-advances to tomorrow's games)
+ *
+ * Also fetches a SHORT window of nearby slate dates (yesterday → today+7) so the
+ * SlateView can render a DateNav with multiple selectable dates.
  */
 export function useSlate(dateStr) {
   const games = ref([])
   const loading = ref(true)
   const error = ref(null)
-  const activeDate = ref(null)   // 'YYYY-MM-DD' string of the date currently being shown
+  const activeDate = ref(null)         // 'YYYY-MM-DD' of currently-displayed slate
+  const availableDates = ref([])       // ['YYYY-MM-DD', ...] sorted ascending
+  const targetDate = ref(dateStr || null)  // user override; null = auto-pick
 
   let reloadTimer = null
   let channel = null
 
-  // Step 1: figure out which date to load
-  //
+  function setTargetDate(d) {
+    // null reverts to auto-pick. Anything else forces that date.
+    targetDate.value = d
+    load()
+  }
+
+  // ── ET-aware date helpers ─────────────────────────────────────────────
+  function todayETIso() {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date())
+  }
+
+  function addDays(iso, n) {
+    // Noon-UTC anchor avoids TZ-edge weirdness
+    const d = new Date(iso + 'T12:00:00Z')
+    d.setUTCDate(d.getUTCDate() + n)
+    return d.toISOString().slice(0, 10)
+  }
+
+  // ── Active date selection ─────────────────────────────────────────────
   // Real MLB-aware logic — a "slate day" doesn't end at midnight UTC or
   // midnight ET, it ends when all that day's games are FINAL. West-coast
   // night games routinely run past midnight ET; the slate should stay
   // "yesterday" until those games settle, not flip to "today" just because
   // the clock rolled over.
-  //
-  // Algorithm:
-  //   1. Get today's ET date (DST-safe via Intl.DateTimeFormat)
-  //   2. Compute yesterday's ET date
-  //   3. If yesterday has ANY non-final games → slate = yesterday (still active)
-  //   4. Otherwise → slate = earliest date >= today with non-final games
-  //   5. Final fallback → today (empty state)
   async function pickActiveDate() {
-    if (dateStr) return dateStr
+    // Explicit user override (set via setTargetDate) wins
+    if (targetDate.value) return targetDate.value
 
-    // ET date today (not UTC — DST-safe)
-    const todayET = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(new Date())
-
-    // Yesterday's ET date (subtract one day from todayET)
-    const yesterdayDate = new Date(todayET + 'T12:00:00Z')  // noon UTC anchor avoids TZ-edge weirdness
-    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1)
-    const yesterdayET = yesterdayDate.toISOString().slice(0, 10)
+    const todayET = todayETIso()
+    const yesterdayET = addDays(todayET, -1)
 
     // (1) Check yesterday — if any game is still non-final, slate is yesterday
     const { data: yData, error: yErr } = await supabase
@@ -69,18 +81,52 @@ export function useSlate(dateStr) {
       .limit(1)
 
     if (e || !data || data.length === 0) {
-      // (3) Final fallback: today (will show empty state if nothing scheduled)
       return todayET
     }
     return data[0].game_date
   }
 
+  // ── Available dates for the date nav ─────────────────────────────────
+  // Returns YYYY-MM-DD list of dates that have ANY games in DB, within a
+  // sensible window (yesterday → today+6). Sorted ascending.
+  async function fetchAvailableDates() {
+    const todayET = todayETIso()
+    const start = addDays(todayET, -1)
+    const end = addDays(todayET, 6)
+
+    const { data, error: e } = await supabase
+      .from('games')
+      .select('game_date')
+      .gte('game_date', start)
+      .lte('game_date', end)
+      .order('game_date', { ascending: true })
+
+    if (e || !data) return []
+    // Deduplicate (the query returns one row per game)
+    const seen = new Set()
+    const out = []
+    for (const r of data) {
+      const d = r.game_date
+      if (d && !seen.has(d)) {
+        seen.add(d)
+        out.push(d)
+      }
+    }
+    return out
+  }
+
+  // ── Main load ─────────────────────────────────────────────────────────
   async function load() {
     loading.value = true
     error.value = null
 
-    const targetDate = await pickActiveDate()
-    activeDate.value = targetDate
+    // Parallel: pick the date AND fetch the available-dates list
+    const [picked, dateList] = await Promise.all([
+      pickActiveDate(),
+      fetchAvailableDates(),
+    ])
+    activeDate.value = picked
+    availableDates.value = dateList
 
     const { data, error: dbErr } = await supabase
       .from('games')
@@ -93,6 +139,7 @@ export function useSlate(dateStr) {
         status,
         temp_f,
         wind_mph,
+        wind_dir_deg,
         wind_label,
         precip_pct,
         hr_factor_overall,
@@ -102,12 +149,12 @@ export function useSlate(dateStr) {
         away_score,
         current_inning,
         inning_state,
-        away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
-        home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium, mlb_id ),
+        away_team:teams!games_away_team_id_fkey ( id, abbrev, name, stadium, mlb_id, home_plate_bearing ),
+        home_team:teams!games_home_team_id_fkey ( id, abbrev, name, stadium, mlb_id, home_plate_bearing ),
         away_pitcher:players!games_away_pitcher_id_fkey ( id, name ),
         home_pitcher:players!games_home_pitcher_id_fkey ( id, name )
       `)
-      .eq('game_date', targetDate)
+      .eq('game_date', picked)
       .order('game_time_utc', { ascending: true })
 
     if (dbErr) {
@@ -146,15 +193,6 @@ export function useSlate(dateStr) {
     if (reloadTimer) clearTimeout(reloadTimer)
     if (channel) supabase.removeChannel(channel)
   })
-
-  // Stub fields used by SlateView's date-nav (feature scaffolding incomplete
-  // in this branch — see commit 0fe5bbe). Returning empty array + no-ops so
-  // SlateView's computed `showDateNav` returns false and DateNav stays hidden.
-  // When the full date-nav lands in a future commit, replace these with real
-  // reactive values + the actual setTargetDate handler.
-  const availableDates = ref([])
-  const targetDate = ref(null)
-  const setTargetDate = () => {}
 
   return {
     games,

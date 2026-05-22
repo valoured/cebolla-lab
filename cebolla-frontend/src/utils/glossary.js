@@ -358,4 +358,37 @@ export const glossary = {
     description:
       'Minimum L14 plate appearances required to qualify. Below ~20 PA, rates are too noisy to be trustworthy — a single 2-hit game can throw a player onto the leaderboard. Slide higher for stricter filtering.',
   },
+  // ── Matchup tab ─────────────────────────────────────────
+  danger_pitch: {
+    label: 'Danger Pitch',
+    description:
+      "For each batter, the pitch type where the opposing pitcher's usage % AND the batter's HR rate on that pitch are both elevated. Computed as usage × HR%. This is the pitch most likely to leave the yard if the matchup goes south.",
+  },
+
+  pitch_usage: {
+    label: 'Pitch Usage %',
+    description:
+      "How often a pitcher throws a specific pitch type. Aggregated from season Statcast data. A pitcher throwing 40%+ sinkers is a sinkerballer; their lineup matchups hinge heavily on how batters handle that one pitch.",
+  },
+
+  matchup_hr_ratio: {
+    label: 'HR Ratio (vs Pitch)',
+    description:
+      "Batter's HR rate against this pitch type divided by their overall HR rate. 1.5x+ = elite matchup, 1.15x+ = above average. Below 0.85x = the batter struggles with this pitch.",
+    guide: [
+      { label: 'Elite',  value: '≥1.5x',     tone: 'tone-elite' },
+      { label: 'Above',  value: '1.15–1.5x', tone: 'tone-good'  },
+      { label: 'Avg',    value: '0.85–1.15x', tone: 'tone-neutral' },
+      { label: 'Below',  value: '0.6–0.85x', tone: 'tone-cool'  },
+      { label: 'Weak',   value: '<0.6x',     tone: 'tone-cold'  },
+    ],
+  },
+
+  pitch_type_codes: {
+    label: 'Pitch Type Codes',
+    description:
+      "Standard Statcast 2-letter codes: FF (4-seam), SI (sinker), FT (2-seam), CT/FC (cutter), SL (slider), ST (sweeper), CB/CU (curveball), KC (knuckle-curve), CH (changeup), FS (splitter), KN (knuckleball). Hover any pitch tag to see the full name.",
+  },
+
+
 }

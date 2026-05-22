@@ -23,6 +23,7 @@ let _podPromise = null
 let _lastFetchedAt = null
 const _today = ref(null)              // ISO date string of fetched PODs' pod_date
 const _pods = ref([])                 // ALL POD rows for today (array, possibly empty)
+let _visibilityListenerAttached = false  // singleton flag — only attach listener once
 
 /** ET-relative today (DST-safe via Intl.DateTimeFormat). */
 function getTodayIso() {
@@ -93,7 +94,8 @@ export function useTodaysPOD() {
     loadError.value = e.message || 'POD fetch failed'
   })
 
-  if (typeof document !== 'undefined') {
+  if (typeof document !== 'undefined' && !_visibilityListenerAttached) {
+    _visibilityListenerAttached = true
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
         const ageMs = Date.now() - (_lastFetchedAt || 0)

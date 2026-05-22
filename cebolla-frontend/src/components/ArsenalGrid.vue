@@ -53,7 +53,7 @@ const pitchRows = computed(() => {
       const usage_r = totalPitches ? (p.pitches_r / totalPitches * 100) : 0
       return {
         pitch_type: p.pitch_type,
-        usage_pct: total / totalPitches * 100,
+        usage_pct: totalPitches ? (total / totalPitches * 100) : 0,
         usage_l, usage_r,
         velo: p.velo_n ? (p.velo_sum / p.velo_n) : null,
         hr_pct: totalPA ? (totalHR / totalPA * 100) : null,

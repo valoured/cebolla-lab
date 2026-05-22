@@ -251,11 +251,23 @@ function combinedScore(row) {
 
 function sortValue(row, key) {
   if (key === 'odds')     return row.odds?.american_odds ?? null
-  if (key === 'proj')     return row.proj?.pct ?? null
+  if (key === 'proj')     return row.proj?.projected_prob ?? null
   if (key === 'edge')     return row.proj?.edge ?? null
   if (key === 'combined') return combinedScore(row)
   if (key === 'contact')  return row.contact_score ?? null
-  if (key === 'bvp')      return row.bvp?.hr_per_pa ?? null
+  if (key === 'bvp') {
+    // Match the displayed BvP metric: HR/PA for hr market, H/PA for hits,
+    // AVG for HRR (which uses the OPS-adjacent average).
+    if (!row.bvp) return null
+    if (props.marketMode === 'hr') {
+      return row.bvp.pa ? row.bvp.hr / row.bvp.pa : null
+    }
+    if (props.marketMode === 'hits') {
+      return row.bvp.pa ? row.bvp.hits / row.bvp.pa : null
+    }
+    // hrr / rbi → use avg
+    return row.bvp.avg != null ? Number(row.bvp.avg) : null
+  }
   if (key === 'hh')       return row.hard_hit_pct ?? null
   if (key === 'brl')      return row.barrel_pct ?? null
   if (key === 'xslg')     return row.xslg ?? null
@@ -497,7 +509,10 @@ const badgeLabel = computed(() => {
               @click="toggleSort('bvp')"
             >
               <span class="inline-flex items-center justify-end gap-1">
-                BvP HR/PA <InfoTooltip term="bvp" />
+                <template v-if="marketMode === 'hr'">BvP HR/PA</template>
+                <template v-else-if="marketMode === 'hits'">BvP H/PA</template>
+                <template v-else>BvP AVG</template>
+                <InfoTooltip term="bvp" />
                 <span v-if="sortKey === 'bvp'" class="display-num !text-[9px]">{{ sortDir === 'desc' ? '▼' : '▲' }}</span>
               </span>
             </th>
@@ -608,12 +623,18 @@ const badgeLabel = computed(() => {
               <span
                 v-else
                 class="display-num text-xs"
-                :class="hrPctTone(marketMode === 'hits' ? row.hits_per_pa : row.hr_pct)"
+                :class="hrPctTone(
+                  marketMode === 'hits' ? row.hits_per_pa
+                  : marketMode === 'hr' ? row.hr_pct
+                  : null
+                )"
               >
                 {{
                   marketMode === 'hits'
                     ? (row.hits_per_pa != null ? row.hits_per_pa.toFixed(1) : '—')
-                    : (row.hr_pct != null ? row.hr_pct.toFixed(1) : '—')
+                    : marketMode === 'hr'
+                      ? (row.hr_pct != null ? row.hr_pct.toFixed(1) : '—')
+                      : '—'
                 }}
               </span>
             </td>
@@ -672,7 +693,15 @@ const badgeLabel = computed(() => {
             </td>
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
               <span v-if="row.bvp" class="display-num text-xs text-fg-600">
-                {{ row.bvp.hr }}/{{ row.bvp.pa }}
+                <template v-if="marketMode === 'hr'">
+                  {{ row.bvp.hr }}/{{ row.bvp.pa }}
+                </template>
+                <template v-else-if="marketMode === 'hits'">
+                  {{ row.bvp.hits }}/{{ row.bvp.pa }}
+                </template>
+                <template v-else>
+                  {{ row.bvp.avg != null ? Number(row.bvp.avg).toFixed(3).replace(/^0/, '') : '—' }}
+                </template>
               </span>
               <span v-else class="display-num text-xs text-fg-400">—</span>
             </td>
@@ -710,7 +739,7 @@ const badgeLabel = computed(() => {
             </td>
             <td class="py-2 px-2 border-b border-bg-200/40 text-center">
               <button
-                @click="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode })"
+                @click="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode, hrrLine })"
                 class="log-btn"
                 :title="row.odds ? 'Log a bet on this player' : 'Log a bet (no DK odds yet)'"
               >LOG</button>

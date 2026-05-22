@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useSlate } from '../composables/useSlate.js'
 import GameCard from '../components/GameCard.vue'
 import LoadingBrand from '../components/LoadingBrand.vue'
@@ -16,6 +16,13 @@ const {
 } = useSlate()
 
 const activeFilter = ref(null)
+
+// Track when the slate was last refreshed. Driven by the games ref —
+// every time the composable reloads we get a new array reference and the
+// watcher fires. Without this, lastUpdate would be evaluated once at mount
+// and never update.
+const lastUpdateAt = ref(new Date())
+watch(games, () => { lastUpdateAt.value = new Date() })
 
 function toggleFilter(key) {
   activeFilter.value = activeFilter.value === key ? null : key
@@ -39,7 +46,11 @@ const filteredGames = computed(() => {
           case 'hot':   return hrf >= 1.05
           case 'cold':  return hrf > 0 && hrf <= 0.95
           case 'dome':  return g.wind_label === 'dome'
-          case 'live':  return status.includes('progress')
+          case 'live':  // Match GameCard's isInProgress logic: progress / manager
+                       // challenge / replay all mean "actively playing right now"
+                       return status.includes('progress') ||
+                              status.includes('manager challenge') ||
+                              status.includes('replay')
           default:      return true
         }
       })
@@ -74,7 +85,7 @@ const dateShort = computed(() => displayedDate.value.toLocaleDateString('en-US',
 }))
 
 const lastUpdate = computed(() => {
-  return new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  return lastUpdateAt.value.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 })
 
 const filterChips = [

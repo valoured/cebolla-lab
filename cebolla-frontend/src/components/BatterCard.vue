@@ -72,10 +72,12 @@ const projDisplay = computed(() => {
     }
   }
   // Fallback to L14 per-PA stat when projection is missing.
-  // HRR doesn't have a clean per-PA fallback (it's a composite), so just show —.
+  // HR → HR rate, Hits → Hit rate, HRR → no clean fallback (composite stat),
+  // RBI → no projections support (UI hides this market in HRReportView).
   let fallback = null
   if (props.marketMode === 'hits') fallback = props.row.hits_per_pa
   else if (props.marketMode === 'hr') fallback = props.row.hr_pct
+  // hrr / rbi → fallback stays null
   return {
     value: fallback != null ? fallback.toFixed(1) + '%' : '—',
     tone: hrPctTone(fallback),
@@ -284,10 +286,17 @@ const marketLabel = computed(() => {
         <div class="flex items-center gap-3">
           <div class="flex flex-col gap-0.5">
             <span class="label-caps !text-[7px] inline-flex items-center">
-              BvP HR/PA <InfoTooltip term="bvp" />
+              <template v-if="marketMode === 'hr'">BvP HR/PA</template>
+              <template v-else-if="marketMode === 'hits'">BvP H/PA</template>
+              <template v-else>BvP AVG</template>
+              <InfoTooltip term="bvp" />
             </span>
             <span class="display-num text-xs text-fg-600">
-              <template v-if="row.bvp">{{ row.bvp.hr }}/{{ row.bvp.pa }}</template>
+              <template v-if="row.bvp">
+                <template v-if="marketMode === 'hr'">{{ row.bvp.hr }}/{{ row.bvp.pa }}</template>
+                <template v-else-if="marketMode === 'hits'">{{ row.bvp.hits }}/{{ row.bvp.pa }}</template>
+                <template v-else>{{ row.bvp.avg != null ? Number(row.bvp.avg).toFixed(3).replace(/^0/, '') : '—' }}</template>
+              </template>
               <template v-else>—</template>
             </span>
           </div>
@@ -297,7 +306,7 @@ const marketLabel = computed(() => {
           </div>
         </div>
         <button
-          @click.stop="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode })"
+          @click.stop="emit('log-bet', { player: { id: row.player_id, name: row.name }, proj: row.proj, marketMode, hrrLine })"
           class="log-btn"
           :title="row.odds ? 'Log a bet on this player' : 'Log a bet (no DK odds yet)'"
         >LOG</button>

@@ -131,10 +131,14 @@ function fmtFactor(v) {
   return v != null ? Number(v).toFixed(2) : '—'
 }
 
-// Model meta — which model version are we showing
+// Model meta — which model version is in use. With the v0.4.0 filter in
+// useGame, all projection rows have the same model_version, so picking any
+// of them gives the right answer. We use the first one for display in the
+// header badge.
 const modelMeta = computed(() => {
-  const proj = Object.values(projections.value)[0]
-  return proj?.model_version || null
+  const list = Object.values(projections.value)
+  if (!list.length) return null
+  return list[0]?.model_version || null
 })
 </script>
 
@@ -356,7 +360,7 @@ const modelMeta = computed(() => {
           <div class="flex items-center gap-2 mb-3 flex-wrap">
             <span class="label-caps mr-2">market:</span>
             <button
-              v-for="m in ['hits', 'rbi', 'hrr']"
+              v-for="m in ['hits', 'hrr']"
               :key="m"
               @click="secondaryMarket = m"
               class="text-[11px] px-2.5 py-1 border transition"
@@ -421,7 +425,7 @@ const modelMeta = computed(() => {
 
       <footer class="px-6 pb-8 text-center">
         <p class="label-caps !text-[9px] opacity-50">
-          Edges are model estimates. Hits / RBI projections coming next.
+          Edges are model estimates. RBI projections coming later.
         </p>
       </footer>
     </template>
@@ -433,6 +437,7 @@ const modelMeta = computed(() => {
       :player="logBetCtx.player"
       :proj="logBetCtx.proj"
       :market-mode="logBetCtx.marketMode"
+      :hrr-line="logBetCtx.hrrLine ?? 1.5"
       @close="showLogModal = false"
       @logged="onBetLogged"
     />
