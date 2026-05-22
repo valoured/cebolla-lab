@@ -202,17 +202,25 @@ const sortDir = ref('desc')         // 'asc' | 'desc'
 // Sortable column metadata — single source of truth for headers + the mobile dropdown.
 // 'combined' is the implicit default but isn't a visible column; users access
 // it by leaving the sort alone, and any column click overrides.
-const SORT_COLUMNS = [
-  { key: 'odds',    label: 'Odds' },
-  { key: 'proj',    label: 'Proj%' },
-  { key: 'edge',    label: 'Edge' },
-  { key: 'contact', label: 'Contact' },
-  { key: 'bvp',     label: 'BvP HR/PA' },
-  { key: 'hh',      label: 'HH%' },
-  { key: 'brl',     label: 'Brl%' },
-  { key: 'xslg',    label: 'xSLG' },
-  { key: 'xba',     label: 'xBA' },
-]
+//
+// BvP label is market-aware to match the column header (HR/PA vs H/PA vs AVG).
+const SORT_COLUMNS = computed(() => {
+  const bvpLabel =
+    props.marketMode === 'hr'    ? 'BvP HR/PA'
+    : props.marketMode === 'hits' ? 'BvP H/PA'
+    :                               'BvP AVG'
+  return [
+    { key: 'odds',    label: 'Odds' },
+    { key: 'proj',    label: 'Proj%' },
+    { key: 'edge',    label: 'Edge' },
+    { key: 'contact', label: 'Contact' },
+    { key: 'bvp',     label: bvpLabel },
+    { key: 'hh',      label: 'HH%' },
+    { key: 'brl',     label: 'Brl%' },
+    { key: 'xslg',    label: 'xSLG' },
+    { key: 'xba',     label: 'xBA' },
+  ]
+})
 
 // ── Combined-sort math ─────────────────────────────────────────────
 // Multiplicative score that rewards being good at BOTH market edge AND
@@ -285,6 +293,18 @@ function toggleSort(key) {
   }
 }
 
+// Mobile-friendly setter: never flips direction on re-pick. Used by the
+// <select> dropdown where re-selecting the same value should be a no-op,
+// not a hidden "flip the arrow" gesture. Desktop column headers still use
+// toggleSort to preserve click-to-flip semantics.
+function setSort(key) {
+  if (sortKey.value !== key) {
+    sortKey.value = key
+    sortDir.value = 'desc'
+  }
+  // else: noop — same key already active
+}
+
 function resetSort() {
   sortKey.value = null
   sortDir.value = 'desc'
@@ -341,7 +361,6 @@ const badgeLabel = computed(() => {
     <div class="px-3 sm:px-4 py-3 border-b border-bg-200 flex items-baseline justify-between gap-2 flex-wrap">
       <div class="flex items-baseline gap-2 sm:gap-3 min-w-0">
         <span class="label-bracket text-signal-400 shrink-0">{{ teamLabel }}</span>
-        <span class="display-text text-sm sm:text-base text-fg-700 truncate">vs Pitcher</span>
       </div>
       <span
         class="label-caps !text-[9px] px-2 py-0.5 rounded-sm shrink-0"
@@ -420,7 +439,7 @@ const badgeLabel = computed(() => {
         <div class="flex items-center gap-1.5">
           <select
             :value="sortKey || ''"
-            @change="e => e.target.value ? toggleSort(e.target.value) : resetSort()"
+            @change="e => e.target.value ? setSort(e.target.value) : resetSort()"
             class="mobile-sort-select"
           >
             <option value="">Lineup order</option>
@@ -640,7 +659,9 @@ const badgeLabel = computed(() => {
                 <span
                   class="display-num text-[11px] px-1.5 py-0.5 rounded-sm font-medium"
                   :class="edgeDisplay(row.proj.edge).cls"
-                  :title="`Model ${(row.proj.projected_prob*100).toFixed(1)}% vs no-vig ${(row.proj.no_vig_prob*100).toFixed(1)}%`"
+                  :title="row.proj.no_vig_prob != null
+                    ? `Model ${(row.proj.projected_prob*100).toFixed(1)}% vs no-vig ${(row.proj.no_vig_prob*100).toFixed(1)}%`
+                    : `Model ${(row.proj.projected_prob*100).toFixed(1)}% (no-vig unavailable)`"
                 >
                   {{ edgeDisplay(row.proj.edge).text }}
                 </span>
@@ -689,7 +710,7 @@ const badgeLabel = computed(() => {
               >—</span>
             </td>
             <td class="py-2 px-2 border-b border-bg-200/40 text-right">
-              <span v-if="row.bvp" class="display-num text-xs text-fg-600">
+              <span v-if="row.bvp && row.bvp.pa > 0" class="display-num text-xs text-fg-600">
                 <template v-if="marketMode === 'hr'">
                   {{ row.bvp.hr }}/{{ row.bvp.pa }}
                 </template>

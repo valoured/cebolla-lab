@@ -190,7 +190,7 @@ const favTeamPlaying = computed(() => {
             <span
               v-if="showScores"
               class="display-num text-2xl leading-none"
-              :class="game.away_score > game.home_score ? 'text-fg-800' : 'text-fg-500'"
+              :class="game.away_score >= game.home_score ? 'text-fg-800' : 'text-fg-500'"
             >
               {{ game.away_score }}
             </span>
@@ -240,7 +240,7 @@ const favTeamPlaying = computed(() => {
             <span
               v-if="showScores"
               class="display-num text-2xl leading-none"
-              :class="game.home_score > game.away_score ? 'text-fg-800' : 'text-fg-500'"
+              :class="game.home_score >= game.away_score ? 'text-fg-800' : 'text-fg-500'"
             >
               {{ game.home_score }}
             </span>

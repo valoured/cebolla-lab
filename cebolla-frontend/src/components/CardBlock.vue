@@ -23,9 +23,9 @@ const props = defineProps({
 
 const router = useRouter()
 
-function openPlayer(mlbamId) {
-  if (!mlbamId) return
-  router.push({ name: 'player', params: { playerId: mlbamId } })
+function openPlayer(playerId) {
+  if (!playerId) return
+  router.push({ name: 'player', params: { playerId } })
 }
 
 // ── Status helpers — mirror backend pull_scores classification exactly ──
@@ -152,7 +152,7 @@ function marketColorClass(market) {
 
     <!-- Legs -->
     <div>
-      <div v-for="leg in legs" :key="leg.id" class="leg-row" @click="openPlayer(leg.player_mlbam_id)">
+      <div v-for="leg in legs" :key="leg.id" class="leg-row" @click="openPlayer(leg.player_id)">
         <img v-if="leg.player_mlbam_id"
              :src="playerHeadshotUrl(leg.player_mlbam_id)"
              :alt="leg.player_name"

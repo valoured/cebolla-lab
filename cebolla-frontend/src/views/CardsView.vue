@@ -41,13 +41,21 @@ const error = ref(null)
 let refreshTimer = null
 
 // ── Today's ET date ───────────────────────────────────────────
+// Driven by a tick ref so the value stays fresh past the midnight ET
+// boundary without requiring a page reload. The refresh interval below
+// already bumps `dateTick` once per minute, which is plenty for HH:MM
+// or YYYY-MM-DD precision.
 function todayIsoFn() {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York',
     year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(new Date())
 }
-const todayIso = todayIsoFn()
+const dateTick = ref(0)
+const todayIso = computed(() => {
+  dateTick.value  // reactive dep
+  return todayIsoFn()
+})
 
 // ── Load ──────────────────────────────────────────────────────
 async function load() {
@@ -94,7 +102,7 @@ async function load() {
       .from('pods')
       .select('id, pod_date, market_class, market, projected_prob, edge, ' +
               'american_odds, status, payout, stake, player_name, ' +
-              'team_abbrev, opponent_abbrev, player_mlbam_id, game_id')
+              'team_abbrev, opponent_abbrev, player_id, player_mlbam_id, game_id')
       .gte('pod_date', cutoffIso)
       .order('pod_date', { ascending: false })
     if (pe) throw pe
@@ -128,8 +136,13 @@ async function load() {
 
 onMounted(() => {
   load()
-  // Refresh every 60s while page is open
-  refreshTimer = setInterval(load, 60_000)
+  // Refresh every 60s while page is open. Bumping dateTick on each tick
+  // keeps `todayIso` reactive past the midnight ET boundary — once it
+  // flips, `todaysCards` / `todaysPods` immediately reclassify rows.
+  refreshTimer = setInterval(() => {
+    dateTick.value++
+    load()
+  }, 60_000)
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
@@ -137,10 +150,10 @@ onUnmounted(() => {
 
 // ── Derived: today vs history ─────────────────────────────────
 const todaysCards = computed(() =>
-  cards.value.filter(c => c.card_date === todayIso && c.status === 'pending')
+  cards.value.filter(c => c.card_date === todayIso.value && c.status === 'pending')
 )
 const todaysPods = computed(() =>
-  pods.value.filter(p => p.pod_date === todayIso && p.status === 'pending')
+  pods.value.filter(p => p.pod_date === todayIso.value && p.status === 'pending')
 )
 // History: ANY settled card (win/loss/void), regardless of date.
 // Today's settled cards belong in history immediately so users see results
@@ -291,9 +304,9 @@ function tierLabel(tier) {
 }
 
 // Navigation
-function openPlayer(mlbamId) {
-  if (!mlbamId) return
-  router.push({ name: 'player', params: { playerId: mlbamId } })
+function openPlayer(playerId) {
+  if (!playerId) return
+  router.push({ name: 'player', params: { playerId } })
 }
 </script>
 
@@ -344,7 +357,7 @@ function openPlayer(mlbamId) {
                   {{ cardStatusBadge({status: pod.status, id: 0}).label }}
                 </span>
               </div>
-              <div class="leg-row" @click="openPlayer(pod.player_mlbam_id)">
+              <div class="leg-row" @click="openPlayer(pod.player_id)">
                 <img v-if="pod.player_mlbam_id"
                      :src="playerHeadshotUrl(pod.player_mlbam_id)"
                      :alt="pod.player_name"
@@ -509,7 +522,7 @@ function openPlayer(mlbamId) {
               <!-- Settled PODs (legacy) -->
               <tr v-for="pod in historicalPods" :key="`hp-${pod.id}`"
                   class="border-b border-bg-200/40 hover:bg-bg-100/40 transition cursor-pointer"
-                  @click="openPlayer(pod.player_mlbam_id)">
+                  @click="openPlayer(pod.player_id)">
                 <td class="py-2 px-3 text-fg-500 font-mono text-[11px]">{{ fmtDate(pod.pod_date) }}</td>
                 <td class="py-2 px-3">
                   <div class="flex items-baseline gap-2">

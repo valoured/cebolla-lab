@@ -63,32 +63,25 @@ export function useGame(gameId) {
       awayLineup.value = (lns || []).filter(l => l.team_id === g.away_team.id)
       homeLineup.value = (lns || []).filter(l => l.team_id === g.home_team.id)
 
-      // 3) Arsenals
-      const pitcherIds = [g.away_pitcher?.id, g.home_pitcher?.id].filter(Boolean)
-      if (pitcherIds.length) {
-        const { data: ars } = await supabase
-          .from('pitcher_arsenals')
-          .select('*')
-          .in('pitcher_id', pitcherIds)
-          .eq('window_type', 'season')
-        arsenalAway.value = (ars || []).filter(a => a.pitcher_id === g.away_pitcher?.id)
-        arsenalHome.value = (ars || []).filter(a => a.pitcher_id === g.home_pitcher?.id)
-      }
-
-      // 4) Batter stats — REMOVED in Phase 7
-      //
-      // BatterTable now fetches its own Statcast via useStatcastBatters
-      // composable for window-aware (Season / L30 / L14 / L7) data.
-      // Keeping batterStats fetch here would have caused duplicate queries.
-      //
-      // If a future view needs batter season stats outside of BatterTable,
-      // consider extracting useStatcastBatters or building a small
-      // useBatterSeasonStats helper instead.
-
       // Player IDs are still needed for odds / BvP / projections queries below.
       const batterIds = [...awayLineup.value, ...homeLineup.value]
         .map(l => l.player?.id)
         .filter(Boolean)
+
+      // 3-7 ALL run in parallel once we have the game + lineups.
+      // Previously these were 4 sequential awaits (~50-200ms each, so a
+      // full HR Report load could pay 800ms+ in sequential round-trips
+      // even with a warm DB). Promise.all collapses them to a single
+      // round-trip's worth of wait.
+      const pitcherIds = [g.away_pitcher?.id, g.home_pitcher?.id].filter(Boolean)
+
+      const arsenalPromise = pitcherIds.length
+        ? supabase
+            .from('pitcher_arsenals')
+            .select('*')
+            .in('pitcher_id', pitcherIds)
+            .eq('window_type', 'season')
+        : Promise.resolve({ data: [] })
 
       // 5) Odds (latest snapshot per player+market+line)
       //
@@ -103,31 +96,17 @@ export function useGame(gameId) {
       //
       // For single-line markets (HR Anytime = line 0.5) the structure is
       // the same — consumers just look up `odds[pid].hr_anytime_yes[0.5]`.
-      if (batterIds.length) {
-        const { data: o } = await supabase
-          .from('odds_snapshots')
-          .select('*')
-          .eq('game_id', gameId)
-          .eq('is_current', true)
-          .in('player_id', batterIds)
-          .order('snapshot_time', { ascending: false })
-        const oddsMap = {}
-        for (const row of (o || [])) {
-          const pid = row.player_id
-          const mkt = row.market
-          const line = row.line == null ? 0.5 : Number(row.line)
-          if (!oddsMap[pid]) oddsMap[pid] = {}
-          if (!oddsMap[pid][mkt]) oddsMap[pid][mkt] = {}
-          // Order-by-snapshot-desc + only-set-if-empty preserves the latest
-          // snapshot per (pid, market, line) tuple.
-          if (!oddsMap[pid][mkt][line]) {
-            oddsMap[pid][mkt][line] = row
-          }
-        }
-        odds.value = oddsMap
-      }
+      const oddsPromise = batterIds.length
+        ? supabase
+            .from('odds_snapshots')
+            .select('*')
+            .eq('game_id', gameId)
+            .eq('is_current', true)
+            .in('player_id', batterIds)
+            .order('snapshot_time', { ascending: false })
+        : Promise.resolve({ data: [] })
 
-      // 6) BvP
+      // 6) BvP — two pitcher-side queries (home P vs away batters, away P vs home batters)
       const bvpQueries = []
       if (g.home_pitcher?.id) {
         const awayBatterIds = awayLineup.value.map(l => l.player?.id).filter(Boolean)
@@ -149,14 +128,6 @@ export function useGame(gameId) {
           )
         }
       }
-      const bvpResults = await Promise.all(bvpQueries)
-      const bvpMap = {}
-      for (const res of bvpResults) {
-        for (const r of (res.data || [])) {
-          bvpMap[`${r.batter_id}_${r.pitcher_id}`] = r
-        }
-      }
-      bvp.value = bvpMap
 
       // 7) Projections — keyed by (player_id + market)
       //
@@ -165,21 +136,61 @@ export function useGame(gameId) {
       // so without this filter we'd surface older rows alongside current ones
       // depending on which was upserted last. POD and Cards filter on the same
       // version; the HR Report must match or users see inconsistent numbers.
-      if (batterIds.length) {
-        const { data: projs } = await supabase
-          .from('projections')
-          .select('*')
-          .eq('game_id', gameId)
-          .eq('model_version', REQUIRED_MODEL_VERSION)
-          .in('player_id', batterIds)
-          .order('created_at', { ascending: false })
-        const projMap = {}
-        for (const row of (projs || [])) {
-          const key = `${row.player_id}_${row.market}`
-          if (!projMap[key]) projMap[key] = row   // keep newest only (within filtered version)
+      const projPromise = batterIds.length
+        ? supabase
+            .from('projections')
+            .select('*')
+            .eq('game_id', gameId)
+            .eq('model_version', REQUIRED_MODEL_VERSION)
+            .in('player_id', batterIds)
+            .order('created_at', { ascending: false })
+        : Promise.resolve({ data: [] })
+
+      // Await all in parallel
+      const [arsRes, oddsRes, bvpRess, projsRes] = await Promise.all([
+        arsenalPromise,
+        oddsPromise,
+        Promise.all(bvpQueries),
+        projPromise,
+      ])
+
+      // Arsenals
+      const ars = arsRes.data || []
+      arsenalAway.value = ars.filter(a => a.pitcher_id === g.away_pitcher?.id)
+      arsenalHome.value = ars.filter(a => a.pitcher_id === g.home_pitcher?.id)
+
+      // Odds
+      const oddsMap = {}
+      for (const row of (oddsRes.data || [])) {
+        const pid = row.player_id
+        const mkt = row.market
+        const line = row.line == null ? 0.5 : Number(row.line)
+        if (!oddsMap[pid]) oddsMap[pid] = {}
+        if (!oddsMap[pid][mkt]) oddsMap[pid][mkt] = {}
+        // Order-by-snapshot-desc + only-set-if-empty preserves the latest
+        // snapshot per (pid, market, line) tuple.
+        if (!oddsMap[pid][mkt][line]) {
+          oddsMap[pid][mkt][line] = row
         }
-        projections.value = projMap
       }
+      odds.value = oddsMap
+
+      // BvP
+      const bvpMap = {}
+      for (const res of bvpRess) {
+        for (const r of (res.data || [])) {
+          bvpMap[`${r.batter_id}_${r.pitcher_id}`] = r
+        }
+      }
+      bvp.value = bvpMap
+
+      // Projections
+      const projMap = {}
+      for (const row of (projsRes.data || [])) {
+        const key = `${row.player_id}_${row.market}`
+        if (!projMap[key]) projMap[key] = row   // keep newest only (within filtered version)
+      }
+      projections.value = projMap
 
       loading.value = false
     } catch (e) {

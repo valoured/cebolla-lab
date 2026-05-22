@@ -24,6 +24,11 @@ export function useSlate(dateStr) {
 
   let reloadTimer = null
   let channel = null
+  // Monotonic token to discard stale load() results. When rapid setTargetDate
+  // clicks fire multiple overlapping loads, only the most recent load is
+  // allowed to write to games.value. Without this guard the slower load
+  // could finish second and overwrite the user's actual selection.
+  let loadToken = 0
 
   function setTargetDate(d) {
     // null reverts to auto-pick. Anything else forces that date.
@@ -117,6 +122,7 @@ export function useSlate(dateStr) {
 
   // ── Main load ─────────────────────────────────────────────────────────
   async function load() {
+    const myToken = ++loadToken
     loading.value = true
     error.value = null
 
@@ -125,6 +131,8 @@ export function useSlate(dateStr) {
       pickActiveDate(),
       fetchAvailableDates(),
     ])
+    // Bail out if a newer load() has been kicked off while we were waiting.
+    if (myToken !== loadToken) return
     activeDate.value = picked
     availableDates.value = dateList
 
@@ -157,6 +165,10 @@ export function useSlate(dateStr) {
       .eq('game_date', picked)
       .order('game_time_utc', { ascending: true })
 
+    // Final staleness check before mutating state — protects against the
+    // case where ANOTHER load() ran in parallel and finished first.
+    if (myToken !== loadToken) return
+
     if (dbErr) {
       error.value = dbErr.message
       games.value = []
@@ -178,13 +190,15 @@ export function useSlate(dateStr) {
   onMounted(() => {
     load()
 
+    // Slate cares about games changes (scores, statuses, lineup changes
+    // surfaced via the joined fields). We deliberately do NOT subscribe to
+    // projections — the slate doesn't display any projection-derived data,
+    // so a projection update for one of 60+ batters firing a slate reload
+    // is pure waste.
     channel = supabase
       .channel('slate-changes')
       .on('postgres_changes',
           { event: '*', schema: 'public', table: 'games' },
-          () => scheduleReload())
-      .on('postgres_changes',
-          { event: '*', schema: 'public', table: 'projections' },
           () => scheduleReload())
       .subscribe()
   })

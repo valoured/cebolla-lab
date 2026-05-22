@@ -13,7 +13,6 @@ const navItems = [
   { name: 'slate',       label: 'Slate',       code: 'M.01' },
   { name: 'pod',         label: 'POD',         code: 'M.02' },
   { name: 'cards',       label: 'Cards',       code: 'M.03' },
-  { name: 'matchups',    label: 'Matchups',    code: 'M.08' },
   { name: 'trends',      label: 'Trends',      code: 'M.07' },
   { name: 'stats',       label: 'Stats',       code: 'M.04' },
   { name: 'methodology', label: 'Methodology', code: 'M.05' },
@@ -32,15 +31,25 @@ function selectSport(s) {
   activeSport.value = s.key
 }
 
+// Every deep-dive page that surfaces slate content (game detail, player,
+// team) keeps the 'Slate' tab highlighted so the user can always trace
+// back to the page that brought them there.
+const SLATE_DESCENDANTS = ['slate', 'hr-report', 'player', 'team']
 function isActive(name) {
-  // Slate covers slate + game deep dive + player view (all sport-content pages)
-  if (name === 'slate' && (route.name === 'slate' || route.name === 'hr-report' || route.name === 'player')) {
-    return true
-  }
+  if (name === 'slate' && SLATE_DESCENDANTS.includes(route.name)) return true
   return route.name === name
 }
 
+// Clock ticks every 30s. Without a reactive dep, `now` would evaluate once
+// at setup and freeze. Recomputing every second is wasteful for an HH:MM
+// display; 30s is plenty since the lowest displayed unit is minutes.
+const clockTick = ref(0)
+let clockTimer = null
+onMounted(() => { clockTimer = setInterval(() => clockTick.value++, 30_000) })
+onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
+
 const now = computed(() => {
+  clockTick.value  // reactive dep
   const d = new Date()
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
 })

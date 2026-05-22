@@ -6,8 +6,8 @@
  * betting signal (Odds + Edge + Proj%) prominently, with a tap-to-expand
  * reveal for the secondary stats (HH%, Brl%, xSLG, xBA, BvP).
  *
- * Designed for parlay-builder workflow: scan rapidly, expand a couple of
- * hitters that pique interest, log a bet.
+ * Designed for scan-and-research workflow: rapidly identify edge plays,
+ * tap to expand for deeper stats before placing bets externally.
  */
 
 import { ref, computed } from 'vue'
@@ -289,7 +289,7 @@ const marketLabel = computed(() => {
             <InfoTooltip term="bvp" />
           </span>
           <span class="display-num text-xs text-fg-600">
-            <template v-if="row.bvp">
+            <template v-if="row.bvp && row.bvp.pa > 0">
               <template v-if="marketMode === 'hr'">{{ row.bvp.hr }}/{{ row.bvp.pa }}</template>
               <template v-else-if="marketMode === 'hits'">{{ row.bvp.hits }}/{{ row.bvp.pa }}</template>
               <template v-else>{{ row.bvp.avg != null ? Number(row.bvp.avg).toFixed(3).replace(/^0/, '') : '—' }}</template>

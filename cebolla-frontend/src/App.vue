@@ -6,9 +6,9 @@ import TopNav from './components/TopNav.vue'
   <div class="min-h-screen flex flex-col">
     <TopNav />
     <main class="flex-1 min-w-0 relative z-10">
-      <router-view v-slot="{ Component }">
+      <router-view v-slot="{ Component, route }">
         <transition name="fade" mode="out-in">
-          <component :is="Component" />
+          <component :is="Component" :key="route.fullPath" />
         </transition>
       </router-view>
     </main>

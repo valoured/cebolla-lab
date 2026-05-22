@@ -132,6 +132,7 @@ function startAutoRefresh() {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       return  // skip while tab is in background — refresh on next focus instead
     }
+    dateTick.value++  // keep `todayIso` reactive past midnight ET
     refreshLive()
   }, 60_000)
 }
@@ -158,7 +159,14 @@ onUnmounted(() => {
 })
 
 // ── Derived ────────────────────────────────────────────────────
-const todayIso = todayIsoFn()
+// Reactive today-in-ET. Bumped once per minute by the refresh interval
+// so the value stays correct past the midnight boundary. Without this,
+// post-midnight cards would silently fall into "historical" classification.
+const dateTick = ref(0)
+const todayIso = computed(() => {
+  dateTick.value  // reactive dep
+  return todayIsoFn()
+})
 
 // Hour of the day in ET (0-23). Used to switch the empty-state copy:
 // before the morning lock window we show "check back after morning lock",
@@ -179,8 +187,8 @@ function currentETHour() {
 }
 const pastMorningLock = currentETHour() >= 11   // 11 AM ET — pick_pod fires by ~3:43 AM, but allow buffer
 
-const todayPod = computed(() => pods.value.find(p => p.pod_date === todayIso) || null)
-const historicalPods = computed(() => pods.value.filter(p => p.pod_date !== todayIso))
+const todayPod = computed(() => pods.value.find(p => p.pod_date === todayIso.value) || null)
+const historicalPods = computed(() => pods.value.filter(p => p.pod_date !== todayIso.value))
 const settledPods = computed(() => pods.value.filter(p => ['win', 'loss', 'push'].includes(p.status)))
 
 // ── Per-market_class filtering (dual POD: HR + HRR) ────────────────────
@@ -193,12 +201,12 @@ function podsByMarket(marketClass) {
 }
 function todayPodForMarket(marketClass) {
   return pods.value.find(
-    p => p.pod_date === todayIso && (p.market_class || 'hr') === marketClass,
+    p => p.pod_date === todayIso.value && (p.market_class || 'hr') === marketClass,
   ) || null
 }
 function historicalPodsForMarket(marketClass) {
   return pods.value.filter(
-    p => p.pod_date !== todayIso && (p.market_class || 'hr') === marketClass,
+    p => p.pod_date !== todayIso.value && (p.market_class || 'hr') === marketClass,
   )
 }
 function settledPodsForMarket(marketClass) {

@@ -39,10 +39,16 @@ const secondaryMarket = ref('hits')
 const hrrLine = ref(1.5)
 
 const gameTime = computed(() => {
+  // formatGameTime of a fixed UTC string doesn't change, but referencing
+  // tickKey keeps the relative wording (e.g. "Tonight" → "Today") fresh
+  // across day boundaries.
+  tickKey.value
   return formatGameTime(game.value?.game_time_utc)
 })
 
 const gameCountdown = computed(() => {
+  // Recompute every 30s so the countdown ticks down without page reload.
+  tickKey.value
   const mins = minutesUntil(game.value?.game_time_utc)
   if (mins == null) return null
   if (mins <= 0 || mins > 240) return null
@@ -76,12 +82,14 @@ const showScores = computed(() => {
 
 const awayScoreLeading = computed(() => {
   if (!showScores.value) return false
-  return (game.value?.away_score || 0) > (game.value?.home_score || 0)
+  // Tied games highlight BOTH teams (>=) — visually clearer than implying
+  // both are "losing". Strict > would dim both ends on a tie.
+  return (game.value?.away_score ?? 0) >= (game.value?.home_score ?? 0)
 })
 
 const homeScoreLeading = computed(() => {
   if (!showScores.value) return false
-  return (game.value?.home_score || 0) > (game.value?.away_score || 0)
+  return (game.value?.home_score ?? 0) >= (game.value?.away_score ?? 0)
 })
 
 // ── Inning indicator when live ──
@@ -97,10 +105,19 @@ const inningDisplay = computed(() => {
 })
 
 const statusBadge = computed(() => {
+  // Mirrors GameCard.statusBadge so the status pill is consistent between
+  // the slate card and the HR Report header. Manager challenge / replay
+  // both mean "actively playing"; delayed/suspended get a distinct amber pill.
   const s = (game.value?.status || '').toLowerCase()
-  if (s.includes('progress')) return { text: 'LIVE', color: 'text-signal-400 bg-signal-400/15' }
+  if (s.includes('progress') || s.includes('manager challenge') || s.includes('replay')) {
+    return { text: 'LIVE', color: 'text-signal-400 bg-signal-400/15' }
+  }
+  if (s.includes('delayed') || s.includes('suspended')) {
+    return { text: s.includes('suspend') ? 'SUSPENDED' : 'DELAYED', color: 'text-amber-400 bg-amber-400/10' }
+  }
   if (s.includes('final') || s.includes('over')) return { text: 'FINAL', color: 'text-fg-500 bg-bg-200' }
-  if (s.includes('pre')) return { text: 'SOON', color: 'text-fg-600 bg-bg-200/60' }
+  if (s.includes('postpone') || s.includes('cancel')) return { text: 'PPD', color: 'text-fg-400 bg-bg-200/40' }
+  if (s.includes('pre') || s.includes('warmup')) return { text: 'SOON', color: 'text-fg-600 bg-bg-200/60' }
   return null
 })
 
@@ -337,7 +354,7 @@ const modelMeta = computed(() => {
           class="w-full py-3 border border-bg-200 hover:border-signal-400/40 transition flex items-center justify-center gap-3 group"
         >
           <span class="label-caps group-hover:text-signal-400 transition">
-            {{ showSecondary ? '− hide' : '+ show' }} hits / RBI markets
+            {{ showSecondary ? '− hide' : '+ show' }} hits / H+R+RBI markets
           </span>
         </button>
 
