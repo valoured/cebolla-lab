@@ -641,6 +641,23 @@ def main():
     today = get_today_iso()
     log.info("🧅 POD picker — slate %s (HR + HRR, tier system v0.4.0)", today)
 
+    # ─── Idempotency gate ────────────────────────────────────────────────
+    # Exit cleanly if today's POD is already locked for this model version.
+    # This lets the Cloudflare Worker's 3:30 AM run AND the GitHub 3:43 AM
+    # backup both fire safely — whichever runs second sees the picks already
+    # exist and skips. Without this, both would race and we'd get duplicates.
+    existing = sb.table("pods").select("id, market_class") \
+        .eq("pod_date", today) \
+        .eq("model_version", REQUIRED_MODEL_VERSION) \
+        .execute()
+    if existing.data:
+        markets = {row.get("market_class", "hr") for row in existing.data}
+        log.info(
+            "POD already locked for %s (model %s, markets=%s). Skipping.",
+            today, REQUIRED_MODEL_VERSION, sorted(markets),
+        )
+        return
+
     games = fetch_today_games(today)
     if not games:
         log.warning("No games scheduled for %s.", today)

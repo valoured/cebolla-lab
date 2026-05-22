@@ -1382,6 +1382,22 @@ def main():
     today = get_today_iso()
     log.info("🧅 Card picker — slate %s", today)
 
+    # ─── Idempotency gate ────────────────────────────────────────────────
+    # Exit cleanly if today's cards are already locked. Lets the Cloudflare
+    # Worker 3:30 AM run and the GitHub 3:43 AM backup cron both fire safely
+    # without producing duplicate cards. Whichever runs second sees the cards
+    # already exist and skips.
+    existing = sb.table("cards").select("id, tier") \
+        .eq("card_date", today) \
+        .limit(1) \
+        .execute()
+    if existing.data:
+        log.info(
+            "Cards already locked for %s. Skipping.",
+            today,
+        )
+        return
+
     games = fetch_today_games(today)
     if not games:
         log.warning("No games for %s — skipping", today)
