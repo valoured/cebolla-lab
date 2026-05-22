@@ -63,7 +63,7 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_VERSION = "v0.3.0"   # arsenal v2 in-place upgrade — keep version so picker overwrites old rows cleanly
+MODEL_VERSION = "v0.4.0"   # tier system: removed park/weather from projected_prob, moved to stake_modifier
 
 # ──── HR market constants ────
 LEAGUE_HR_PER_PA = 0.029
@@ -832,13 +832,21 @@ def _project_hr(
         by_pitch, opposing_arsenal, base_pct_for_arsenal
     )
 
-    # ─── Combine ───
-    projected_per_pa = base * p_factor * park * arsenal_adj
+    # ─── Combine (NO park or weather — those are stake modifiers, NOT projection inputs) ───
+    # Pure projection = Statcast base × pitcher factor × arsenal factor.
+    # Park & weather are tracked separately and surfaced as a stake recommendation.
+    projected_per_pa = base * p_factor * arsenal_adj
     projected_per_pa = max(0.001, min(PROJ_PER_PA_CAP, projected_per_pa))
 
     spot = batter.get("batting_order") or 6
     expected_pas = PA_BY_LINEUP_SPOT.get(spot, 4.0)
     projected_prob = one_minus_pow_per_pa(projected_per_pa, expected_pas)
+
+    # Stake modifier (informational only — used to show "favorable conditions
+    # +X%" on the ticket. NOT used to bias which batter we pick).
+    # Weather currently a no-op (= 1.0) until weather adjustment ships.
+    weather_factor = 1.0
+    stake_modifier = max(0.7, min(1.3, park * weather_factor))
 
     # ─── Edge ───
     edge = None
@@ -864,6 +872,7 @@ def _project_hr(
         "park_adj": round(park, 3),
         "weather_adj": 1.0,
         "arsenal_adj": round(arsenal_adj, 3),
+        "stake_modifier": round(stake_modifier, 3),
         "best_book": "draftkings" if best_american is not None else None,
         "best_american_odds": best_american,
         "no_vig_prob": round(no_vig, 4) if no_vig is not None else None,
@@ -908,13 +917,19 @@ def _project_hits(
         shrunk_pitcher_hit = LEAGUE_HIT_PER_PA
     p_factor = pitcher_baa_factor_from_shrunk(shrunk_pitcher_hit)
 
-    # ─── Combine (no arsenal adjustment for hits — pitch type effect is noise) ───
-    projected_per_pa = base * p_factor * park
+    # ─── Combine (NO park or weather — those are stake modifiers, NOT projection inputs) ───
+    # Pure projection = Statcast base × pitcher BAA factor.
+    # Park & weather are tracked separately and surfaced as a stake recommendation.
+    projected_per_pa = base * p_factor
     projected_per_pa = max(0.001, min(PROJ_HIT_PER_PA_CAP, projected_per_pa))
 
     spot = batter.get("batting_order") or 6
     expected_pas = PA_BY_LINEUP_SPOT.get(spot, 4.0)
     projected_prob = one_minus_pow_per_pa(projected_per_pa, expected_pas)
+
+    # Stake modifier (informational only)
+    weather_factor = 1.0
+    stake_modifier = max(0.7, min(1.3, park * weather_factor))
 
     # ─── Edge ───
     edge = None
@@ -940,6 +955,7 @@ def _project_hits(
         "park_adj": round(park, 3),
         "weather_adj": 1.0,
         "arsenal_adj": 1.0,                          # n/a for hits
+        "stake_modifier": round(stake_modifier, 3),
         "best_book": "draftkings" if best_american is not None else None,
         "best_american_odds": best_american,
         "no_vig_prob": round(no_vig, 4) if no_vig is not None else None,
@@ -1028,11 +1044,11 @@ def _project_hrr(
 
     park = park_ba_capped(float(park_ba)) if park_ba else 1.0
 
-    # ─── Combined per-PA rate ───
-    # Hits absorbs pitcher + park adjustments. Runs/RBI are downstream events
-    # already implicitly correlated with team's offensive context (captured
-    # through L14 blend) — no separate factor needed v1.
-    p_hit_adj = p_hit_season * p_factor * park
+    # ─── Combined per-PA rate (NO park or weather here — those are stake modifiers) ───
+    # Hits absorbs pitcher adjustment. Park goes to stake_modifier instead.
+    # Runs/RBI are downstream events already implicitly correlated with team's
+    # offensive context (captured through L14 blend) — no separate factor needed v1.
+    p_hit_adj = p_hit_season * p_factor
     p_hit_adj = max(0.001, min(PROJ_HIT_PER_PA_CAP, p_hit_adj))
 
     lambda_per_pa = p_hit_adj + p_r + p_rbi - HRR_OVERLAP_PER_PA
@@ -1041,6 +1057,10 @@ def _project_hrr(
     spot = batter.get("batting_order") or 6
     expected_pas = PA_BY_LINEUP_SPOT.get(spot, 4.0)
     lambda_game = lambda_per_pa * expected_pas
+
+    # Stake modifier (informational only)
+    weather_factor = 1.0
+    stake_modifier = max(0.7, min(1.3, park * weather_factor))
 
     # ─── One row per line ───
     rows = []
@@ -1081,6 +1101,7 @@ def _project_hrr(
             "park_adj": round(park, 3),
             "weather_adj": 1.0,
             "arsenal_adj": 1.0,                       # n/a for HRR
+            "stake_modifier": round(stake_modifier, 3),
             "best_book": "draftkings" if best_american is not None else None,
             "best_american_odds": best_american,
             "no_vig_prob": round(no_vig, 4) if no_vig is not None else None,
