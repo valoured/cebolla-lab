@@ -1,5 +1,6 @@
 <script setup>
 import TopNav from './components/TopNav.vue'
+import SearchModal from './components/SearchModal.vue'
 </script>
 
 <template>
@@ -12,6 +13,10 @@ import TopNav from './components/TopNav.vue'
         </transition>
       </router-view>
     </main>
+
+    <!-- Global player+team search modal. Mounted once at root so the
+         Ctrl/Cmd+K and `/` hotkeys work from anywhere in the app. -->
+    <SearchModal />
 
     <!-- ─── GLOBAL LEGAL FOOTER ────────────────────────────────── -->
     <!-- Sitewide disclaimer per Cebolla legal positioning: research      -->

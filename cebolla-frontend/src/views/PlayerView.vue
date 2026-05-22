@@ -150,13 +150,19 @@ async function load() {
 }
 
 async function loadTonightMatchup() {
-  // ET-relative "today" for the date filter
+  // DST-safe ET-relative "today" calculation. The previous version hardcoded
+  // a -4h offset (EDT), which silently wrong-shifted by an hour from early
+  // November through early March (EST = UTC-5). Using Intl.DateTimeFormat
+  // with the IANA zone delegates the offset math to the runtime.
+  function etDateIso(d) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(d)
+  }
   const now = new Date()
-  const offsetMs = -4 * 60 * 60 * 1000  // ET = UTC - 4 (EDT)
-  const etNow = new Date(now.getTime() + offsetMs)
-  const todayStr = etNow.toISOString().slice(0, 10)
-  const tomorrowStr = new Date(etNow.getTime() + 24 * 60 * 60 * 1000)
-    .toISOString().slice(0, 10)
+  const todayStr = etDateIso(now)
+  const tomorrowStr = etDateIso(new Date(now.getTime() + 24 * 60 * 60 * 1000))
 
   // First, find upcoming game IDs (today/tomorrow ET, not final)
   const { data: candidateGames } = await supabase

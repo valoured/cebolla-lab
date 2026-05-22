@@ -58,6 +58,14 @@ const burstKey = ref(0)
 watch(isPulsing, (v) => {
   if (v) burstKey.value++
 })
+
+// Trigger the global SearchModal. SearchModal exposes a window-level open
+// handle so we don't need a Vue event bus or prop drilling for this.
+function openSearch() {
+  if (typeof window !== 'undefined' && typeof window.__openCebollaSearch === 'function') {
+    window.__openCebollaSearch()
+  }
+}
 </script>
 
 <template>
@@ -96,8 +104,25 @@ watch(isPulsing, (v) => {
         </router-link>
       </nav>
 
-      <!-- Right side: sport selector + live indicator + clock -->
+      <!-- Right side: search + sport selector + live indicator + clock -->
       <div class="ml-auto flex items-center gap-2 sm:gap-4 shrink-0">
+        <!-- Search button — clickable affordance for users who don't know
+             the Ctrl/Cmd+K or `/` hotkeys. Triggers the global SearchModal. -->
+        <button
+          type="button"
+          @click="openSearch"
+          class="search-trigger"
+          aria-label="Search players and teams"
+          title="Search players and teams (Ctrl+K)"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.5-3.5"></path>
+          </svg>
+          <span class="hidden sm:inline search-trigger__label">find</span>
+          <kbd class="hidden md:inline-flex search-trigger__kbd">⌘K</kbd>
+        </button>
+
         <!-- Sport selector pills -->
         <div class="flex items-center gap-1">
           <button
@@ -173,6 +198,47 @@ watch(isPulsing, (v) => {
   -ms-overflow-style: none;
 }
 .scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* Global search trigger — matches the sport-pill aesthetic but with a
+   distinct outline so it reads as an action rather than a state pill. */
+.search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--bg-200, #1c1c20);
+  background: transparent;
+  color: var(--fg-500, #8a8a92);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+  border-radius: 2px;
+}
+.search-trigger:hover {
+  border-color: rgba(255, 42, 42, 0.45);
+  color: var(--fg-700, #c0c0c8);
+  background: rgba(255, 42, 42, 0.04);
+}
+.search-trigger:focus-visible {
+  outline: none;
+  border-color: #FF2A2A;
+  box-shadow: 0 0 0 1px rgba(255, 42, 42, 0.35);
+}
+.search-trigger__label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+.search-trigger__kbd {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border: 1px solid var(--bg-200, #1c1c20);
+  border-radius: 2px;
+  color: var(--fg-500, #8a8a92);
+  background: rgba(255, 255, 255, 0.02);
+  align-items: center;
+}
 
 /* Sport selector pills */
 .sport-pill {
