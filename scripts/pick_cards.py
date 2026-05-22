@@ -1,8 +1,26 @@
 """
-pick_cards.py — AI-built Cebolla Cards.
+pick_cards.py — AI-built Cebolla Cards (tier system v0.4.0).
 
 Generates daily parlay cards from today's projection pool. Runs after
 pick_pod.py in the 2:45 AM ET POD lock window.
+
+═══ TIER SYSTEM INTEGRATION (v0.4.0) ═══════════════════════════════════
+  Each candidate leg is evaluated through the same Tier 1/2 framework
+  used by pick_pod.py (see tier_system.py). A leg qualifies if:
+    - HR market:  ≥2-of-3 Tier 1 hits (barrel%, xSLG, HR vs primary pitch)
+                  OR Stowers path (1 T1 + ≥3 T2 hits)
+    - HRR/Hits:   ≥2-of-3 Tier 1 hits (hit_per_pa, xBA, BvP positive)
+                  OR Stowers path
+
+  Disqualified candidates are dropped from the pool BEFORE combo generation.
+  No more "carry leg" cards — every leg must independently clear tier gates.
+
+  Each leg carries:
+    tier1_hits, tier2_hits, tier_score (0.85-1.25), stake_modifier,
+    tier_metadata (JSONB structure same as pods)
+
+  Each card carries:
+    avg_stake_modifier = mean(leg.stake_modifier)
 
 CARD TIERS (variable per slate quality):
   two_leg   — up to 6 cards, ev_per_dollar > 0.05
@@ -20,62 +38,42 @@ MATH:
   edge            = combined_prob - implied_prob
   ev_per_dollar   = combined_prob × (parlay_decimal - 1) - (1 - combined_prob)
 
-CORRELATION PENALTIES:
-  same game     -12%  (weather, lineup, umpire shared — SGPs usually have
-                       negative correlation and juiced lines; we penalize
-                       harder to discourage frequency)
-  same team     -15%  (lineup state shared, e.g. two HRs from same team
-                       requires same hot offense)
-  same player   -15%  (player having a good day correlates across markets)
+CORRELATION PENALTIES (unchanged):
+  same game     -12%  (SGPs usually have negative correlation + juice)
+  same team     -15%  (lineup state shared)
+  same player   -15%  (same player good day correlates across markets)
 
-CANDIDATE FLOORS (per-market):
-  hr_anytime   projected_prob >= 0.08, edge >= 0.03
-  h_r_rbi_1.5  projected_prob >= 0.40, edge >= 0.03
-  h_r_rbi_2.5  projected_prob >= 0.20, edge >= 0.03
-  hits_yes     projected_prob >= 0.55, edge >= 0.03
-  rbi_yes      projected_prob >= 0.35, edge >= 0.03
+CANDIDATE FLOORS (per-market, applied BEFORE tier evaluation):
+  hr_anytime   projected_prob >= 0.08, edge >= 0.02
+  h_r_rbi_1.5  projected_prob >= 0.40, edge >= 0.02
+  h_r_rbi_2.5  projected_prob >= 0.20, edge >= 0.02
+  hits_yes     projected_prob >= 0.55, edge >= 0.02
+  rbi_yes      projected_prob >= 0.35, edge >= 0.02
 
-COMBINED HEAT FILTER + BONUS (added v8):
-  After candidate floors are applied, each candidate's batter is joined with
-  the latest batter_trends snapshot. Two effects:
+  Floors exist to filter obvious noise BEFORE the more expensive tier
+  evaluation. A candidate must pass BOTH the per-market floor AND the
+  tier gates to become a viable leg.
 
-    1. FROZEN filter: any candidate whose batter has combined_trend ≤ −50%
-       is dropped entirely. Multi-signal cold is a strong negative signal
-       that overrides positive EV (the model thinks this player is good but
-       four different rolling metrics say they're slumping).
+OBJECTIVE FUNCTION (v0.4.0):
+  score = ev_per_dollar * 100 + sum(leg_tier_scores) * 5
 
-    2. Score bonus: each leg adds a small heat bonus to the combination
-       score (see HEAT_BONUS_BY_TIER below). This is a TIEBREAKER between
-       similarly-EV combos — never enough to override EV by itself, but
-       enough to prefer multi-signal hot batters when two cards look equal.
+  EV is the primary driver (scaled by 100). The sum of leg tier_scores
+  (each 0.85-1.25) breaks ties — a card whose legs all qualify "triple"
+  (3-of-3 T1) sums to ~3.5-5.0, vs a card with "standard" legs at ~3.0-4.0.
+  At scale ×5 that's a 5-10 point tiebreaker — meaningful when EVs are
+  close, never enough to overturn a clear EV winner.
 
-  Bonuses (per-leg, additive to score_combination output):
-       BLAZING +1.2    HOT +0.8    WARM +0.3    FLAT 0
-       COOL    -0.3    COLD -1.0   (FROZEN is filtered out before scoring)
+  Heat is NO LONGER a separate bonus — heat is now baked into Tier 2A
+  (heat ≥ HOT counts as a T2 hit), so it influences tier_score directly.
 
-  Scale calibration: typical score values are 5–25, so per-leg bonuses of
-  ±0.3 to ±1.2 across 2–4 legs add roughly 5–20% movement to the score —
-  enough to break ties, not enough to overturn meaningful EV gaps.
-  COLD bumped to -1.0 (≈ -1% EV equivalent) because the model has a known
-  L14 blind spot and multi-signal cold batters are often overvalued.
+DEDUP / EXPOSURE (unchanged):
+  After scoring, greedy selection: take highest-scoring combo per tier,
+  exclude its players from subsequent same-tier picks. 3-leg can share
+  ≤1 leg with any 2-leg. 4-leg can share ≤2 legs with anything.
+  Global caps: any player ≤3 cards, ≤1 fully-same-game card.
 
-  If batter_trends lacks a row for a player (e.g. compute_batter_trends
-  hasn't run on a fresh day), the bonus defaults to 0 and the filter is
-  skipped. The model gracefully degrades to pre-heat behavior.
-
-OBJECTIVE:
-  Mix of EV, "right reads", and Combined Heat. Each combination scored as:
-    score = ev_per_dollar * 100 + avg_leg_edge * 50 + sum(heat_bonus per leg)
-
-  Higher EV preferred, but combined edge also matters (rewards combinations
-  where each leg has its own independent edge, not just one carry-leg).
-  Combined Heat nudges toward multi-signal hot batters as a tiebreaker.
-
-DEDUP:
-  After scoring, greedy selection: take highest-scoring combo, exclude its
-  players from subsequent same-tier picks. Three-leggers cannot share more
-  than 1 leg with any selected two-legger. Four-leggers cannot share more
-  than 2 legs.
+MARKET DIVERSIFICATION (unchanged):
+  Mandate ≥2 non-HR cards in the menu. Post-selection swap if short.
 """
 
 import os
@@ -86,6 +84,17 @@ from itertools import combinations
 
 from supabase import create_client
 from dotenv import load_dotenv
+
+# Tier system shared with pick_pod.py
+from tier_system import (
+    evaluate_tier1_hr,
+    evaluate_tier1_hrr,
+    evaluate_tier2,
+    score_candidate,
+    qualification_path,
+    primary_pitch_type,
+    stake_modifier_for,
+)
 
 load_dotenv()
 
@@ -101,6 +110,10 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────────────────────────────
+
+# Picker reads projections from this model_version only. Must stay in sync
+# with compute_projections.py:MODEL_VERSION and pick_pod.py:REQUIRED_MODEL_VERSION.
+REQUIRED_MODEL_VERSION = "v0.4.0"
 
 # Market floors — each market needs its own min projected_prob because
 # the markets have wildly different base rates. HR is ~10% baseline,
@@ -158,27 +171,20 @@ CORRELATION_PENALTIES = {
     "same_player": 0.15,
 }
 
-# ── Combined Heat integration ──
+# ── Heat integration (v0.4.0) ──
 #
-# Per-leg bonus added to score_combination output, keyed by the batter's
-# combined_tier from batter_trends. Calibrated against typical score
-# magnitudes (5-25) — bonuses are small enough to be a tiebreaker, not
-# big enough to overturn meaningful EV differences. See the docstring at
-# the top of this file for the rationale.
-HEAT_BONUS_BY_TIER = {
-    "BLAZING": 1.2,
-    "HOT":     0.8,
-    "WARM":    0.3,
-    "FLAT":    0.0,
-    "COOL":   -0.3,   # bumped from -0.2 — small but meaningful tilt away
-    "COLD":   -1.0,   # bumped from -0.6 — model has known L14 blind spot,
-                      # multi-signal cold batters are often overvalued by
-                      # ~0.5-1.5% EV. The -1.0 (≈ -1% EV equivalent) closes
-                      # that gap without hard-blocking the bet entirely.
-    # FROZEN should never reach scoring (filtered at fetch_candidates), but
-    # included here as a safety net in case data updates mid-run.
-    "FROZEN": -1.5,
-}
+# In v0.3.0, cards had a separate HEAT_BONUS_BY_TIER lookup table that
+# adjusted the score by ±0.3 to ±1.2 per leg. In v0.4.0 this is GONE —
+# heat is now baked into Tier 2A of tier_system.py:
+#
+#   Tier 2A:  heat_tier ∈ {HOT, BLAZING}  → +1 T2 hit
+#   Tier 2A:  heat_tier ∈ {WARM, FLAT}    → 0 T2 hits
+#   Tier 2A:  heat_tier ∈ {COOL, COLD}    → 0 T2 hits
+#   FROZEN (combined_trend ≤ -50%)        → filtered before tier eval
+#
+# So a HOT batter naturally accumulates a higher tier_score (T2 contributes
+# +0.05 per hit), which feeds into the card-level score. No separate
+# bonus table needed.
 
 # Combined trend threshold below which we filter the candidate entirely.
 # Matches the FROZEN tier (≤ -50%) from useTrends.js / compute_batter_trends.
@@ -209,6 +215,259 @@ MAX_SAME_GAME_CARDS    = 1   # KEPT at 1 — SGPs stay rare regardless of menu s
 # A "non-HR card" has zero legs with market='hr_anytime'.
 # Scaled to 2 to match the bigger menu — more cards = more diversification needed.
 MIN_NON_HR_CARDS = 2
+
+def fetch_starting_pitcher_for_game(games):
+    """
+    Build {(game_id, team_id): pitcher_id} from games table.
+    Keyed by the team the pitcher pitches FOR — to find opposing pitcher,
+    look up the batter's OPPONENT team in this dict.
+
+    Mirror of the same function in pick_pod.py.
+    """
+    out = {}
+    for g in games:
+        home_pid = g.get("home_pitcher_id")
+        away_pid = g.get("away_pitcher_id")
+        if home_pid:
+            out[(g["id"], g["home_team_id"])] = home_pid
+        if away_pid:
+            out[(g["id"], g["away_team_id"])] = away_pid
+    return out
+
+
+def fetch_batter_l14_stats(player_ids, season):
+    """L14 batter_stats. Returns {player_id: row}. Mirror of pick_pod."""
+    if not player_ids:
+        return {}
+    res = sb.table("batter_stats") \
+        .select("batter_id, pa, hit_per_pa, barrel_pct, hard_hit_pct, "
+                "xslg, xba") \
+        .eq("season", season) \
+        .eq("window_type", "l14") \
+        .eq("vs_hand", "A") \
+        .in_("batter_id", player_ids) \
+        .execute()
+    return {r["batter_id"]: r for r in (res.data or [])}
+
+
+def fetch_batter_season_by_pitch(player_ids, season):
+    """Season by_pitch_type per batter. Mirror of pick_pod."""
+    if not player_ids:
+        return {}
+    res = sb.table("batter_stats") \
+        .select("batter_id, by_pitch_type") \
+        .eq("season", season) \
+        .eq("window_type", "season") \
+        .eq("vs_hand", "A") \
+        .in_("batter_id", player_ids) \
+        .execute()
+    return {r["batter_id"]: (r.get("by_pitch_type") or {}) for r in (res.data or [])}
+
+
+def fetch_pitcher_arsenals(pitcher_ids, season):
+    """Pitcher arsenals across both stances. Mirror of pick_pod."""
+    if not pitcher_ids:
+        return {}
+    res = sb.table("pitcher_arsenals") \
+        .select("pitcher_id, pitch_type, vs_stance, usage_pct, hr_pct") \
+        .eq("season", season) \
+        .eq("window_type", "season") \
+        .in_("pitcher_id", pitcher_ids) \
+        .execute()
+    out = {}
+    for r in res.data or []:
+        out.setdefault(r["pitcher_id"], []).append(r)
+    return out
+
+
+def fetch_bvp(batter_ids, pitcher_ids):
+    """BvP history. Returns {(batter_id, pitcher_id): row}. Mirror of pick_pod."""
+    if not batter_ids or not pitcher_ids:
+        return {}
+    res = sb.table("bvp_history") \
+        .select("batter_id, pitcher_id, pa, avg, ops") \
+        .in_("batter_id", batter_ids) \
+        .in_("pitcher_id", pitcher_ids) \
+        .execute()
+    return {(r["batter_id"], r["pitcher_id"]): r for r in (res.data or [])}
+
+
+CONTACT_WEIGHTS = {"barrel_pct": 0.40, "hard_hit_pct": 0.30, "xslg": 0.30}
+CONTACT_MIN_PA = 30
+NEUTRAL_PERCENTILE = 50.0
+
+
+def _percentile_rank(value, pool):
+    """Percentile rank: % of pool strictly below value, + 0.5 × equal.
+       Mirror of pick_pod._percentile_rank."""
+    if not pool or value is None:
+        return None
+    sorted_pool = sorted(p for p in pool if p is not None)
+    if not sorted_pool:
+        return None
+    below = sum(1 for p in sorted_pool if p < value)
+    equal = sum(1 for p in sorted_pool if p == value)
+    return (below + 0.5 * equal) / len(sorted_pool) * 100.0
+
+
+def _build_contact_pools(stat_rows):
+    pools = {"barrel_pct": [], "hard_hit_pct": [], "xslg": []}
+    for r in stat_rows:
+        for k in pools:
+            v = r.get(k)
+            if v is not None:
+                try:
+                    pools[k].append(float(v))
+                except (TypeError, ValueError):
+                    pass
+    return pools
+
+
+def _contact_score(stats, pools):
+    """Composite percentile-ranked contact score. Returns None if stats
+       lack PA threshold or no real values were found."""
+    if not stats:
+        return None
+    pa = stats.get("pa")
+    try:
+        pa_v = float(pa) if pa is not None else 0
+    except (TypeError, ValueError):
+        return None
+    if pa_v < CONTACT_MIN_PA:
+        return None
+    weighted_sum = 0.0
+    total_weight = 0.0
+    had_real_value = False
+    for key, weight in CONTACT_WEIGHTS.items():
+        v = stats.get(key)
+        pool = pools.get(key, [])
+        pct = None
+        if v is not None and len(pool) >= 3:
+            try:
+                pct = _percentile_rank(float(v), pool)
+                if pct is not None:
+                    had_real_value = True
+            except (TypeError, ValueError):
+                pass
+        if pct is None:
+            pct = NEUTRAL_PERCENTILE
+        weighted_sum += pct * weight
+        total_weight += weight
+    if not had_real_value:
+        return None
+    if total_weight == 0:
+        return None
+    return round(weighted_sum / total_weight, 1)
+
+
+def fetch_contact_scores(player_ids, season):
+    """
+    Build contact scores for each player using the same percentile-rank
+    method as pick_pod. Returns {player_id: contact_score 0-100 or None}.
+    """
+    if not player_ids:
+        return {}
+    pool_res = sb.table("batter_stats") \
+        .select("batter_id, pa, barrel_pct, hard_hit_pct, xslg") \
+        .eq("season", season) \
+        .eq("window_type", "l14") \
+        .eq("vs_hand", "A") \
+        .gte("pa", CONTACT_MIN_PA) \
+        .execute()
+    pool_rows = pool_res.data or []
+    pools = _build_contact_pools(pool_rows)
+    by_batter = {r["batter_id"]: r for r in pool_rows if r.get("batter_id") is not None}
+    out = {}
+    for pid in player_ids:
+        row = by_batter.get(pid)
+        out[pid] = _contact_score(row, pools) if row else None
+    return out
+
+
+# ────────────────────────────────────────────────────────────────────────
+# TIER EVALUATION (per candidate)
+# ────────────────────────────────────────────────────────────────────────
+
+def _market_class(market):
+    """Map projection market → tier evaluator class.
+       HR uses tier1_hr; everything else (HRR, hits, rbi) uses tier1_hrr."""
+    return "hr" if market == "hr_anytime" else "hrr"
+
+
+def _evaluate_leg_tiers(
+    candidate, market_class,
+    games_by_id, players_by_id,
+    contact_by_player, heat_by_player,
+    batter_stats_l14, pitcher_arsenals, bvp_pairs,
+    starter_by_game_team, batter_season_by_pitch,
+):
+    """
+    Evaluate one candidate through the tier system. Mutates candidate
+    in place with tier fields. Returns False if disqualified, True if
+    qualified (tier_score populated).
+
+    Disqualified means: doesn't pass 2-of-3 T1 AND doesn't pass Stowers
+    (1 T1 + ≥3 T2). Disqualified candidates should not be used as legs.
+    """
+    game = games_by_id.get(candidate["game_id"])
+    player = players_by_id.get(candidate["player_id"])
+    if not game or not player:
+        return False
+
+    # Find opposing pitcher
+    is_home = player.get("team_id") == game.get("home_team_id")
+    opposing_team_id = game.get("away_team_id") if is_home else game.get("home_team_id")
+    opposing_pitcher_id = starter_by_game_team.get((candidate["game_id"], opposing_team_id))
+
+    bstats = batter_stats_l14.get(candidate["player_id"])
+    bvp_row = bvp_pairs.get((candidate["player_id"], opposing_pitcher_id)) if opposing_pitcher_id else None
+
+    # Pitcher primary pitch (only needed for HR T1C)
+    pitcher_primary = None
+    if opposing_pitcher_id:
+        arsenal = pitcher_arsenals.get(opposing_pitcher_id) or []
+        pitcher_primary = primary_pitch_type(arsenal)
+
+    # Tier 1
+    if market_class == "hr":
+        sbp = (batter_season_by_pitch or {}).get(candidate["player_id"])
+        t1_hits, t1_detail = evaluate_tier1_hr(bstats, pitcher_primary, season_by_pitch=sbp)
+    else:
+        t1_hits, t1_detail = evaluate_tier1_hrr(bstats, bvp_row)
+
+    # Tier 2
+    heat = heat_by_player.get(candidate["player_id"]) if heat_by_player else None
+    heat_tier = heat.get("combined_tier") if heat else None
+    contact = contact_by_player.get(candidate["player_id"])
+    t2_hits, t2_detail = evaluate_tier2(bstats, heat_tier, contact, bvp_row)
+
+    # Score
+    score = score_candidate(t1_hits, t2_hits)
+    if score is None:
+        return False  # disqualified
+    qpath = qualification_path(t1_hits, t2_hits)
+
+    # Stake modifier (informational)
+    # Park comes from games.hr_factor_overall (for HR) or team.park_ba_factor
+    # via projection.park_adj which compute_projections already wrote.
+    # We just read the leg's stored park_adj/weather_adj from the projection row.
+    park = candidate.get("park_adj") or 1.0
+    weather = candidate.get("weather_adj") or 1.0
+    smod = stake_modifier_for(park, weather)
+
+    # Mutate candidate
+    candidate["tier1_hits"]     = t1_hits
+    candidate["tier2_hits"]     = t2_hits
+    candidate["tier_score"]     = score
+    candidate["stake_modifier"] = smod
+    candidate["tier_metadata"]  = {
+        "tier1": t1_detail,
+        "tier2": t2_detail,
+        "qualification_path": qpath,
+        "stake_modifier": smod,
+    }
+    return True
+
 
 # ────────────────────────────────────────────────────────────────────────
 # DATE
@@ -258,9 +517,10 @@ def implied_from_decimal(decimal):
 # ────────────────────────────────────────────────────────────────────────
 
 def fetch_today_games(date_iso):
-    """Pull today's games + team abbrevs."""
+    """Pull today's games + team abbrevs + probable pitchers."""
     res = sb.table("games") \
         .select("id, away_team_id, home_team_id, "
+                "home_pitcher_id, away_pitcher_id, "
                 "away_team:teams!games_away_team_id_fkey(abbrev), "
                 "home_team:teams!games_home_team_id_fkey(abbrev)") \
         .eq("game_date", date_iso) \
@@ -356,23 +616,31 @@ def fetch_batter_heat(player_ids, date_iso):
 
 def fetch_candidates(date_iso, games):
     """
-    Build the unified candidate pool across all markets, applying per-market
-    floors and the FROZEN heat filter. Returns a flat list of candidate dicts.
+    Build the unified candidate pool across all markets, applying:
+      1. Per-market floors (cheap filter)
+      2. FROZEN heat filter
+      3. Tier system gates (HR T1≥2, or HRR T1≥2, or Stowers 1+3)
 
-    Each candidate has heat fields attached (combined_trend, combined_tier)
-    when available, or None when batter_trends has no row for that batter.
+    Each candidate is enriched with tier1_hits, tier2_hits, tier_score,
+    stake_modifier, tier_metadata before returning.
+
+    Returns a flat list of qualified candidate dicts, sorted by tier_score
+    descending (ties broken by edge).
     """
     if not games:
         return []
     game_ids = [g["id"] for g in games]
     games_by_id = {g["id"]: g for g in games}
+    season = datetime.now(timezone.utc).year
 
     markets = list(MARKET_FLOORS.keys())
     proj_res = sb.table("projections") \
         .select("id, game_id, player_id, market, projected_prob, no_vig_prob, "
-                "edge, best_american_odds, best_book") \
+                "edge, best_american_odds, best_book, "
+                "park_adj, weather_adj, stake_modifier, model_version") \
         .in_("game_id", game_ids) \
         .in_("market", markets) \
+        .eq("model_version", REQUIRED_MODEL_VERSION) \
         .not_.is_("edge", "null") \
         .not_.is_("best_american_odds", "null") \
         .execute()
@@ -388,19 +656,19 @@ def fetch_candidates(date_iso, games):
     players_by_id = {p["id"]: p for p in (players_res.data or [])}
 
     # ── Heat lookup ──
-    # Pull Combined Heat for all candidate batters in one query. Used to
-    # filter FROZEN players and to attach heat data for the score bonus.
+    # Used for the FROZEN filter AND for Tier 2A. With tier system, heat
+    # informs T2 directly — no more separate score bonus.
     heat_by_player = fetch_batter_heat(player_ids, date_iso)
     if heat_by_player:
         log.info("Heat snapshot: %d batters with combined_trend rows for %s",
                  len(heat_by_player), date_iso)
     else:
-        log.info("Heat snapshot: empty (degrading to pre-heat scoring)")
+        log.info("Heat snapshot: empty (degrading to no-heat scoring)")
 
-    candidates = []
+    # ── Per-market floors + FROZEN filter (cheap filters first) ──
+    floor_passed = []
     frozen_filtered = 0
     for p in projections:
-        # Apply floors
         floor = MARKET_FLOORS.get(p["market"])
         if floor is None:
             continue
@@ -418,12 +686,7 @@ def fetch_candidates(date_iso, games):
         if not game:
             continue
 
-        # ── FROZEN heat filter ──
-        # Drop multi-signal cold batters even if their projection looks good.
-        # When combined_trend is ≤ HEAT_FROZEN_THRESHOLD, four independent
-        # rolling metrics agree this player is slumping — that's a stronger
-        # signal than a marginal projection edge. Players without heat data
-        # (heat = None) are NOT filtered, they just don't get the bonus.
+        # FROZEN filter
         heat = heat_by_player.get(p["player_id"])
         if heat and heat.get("combined_trend") is not None:
             if heat["combined_trend"] <= HEAT_FROZEN_THRESHOLD:
@@ -440,7 +703,7 @@ def fetch_candidates(date_iso, games):
         if decimal is None or decimal <= 1:
             continue
 
-        # Parse line from market string (e.g. h_r_rbi_1.5 -> 1.5)
+        # Parse line from market string
         line = None
         if p["market"].startswith("h_r_rbi_"):
             try:
@@ -450,7 +713,7 @@ def fetch_candidates(date_iso, games):
         elif p["market"] == "hr_anytime":
             line = 0.5
 
-        candidates.append({
+        floor_passed.append({
             "player_id":       p["player_id"],
             "player_mlbam_id": player["mlbam_id"],
             "player_name":     player["name"],
@@ -466,7 +729,8 @@ def fetch_candidates(date_iso, games):
             "decimal_odds":    decimal,
             "edge":            edge,
             "book":            p.get("best_book") or "draftkings",
-            # ── Heat fields (None when batter_trends has no row) ──
+            "park_adj":        float(p.get("park_adj") or 1.0),
+            "weather_adj":     float(p.get("weather_adj") or 1.0),
             "combined_trend":  heat.get("combined_trend") if heat else None,
             "combined_tier":   heat.get("combined_tier")  if heat else None,
         })
@@ -474,10 +738,56 @@ def fetch_candidates(date_iso, games):
     if frozen_filtered:
         log.info("Filtered %d FROZEN candidates (combined_trend <= %.0f%%)",
                  frozen_filtered, HEAT_FROZEN_THRESHOLD * 100)
+    log.info("After floors + FROZEN: %d candidates", len(floor_passed))
 
-    # Sort by edge descending — the strongest plays float to top
-    candidates.sort(key=lambda c: c["edge"], reverse=True)
-    return candidates
+    if not floor_passed:
+        return []
+
+    # ── Tier system data prefetch ──
+    qualifying_player_ids = list({c["player_id"] for c in floor_passed})
+    log.info("Fetching tier-system data for %d candidates...", len(qualifying_player_ids))
+
+    batter_stats_l14 = fetch_batter_l14_stats(qualifying_player_ids, season)
+    log.info("  L14 stats: %d rows", len(batter_stats_l14))
+
+    batter_season_by_pitch = fetch_batter_season_by_pitch(qualifying_player_ids, season)
+    log.info("  Season by_pitch_type: %d batters", len(batter_season_by_pitch))
+
+    starter_by_game_team = fetch_starting_pitcher_for_game(games)
+    pitcher_ids = list({pid for pid in starter_by_game_team.values() if pid})
+    log.info("  Starting pitchers: %d", len(pitcher_ids))
+
+    pitcher_arsenals = fetch_pitcher_arsenals(pitcher_ids, season)
+    log.info("  Pitcher arsenals: %d", len(pitcher_arsenals))
+
+    bvp_pairs = fetch_bvp(qualifying_player_ids, pitcher_ids)
+    log.info("  BvP pairs: %d", len(bvp_pairs))
+
+    contact_by_player = fetch_contact_scores(qualifying_player_ids, season)
+    log.info("  Contact scores: %d players", sum(1 for v in contact_by_player.values() if v is not None))
+
+    # ── Tier evaluation per candidate ──
+    qualified = []
+    disqualified_count = 0
+    for cand in floor_passed:
+        ok = _evaluate_leg_tiers(
+            cand, _market_class(cand["market"]),
+            games_by_id, players_by_id,
+            contact_by_player, heat_by_player,
+            batter_stats_l14, pitcher_arsenals, bvp_pairs,
+            starter_by_game_team, batter_season_by_pitch,
+        )
+        if ok:
+            qualified.append(cand)
+        else:
+            disqualified_count += 1
+
+    log.info("Tier evaluation: %d qualified, %d disqualified (failed T1 ≥2 or Stowers)",
+             len(qualified), disqualified_count)
+
+    # Sort by tier_score DESC, then edge DESC as tiebreaker
+    qualified.sort(key=lambda c: (c["tier_score"], c["edge"]), reverse=True)
+    return qualified
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -558,25 +868,22 @@ def parlay_math(legs):
 
 def score_combination(math, legs):
     """
-    Objective function: mix of EV, average leg edge, and Combined Heat bonus.
+    Objective function: EV primary + sum-of-leg-tier-scores tiebreaker.
 
-    Higher EV → bigger payoff at observed probabilities.
-    Higher avg leg edge → rewards combos where each leg is independently good
-    (not just one carry leg with several mediocre add-ons).
-    Heat bonus → tiebreaker that prefers multi-signal hot batters when EV
-    is similar. See HEAT_BONUS_BY_TIER for the scale.
+      score = ev_per_dollar * 100 + sum(leg_tier_scores) * 5
 
-    Legs without heat data (combined_tier=None) contribute 0 — graceful
-    degradation when batter_trends hasn't run or a player is missing.
+    EV (×100) is the dominant signal. The sum of per-leg tier_scores
+    (each in 0.85-1.25 range) breaks ties — a 2-leg with both legs in
+    "triple" path sums ~2.4, vs both legs in "Stowers" sums ~1.7.
+    At scale ×5, that's a 3-4 point movement — meaningful only when EVs
+    are similar, never enough to overturn meaningful EV gaps.
+
+    Heat is already inside tier_score via Tier 2A — no separate bonus.
     """
     if not math or math["ev_per_dollar"] is None:
         return -999
-    avg_edge = sum(l["edge"] for l in legs) / len(legs)
-    heat_bonus = sum(
-        HEAT_BONUS_BY_TIER.get(l.get("combined_tier"), 0.0)
-        for l in legs
-    )
-    return math["ev_per_dollar"] * 100 + avg_edge * 50 + heat_bonus
+    tier_sum = sum(float(l.get("tier_score") or 0) for l in legs)
+    return math["ev_per_dollar"] * 100 + tier_sum * 5
 
 
 def make_combo_record(legs, tier, slate_quality):
@@ -589,6 +896,10 @@ def make_combo_record(legs, tier, slate_quality):
     stake = STAKE_REC[tier]
     profit_if_hit = round(stake * (math["decimal_odds"] - 1), 2)
 
+    # Average stake_modifier across legs (informational, for "conditions" badge)
+    smods = [float(l.get("stake_modifier") or 1.0) for l in legs]
+    avg_smod = round(sum(smods) / len(smods), 3) if smods else 1.0
+
     return {
         "tier":          tier,
         "leg_count":     len(legs),
@@ -598,6 +909,7 @@ def make_combo_record(legs, tier, slate_quality):
         "stake_rec":     stake,
         "payout_if_hit": profit_if_hit,
         "label":         label_for(legs, tier, math),
+        "avg_stake_modifier": avg_smod,
     }
 
 
@@ -630,15 +942,19 @@ def generate_combos(candidates, leg_count, max_keep=200):
     Generate scored combinations of `leg_count` legs from candidates.
 
     Hard cap on naive combinations (C(n, k) explodes fast). When there are
-    many candidates we restrict to top-edge candidates first.
+    many candidates we restrict to the top tier-scored candidates first.
+
+    candidates is pre-sorted by (tier_score DESC, edge DESC) so the top-N
+    slice is "the N highest-conviction plays". Within those, combo scoring
+    picks the best EV combinations.
     """
     # Cap pool by tier to keep computation reasonable
     if leg_count == 2:
-        pool = candidates[:20]   # top 20 by edge
+        pool = candidates[:20]   # top 20 by tier_score
     elif leg_count == 3:
-        pool = candidates[:15]
+        pool = candidates[:15]   # top 15 by tier_score
     elif leg_count == 4:
-        pool = candidates[:12]
+        pool = candidates[:12]   # top 12 by tier_score
     else:
         pool = candidates
 
@@ -1003,7 +1319,7 @@ def fetch_existing_fingerprints(date_iso):
 
 
 def insert_card(date_iso, combo):
-    """Insert one card + its legs."""
+    """Insert one card + its legs with tier-system fields."""
     math = combo["math"]
     card_payload = {
         "card_date":     date_iso,
@@ -1018,6 +1334,7 @@ def insert_card(date_iso, combo):
         "ev_per_dollar": math["ev_per_dollar"],
         "stake_rec":     combo["stake_rec"],
         "payout_if_hit": combo["payout_if_hit"],
+        "avg_stake_modifier": combo.get("avg_stake_modifier"),
         "status":        "pending",
     }
     card_res = sb.table("cards").insert(card_payload).execute()
@@ -1045,6 +1362,13 @@ def insert_card(date_iso, combo):
             "edge":            leg["edge"],
             "book":            leg["book"],
             "status":          "pending",
+            # ── Tier system fields ──
+            "tier1_hits":      leg.get("tier1_hits"),
+            "tier2_hits":      leg.get("tier2_hits"),
+            "tier_score":      leg.get("tier_score"),
+            "stake_modifier":  leg.get("stake_modifier"),
+            # tier_metadata is JSONB — pass raw dict, supabase-py serializes.
+            "tier_metadata":   leg.get("tier_metadata"),
         })
     sb.table("card_legs").insert(legs_payload).execute()
     return card_id
@@ -1064,7 +1388,7 @@ def main():
         return
 
     candidates = fetch_candidates(today, games)
-    log.info("Candidate pool: %d plays clearing per-market floors", len(candidates))
+    log.info("Candidate pool: %d legs qualifying tier system (T1 ≥2 or Stowers)", len(candidates))
 
     if len(candidates) < 2:
         log.warning("Too few candidates (need >=2 for 2-leggers) — no cards today")
@@ -1137,27 +1461,33 @@ def main():
             inserted_count += 1
 
             math = combo["math"]
-            log.info("  ✓ %s [%s] EV=%.3f edge=%.3f odds=%s (id=%s)",
+            avg_smod = combo.get("avg_stake_modifier") or 1.0
+            log.info("  ✓ %s [%s] EV=%.3f edge=%.3f odds=%s avg_stake_mod=%.2f (id=%s)",
                      combo["tier"], combo["label"],
                      math["ev_per_dollar"], math["edge"],
                      "+%d" % math["american_odds"] if math["american_odds"] >= 0
                                                   else str(math["american_odds"]),
-                     cid)
+                     avg_smod, cid)
             for i, leg in enumerate(combo["legs"], 1):
-                # Heat marker — visible signal of which legs the bonus
-                # rewarded so we can spot-check the integration in logs.
+                # Tier marker — show conviction signal for each leg
+                t1 = leg.get("tier1_hits", 0) or 0
+                t2 = leg.get("tier2_hits", 0) or 0
+                tscore = leg.get("tier_score", 0) or 0
+                qpath = (leg.get("tier_metadata") or {}).get("qualification_path", "?")
+                tier_marker = f"  [T1={t1}/3 T2={t2}/4 score={tscore:.2f} {qpath}]"
+                # Heat marker (optional, when present)
                 heat_marker = ""
                 if leg.get("combined_tier"):
                     ct = leg.get("combined_trend")
                     ct_str = f"{ct*100:+.0f}%" if ct is not None else "?"
                     heat_marker = f"  [heat={leg['combined_tier']} {ct_str}]"
-                log.info("    leg%d: %s %s @ %s (proj=%.2f%%, edge=+%.2f%%)%s",
+                log.info("    leg%d: %s %s @ %s (proj=%.2f%%, edge=+%.2f%%)%s%s",
                          i, leg["player_name"], leg["market"],
                          "+%d" % leg["american_odds"] if leg["american_odds"] >= 0
                                                        else str(leg["american_odds"]),
                          leg["projected_prob"] * 100,
                          leg["edge"] * 100,
-                         heat_marker)
+                         tier_marker, heat_marker)
 
     log.info("✓ Cards picker complete — inserted=%d, skipped_dups=%d",
              inserted_count, skipped_dups)
