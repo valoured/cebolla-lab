@@ -15,11 +15,12 @@ Carried over from v0.2.0:
   - Writes `hr_anytime`, `hits_yes`, and now h_r_rbi_* projections
   - Bayesian shrinkage on batter rates per market
 
-HR market formula:
+HR market formula (v0.4.0 — park moved to stake_modifier):
   shrunk_batter_hr_per_pa = (PA × obs + 200 × LEAGUE) / (PA + 200)
   shrunk_pitcher_hr_per_9 = (BF × obs + 80 × LEAGUE) / (BF + 80)
-  projected_hr_per_pa = shrunk_batter × pitcher_factor × park × arsenal_adj_v2
+  projected_hr_per_pa = shrunk_batter × pitcher_factor × arsenal_adj_v2
   projected_anytime = 1 - (1 - per_pa)^expected_PAs
+  stake_modifier = clamp(park × weather, 0.7, 1.3)  ← INFORMATIONAL, not used in projection
 
   arsenal_adj_v2 (2026-05-21):
     per-pitch ratio = (batter_hr_pct + pitcher_hr_allowed_pct) /
@@ -30,19 +31,20 @@ HR market formula:
       MEDIUM (covered PA ≥50)                              → [0.80, 1.20]
       LOW    (default)                                     → [0.85, 1.15]
 
-HITS market formula:
+HITS market formula (v0.4.0 — park moved to stake_modifier):
   shrunk_batter_hit_per_pa = (PA × obs + 100 × LEAGUE) / (PA + 100)
   shrunk_pitcher_hit_per_pa = (BF × obs + 60 × LEAGUE) / (BF + 60)
   pitcher_baa_factor = clamp(shrunk_p_hit_per_pa / LEAGUE_HIT_PER_PA, [0.80, 1.25])
-  park_ba_factor = clamp(team.park_ba_factor, [0.90, 1.10])
-  projected_hit_per_pa = shrunk_batter × pitcher_baa_factor × park_ba_factor
+  projected_hit_per_pa = shrunk_batter × pitcher_baa_factor
   projected_1plus_hits = 1 - (1 - per_pa)^expected_PAs
+  stake_modifier = clamp(park_ba × weather, 0.7, 1.3)  ← INFORMATIONAL only
 
-HRR market formula (NEW):
-  p_hit  = shrunk_batter_hit_per_pa × pitcher_baa_factor × park_ba_factor
+HRR market formula (v0.4.0 — park moved to stake_modifier):
+  p_hit  = shrunk_batter_hit_per_pa × pitcher_baa_factor
   p_R    = season/L14 blended shrunk_r_per_pa (50/50 if L14 PA ≥ 30)
   p_RBI  = season/L14 blended shrunk_rbi_per_pa
   λ_per_pa = p_hit + p_R + p_RBI − 0.06 (overlap correction), clamped [0.05, 0.75]
+  stake_modifier = clamp(park_ba × weather, 0.7, 1.3)  ← INFORMATIONAL only
   λ_game = λ_per_pa × E[PA from lineup spot]
   P(HRR ≥ X+1) = 1 − Σ_{k=0..X} (e^-λ × λ^k / k!)   for each line X.5
 """

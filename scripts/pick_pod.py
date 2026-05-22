@@ -70,8 +70,15 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Picker reads projections from this model_version. Since compute_projections
 # uses (game_id, player_id, market, model_version) as the upsert conflict key,
-# old v0.3.0 rows coexist with new v0.4.0 rows — must filter here so we don't
+# old version rows coexist with new ones — must filter here so we don't
 # evaluate the same batter twice (once with park baked in, once without).
+#
+# CRITICAL: this string MUST match compute_projections.py's MODEL_VERSION.
+# When bumping the projection model version, update BOTH places:
+#   1. scripts/compute_projections.py:66    MODEL_VERSION = "..."
+#   2. scripts/pick_pod.py:75 (this line)   REQUIRED_MODEL_VERSION = "..."
+# Mismatch causes picker to find ZERO candidates → publish nothing (safe but
+# silent failure mode — check logs for "No projections" if picks vanish).
 REQUIRED_MODEL_VERSION = "v0.4.0"
 
 HR_MARKET = "hr_anytime"
@@ -187,12 +194,18 @@ def fetch_today_games(date_iso):
 
 
 def fetch_batter_l14_stats(player_ids, season):
-    """L14 batter_stats for all candidate players. Returns {player_id: row}."""
+    """L14 batter_stats for all candidate players. Returns {player_id: row}.
+
+    L14 used for rate stats (barrel%, xSLG, HH%, hit_per_pa, xBA).
+    For Tier 1 T1C (HR vs primary pitch), we use season-window by_pitch_type
+    via fetch_batter_season_by_pitch — L14's by_pitch_type has too few PAs
+    per pitch type (often <5) to be reliable for that check.
+    """
     if not player_ids:
         return {}
     res = sb.table("batter_stats") \
         .select("batter_id, pa, hit_per_pa, barrel_pct, hard_hit_pct, "
-                "xslg, xba, by_pitch_type") \
+                "xslg, xba") \
         .eq("season", season) \
         .eq("window_type", "l14") \
         .eq("vs_hand", "A") \
@@ -201,22 +214,42 @@ def fetch_batter_l14_stats(player_ids, season):
     return {r["batter_id"]: r for r in (res.data or [])}
 
 
+def fetch_batter_season_by_pitch(player_ids, season):
+    """
+    Season-window by_pitch_type for each batter. Returns {player_id: by_pitch_dict}.
+
+    The season window has many more PAs per pitch type than L14 — for the
+    "HR vs primary pitch ≥ 8%" check we want season-level reliability,
+    not the noisy L14 sample.
+    """
+    if not player_ids:
+        return {}
+    res = sb.table("batter_stats") \
+        .select("batter_id, by_pitch_type") \
+        .eq("season", season) \
+        .eq("window_type", "season") \
+        .eq("vs_hand", "A") \
+        .in_("batter_id", player_ids) \
+        .execute()
+    return {r["batter_id"]: (r.get("by_pitch_type") or {}) for r in (res.data or [])}
+
+
 def fetch_pitcher_arsenals(pitcher_ids, season):
     """
     Pitcher arsenals across both stances. Returns {pitcher_id: [arsenal_rows]}.
 
     Note: pitcher_arsenals stores separate rows per vs_stance ('L' / 'R') —
     there is no 'A' (all) row. We pull both stances and let primary_pitch_type()
-    find the single highest-usage row. Per-pitch HR rate (for HR Tier 1 T1C)
-    similarly aggregates across stances; for the "what's their main pitch"
-    question this is fine — it's the same pitcher in either case.
+    sum usage across stances to find the overall primary pitch.
+
+    Note: pull_arsenals.py only writes window_type='season' (not l50g/l30g).
     """
     if not pitcher_ids:
         return {}
     res = sb.table("pitcher_arsenals") \
         .select("pitcher_id, pitch_type, vs_stance, usage_pct, hr_pct") \
         .eq("season", season) \
-        .eq("window_type", "l50g") \
+        .eq("window_type", "season") \
         .in_("pitcher_id", pitcher_ids) \
         .execute()
     out = {}
@@ -241,20 +274,22 @@ def fetch_starting_pitcher_for_game(games):
     """
     Build {(game_id, team_id): pitcher_id} from the games table.
 
-    The games table carries home_pitcher_id and away_pitcher_id directly —
-    these are the probable starters. Maps each side's starter so we can
-    look up opposing pitcher by the OPPOSITE team_id.
+    The dict is keyed by the TEAM the pitcher pitches FOR, not the team they
+    pitch AGAINST. So:
+       starter_by_game_team[(game_id, home_team_id)] = home_pitcher_id
 
-    NB: earlier draft of this function (pre-bug-fix) tried to read
-    lineups.pitcher_id which does not exist — the lineups table only stores
-    batters. Pitcher assignment lives on games.
+    To find the pitcher OPPOSING a batter: look up the batter's OPPONENT
+    team in this dict.
+
+    The games table carries home_pitcher_id and away_pitcher_id directly —
+    these are the probable starters. NB: earlier draft tried to read
+    lineups.pitcher_id which does not exist — lineups table only has batters.
     """
     out = {}
     for g in games:
         home_pid = g.get("home_pitcher_id")
         away_pid = g.get("away_pitcher_id")
         if home_pid:
-            # Home team's pitcher → keyed by (game_id, home_team_id)
             out[(g["id"], g["home_team_id"])] = home_pid
         if away_pid:
             out[(g["id"], g["away_team_id"])] = away_pid
@@ -339,6 +374,7 @@ def _enrich_with_tiers(
     games_by_id, players_by_id,
     contact_by_player, heat_by_player,
     batter_stats_l14, pitcher_arsenals, bvp_pairs, starter_by_game_team,
+    batter_season_by_pitch=None,
 ):
     """Evaluate a projection through tier system. None if disqualified."""
     game = games_by_id.get(p["game_id"])
@@ -368,7 +404,9 @@ def _enrich_with_tiers(
 
     # Tier 1
     if market_class == "hr":
-        t1_hits, t1_detail = evaluate_tier1_hr(bstats, pitcher_primary)
+        # T1C uses season-window by_pitch_type for sample-size reliability
+        sbp = (batter_season_by_pitch or {}).get(p["player_id"]) if batter_season_by_pitch else None
+        t1_hits, t1_detail = evaluate_tier1_hr(bstats, pitcher_primary, season_by_pitch=sbp)
     else:
         t1_hits, t1_detail = evaluate_tier1_hrr(bstats, bvp_row)
 
@@ -442,6 +480,7 @@ def _enrich_with_tiers(
 def fetch_hr_candidates(
     date_iso, games, players_by_id, contact_by_player, heat_by_player,
     batter_stats_l14, pitcher_arsenals, bvp_pairs, starter_by_game_team,
+    batter_season_by_pitch=None,
 ):
     if not games:
         return []
@@ -465,6 +504,7 @@ def fetch_hr_candidates(
         cand = _enrich_with_tiers(
             p, "hr", games_by_id, players_by_id, contact_by_player, heat_by_player,
             batter_stats_l14, pitcher_arsenals, bvp_pairs, starter_by_game_team,
+            batter_season_by_pitch=batter_season_by_pitch,
         )
         if cand:
             enriched.append(cand)
@@ -539,8 +579,9 @@ def insert_pod(pick, date_iso, market_class):
         "opponent_abbrev": pick["opponent_abbrev"],
         "contact_score": pick["contact_score"],
         # Keep combined_score for backward compat with any panels still reading it.
-        # tier_score is 0.85-1.25; scale to 0-10000 range to look comparable.
-        "combined_score": round(pick["tier_score"] * 9000, 1),
+        # tier_score is 0.85-1.25; scale to stay within original 0-10000 range.
+        # 1.25 × 8000 = 10000 max; 0.85 × 8000 = 6800 min.
+        "combined_score": round(pick["tier_score"] * 8000, 1),
         # Tier system fields
         "tier1_hits": pick["tier1_hits"],
         "tier2_hits": pick["tier2_hits"],
@@ -628,6 +669,9 @@ def main():
     batter_stats_l14 = fetch_batter_l14_stats(all_proj_player_ids, season)
     log.info("  L14 stats: %d rows", len(batter_stats_l14))
 
+    batter_season_by_pitch = fetch_batter_season_by_pitch(all_proj_player_ids, season)
+    log.info("  Season by_pitch_type: %d batters", len(batter_season_by_pitch))
+
     starter_by_game_team = fetch_starting_pitcher_for_game(games)
     pitcher_ids = list({pid for pid in starter_by_game_team.values() if pid})
     log.info("  Starting pitchers identified: %d", len(pitcher_ids))
@@ -649,6 +693,7 @@ def main():
     hr_candidates = fetch_hr_candidates(
         today, games, players_by_id, contact_by_player, heat_by_player,
         batter_stats_l14, pitcher_arsenals, bvp_pairs, starter_by_game_team,
+        batter_season_by_pitch=batter_season_by_pitch,
     )
     log.info("HR candidates qualifying tier system: %d", len(hr_candidates))
     log_top3("HR", hr_candidates)

@@ -96,49 +96,57 @@ STAKE_MOD_CEIL  = 1.3
 def evaluate_tier1_hr(
     batter_stats_l14: Optional[dict],
     pitcher_primary_pitch_type: Optional[str],
+    season_by_pitch: Optional[dict] = None,
 ) -> tuple[int, dict]:
     """
     Evaluate HR-market Tier 1 thresholds.
 
     Args:
         batter_stats_l14: row from batter_stats (window_type='l14', vs_hand='A')
-            with fields: barrel_pct, xslg, by_pitch_type
+            with fields: barrel_pct, xslg. Used for T1A and T1B.
         pitcher_primary_pitch_type: pitch_type string (e.g. '4SM') for pitcher's
             highest-usage pitch.
+        season_by_pitch: SEASON-window by_pitch_type dict for this batter, used
+            for T1C (HR vs primary pitch). Falls back to L14's by_pitch_type if
+            None (which is noisier).
 
     Returns:
         (hits_count, detail_dict)
         hits_count: 0-3 — number of Tier 1 thresholds passed
         detail_dict: { 'barrel': {'value': X, 'passed': bool},
                        'xslg':   {'value': X, 'passed': bool},
-                       'hr_vs_pitch': {'value': X, 'passed': bool} }
+                       'hr_vs_pitch': {'value': X, 'passed': bool, 'pitch_type': str} }
     """
     detail = {
         "barrel":      {"value": None, "passed": False},
         "xslg":        {"value": None, "passed": False},
         "hr_vs_pitch": {"value": None, "passed": False, "pitch_type": pitcher_primary_pitch_type},
     }
-    if not batter_stats_l14:
-        return (0, detail)
 
-    # T1A: barrel%
-    barrel = batter_stats_l14.get("barrel_pct")
-    if barrel is not None:
-        detail["barrel"]["value"] = float(barrel)
-        if float(barrel) >= T1_HR_BARREL_MIN:
-            detail["barrel"]["passed"] = True
+    # T1A: barrel% (requires L14 row)
+    if batter_stats_l14:
+        barrel = batter_stats_l14.get("barrel_pct")
+        if barrel is not None:
+            detail["barrel"]["value"] = float(barrel)
+            if float(barrel) >= T1_HR_BARREL_MIN:
+                detail["barrel"]["passed"] = True
 
-    # T1B: xSLG
-    xslg = batter_stats_l14.get("xslg")
-    if xslg is not None:
-        detail["xslg"]["value"] = float(xslg)
-        if float(xslg) >= T1_HR_XSLG_MIN:
-            detail["xslg"]["passed"] = True
+        # T1B: xSLG (requires L14 row)
+        xslg = batter_stats_l14.get("xslg")
+        if xslg is not None:
+            detail["xslg"]["value"] = float(xslg)
+            if float(xslg) >= T1_HR_XSLG_MIN:
+                detail["xslg"]["passed"] = True
 
-    # T1C: HR rate vs primary pitch
+    # T1C: HR rate vs primary pitch (use season by_pitch if available; falls
+    # back to L14 by_pitch_type only if season not provided OR empty — L14
+    # has very few PAs per pitch type so the rate is noisy, but better than
+    # nothing).
     if pitcher_primary_pitch_type:
-        by_pitch = batter_stats_l14.get("by_pitch_type") or {}
-        pitch_row = by_pitch.get(pitcher_primary_pitch_type)
+        by_pitch = season_by_pitch if season_by_pitch else None
+        if not by_pitch:
+            by_pitch = (batter_stats_l14 or {}).get("by_pitch_type") or {}
+        pitch_row = (by_pitch or {}).get(pitcher_primary_pitch_type)
         if pitch_row and pitch_row.get("hr_pct") is not None:
             hr_vs = float(pitch_row["hr_pct"])
             detail["hr_vs_pitch"]["value"] = hr_vs
@@ -224,7 +232,8 @@ def evaluate_tier2(
     detail = {
         "heat":    {"value": heat_tier, "passed": False},
         "hh_pct":  {"value": None,      "passed": False},
-        "contact": {"value": contact_score, "passed": False},
+        "contact": {"value": float(contact_score) if contact_score is not None else None,
+                    "passed": False},
         "bvp":     {"value": None,      "passed": False, "pa": None},
     }
 
