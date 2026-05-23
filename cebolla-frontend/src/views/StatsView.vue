@@ -69,6 +69,13 @@ onMounted(load)
 // ── Normalize pods + cards into unified `picks` ───────────────
 // Each pick has: date, market_class, projected_prob, american_odds,
 // status, payout, stake.
+//
+// stake handling: we pass through the DB value as-is. The previous version
+// substituted `|| 10` as a fallback, which silently distorted ROI for any
+// card with a non-$10 stake (4-leg cards are $1; substituting 10 inflates
+// the denominator 10x and crashes the ROI to ~1/10 of reality).
+// totalStake() handles 0-stake rows correctly (they just don't contribute
+// to the denominator).
 const picks = computed(() => {
   const out = []
   for (const p of pods.value) {
@@ -81,7 +88,7 @@ const picks = computed(() => {
       american_odds: Number(p.american_odds),
       status: p.status,
       payout: Number(p.payout) || 0,
-      stake: Number(p.stake) || 10,
+      stake: Number(p.stake) || 0,
       settled_at: p.settled_at,
     })
   }
@@ -98,7 +105,7 @@ const picks = computed(() => {
       american_odds: Number(c.combined_odds),
       status: c.status,
       payout: Number(c.payout) || 0,
-      stake: Number(c.stake_rec) || 10,
+      stake: Number(c.stake_rec) || 0,
       settled_at: c.settled_at,
     })
   }
@@ -140,15 +147,19 @@ function roiFor(list) {
 }
 
 function hitRateFor(list) {
-  const nonVoid = list.filter(p => p.status !== 'void')
-  if (!nonVoid.length) return null
-  const wins = nonVoid.filter(p => p.status === 'win').length
-  return (wins / nonVoid.length) * 100
+  // Hit rate = wins / (wins + losses). Pushes are money-back outcomes and
+  // are conventionally excluded from hit-rate denominators in sports betting
+  // analytics (otherwise pushes count as half-losses, which distorts the
+  // model's true accuracy). Voids are excluded because the pick was canceled
+  // (PPD game, etc.) — there was nothing to hit or miss.
+  const decided = list.filter(p => p.status === 'win' || p.status === 'loss')
+  if (!decided.length) return null
+  const wins = decided.filter(p => p.status === 'win').length
+  return (wins / decided.length) * 100
 }
 
 const overallRecord = computed(() => recordFor(settled.value))
 const overallPnl = computed(() => pnlFor(settled.value))
-const overallStake = computed(() => totalStake(settled.value))
 const overallRoi = computed(() => roiFor(settled.value))
 const overallHitRate = computed(() => hitRateFor(settled.value))
 
@@ -208,17 +219,21 @@ const calibration = computed(() => {
       const pp = Number(p.projected_prob)
       return Number.isFinite(pp) && pp >= b.lo && pp < b.hi
     })
-    if (inBucket.length === 0) {
+    // Decided = win or loss (pushes excluded, same convention as hitRateFor).
+    // Pushes are rare on these MLB markets but if any exist they shouldn't
+    // distort the hit-rate-vs-projected-prob comparison.
+    const decided = inBucket.filter(p => p.status === 'win' || p.status === 'loss')
+    if (decided.length === 0) {
       out.push({ ...b, count: 0, avgProjected: null, actualHitRate: null })
       continue
     }
-    const avgProj = inBucket.reduce((s, p) => s + Number(p.projected_prob), 0) / inBucket.length
-    const wins = inBucket.filter(p => p.status === 'win').length
+    const avgProj = decided.reduce((s, p) => s + Number(p.projected_prob), 0) / decided.length
+    const wins = decided.filter(p => p.status === 'win').length
     out.push({
       ...b,
-      count: inBucket.length,
+      count: decided.length,
       avgProjected: avgProj * 100,
-      actualHitRate: (wins / inBucket.length) * 100,
+      actualHitRate: (wins / decided.length) * 100,
     })
   }
   return out
@@ -311,6 +326,10 @@ const ODDS_TIERS = [
 const tierBreakdown = computed(() => {
   return ODDS_TIERS.map(tier => {
     const list = settled.value.filter(p => {
+      // Guard against null/undefined american_odds — Number(null) coerces to 0
+      // which would silently land in the "Favorite" bucket. Explicit nullish
+      // check first, then convert.
+      if (p.american_odds == null) return false
       const o = Number(p.american_odds)
       return Number.isFinite(o) && tier.test(o)
     })
@@ -325,10 +344,17 @@ const tierBreakdown = computed(() => {
 })
 
 // ── Monthly P&L timeline ──────────────────────────────────────
+// Bucket by SLATE date (pod_date / card_date), not settled_at. Picks placed
+// for the May 31 slate that settle around midnight ET (04:00 UTC June 1)
+// should still count as May. settled_at is UTC and would silently roll to
+// the next month for late-finishing games.
 const monthlyPnl = computed(() => {
   const byMonth = new Map()
   for (const pick of settled.value) {
-    const dt = pick.settled_at || pick.date
+    // pick.date is the ET-calendar slate date (set server-side by pick_pod /
+    // pick_cards using ET timezone). settled_at is UTC and is intentionally
+    // NOT used here for the bucketing key.
+    const dt = pick.date
     if (!dt) continue
     const key = String(dt).slice(0, 7) // YYYY-MM
     if (!byMonth.has(key)) {
@@ -375,10 +401,9 @@ function calY(hitPct) {
 
 // ── Monthly bar chart layout ──────────────────────────────────
 const BAR_HEIGHT = 80
-const BAR_PAD = 8
 
 const monthlyChartMax = computed(() => {
-  const all = monthlyPnl.value.flatMap(m => [Math.abs(m.pnl)])
+  const all = monthlyPnl.value.map(m => Math.abs(m.pnl))
   if (!all.length) return 1
   return Math.max(...all, 10) // floor at $10 for visual scale
 })
@@ -650,6 +675,18 @@ function barY(pnl) {
               actual hit rate
             </text>
 
+            <!-- Axis tick labels: 0/25/50/75/100. Without these the plot
+                 was just two unmarked axes — readers couldn't tell where
+                 25% projected vs 50% projected sat on the canvas. -->
+            <g font-family="JetBrains Mono, monospace" font-size="8" fill="rgba(255,255,255,0.40)">
+              <text v-for="pct in [25, 50, 75, 100]" :key="`xt${pct}`"
+                    :x="calX(pct)" :y="CAL_PAD + CAL_INNER + 11"
+                    text-anchor="middle">{{ pct }}</text>
+              <text v-for="pct in [25, 50, 75]" :key="`yt${pct}`"
+                    :x="CAL_PAD - 4" :y="calY(pct) + 3"
+                    text-anchor="end">{{ pct }}</text>
+            </g>
+
             <!-- Data points -->
             <g v-for="b in calibration" :key="b.label">
               <circle v-if="b.count > 0"
@@ -657,7 +694,9 @@ function barY(pnl) {
                       :r="Math.max(3, Math.min(12, 2 + b.count * 0.8))"
                       :fill="b.count >= 3 ? '#FF2A2A' : 'rgba(255, 42, 42, 0.30)'"
                       :stroke="b.count >= 3 ? 'rgba(255, 42, 42, 0.8)' : 'rgba(255, 42, 42, 0.4)'"
-                      stroke-width="1" />
+                      stroke-width="1">
+                <title>{{ b.label }} bucket — {{ b.count }} picks, projected ~{{ b.avgProjected.toFixed(0) }}%, actual {{ b.actualHitRate.toFixed(0) }}%</title>
+              </circle>
             </g>
           </svg>
 

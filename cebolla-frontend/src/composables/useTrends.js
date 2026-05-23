@@ -19,7 +19,7 @@
 // The component is responsible for sorting + presentation. We do the
 // joining and the math here so the view stays declarative.
 
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../supabase.js'
 
 // Min L14 PA to qualify — below this we don't trust the rate
@@ -141,6 +141,12 @@ export function useTrends() {
       // as a drill-down.
       //
       // We query both windows in parallel and zip them in JS by batter_id.
+      //
+      // CURRENT_SEASON filter is defensive — the ingest script currently
+      // only writes one season at a time, but if backfill ever loaded
+      // historical data, mixing seasons would silently corrupt the trend
+      // comparison (this year's L14 vs last year's season would render).
+      const CURRENT_SEASON = new Date().getFullYear()
       const [seasonRes, l14Res] = await Promise.all([
         supabase
           .from('batter_stats')
@@ -152,7 +158,8 @@ export function useTrends() {
             window_type, vs_hand
           `)
           .eq('window_type', 'season')
-          .eq('vs_hand', 'A'),
+          .eq('vs_hand', 'A')
+          .eq('season', CURRENT_SEASON),
         supabase
           .from('batter_stats')
           .select(`
@@ -163,7 +170,8 @@ export function useTrends() {
             window_type, vs_hand
           `)
           .eq('window_type', 'l14')
-          .eq('vs_hand', 'A'),
+          .eq('vs_hand', 'A')
+          .eq('season', CURRENT_SEASON),
       ])
 
       if (seasonRes.error) throw seasonRes.error
@@ -252,9 +260,11 @@ export function useTrends() {
     } catch (e) {
       console.warn('[useTrends] loadTodayLineups failed (non-fatal):', e)
       // Non-fatal — the trends list still renders, the "playing today"
-      // pill just shows zero matchups.
-      playingTodayIds.value = new Set()
-      todayMatchupByBatter.value = new Map()
+      // pill just shows whatever it had from the last successful load.
+      // We deliberately do NOT clear playingTodayIds/todayMatchupByBatter
+      // here so a transient network blip during the 5-minute poll doesn't
+      // make the user's "Today" filter snap to empty mid-session.
+      // Only the initial load (which starts with empty Set/Map) shows zero.
     }
   }
 
@@ -268,8 +278,11 @@ export function useTrends() {
       const [pRes, tRes] = await Promise.all([
         supabase
           .from('players')
-          .select('id, mlbam_id, name, bats, team_id')
-          .eq('is_pitcher', false),
+          // No is_pitcher filter — two-way players (Ohtani, etc.) have
+          // is_pitcher=true but ARE in batter_stats. Filtering them out
+          // here would silently drop them from Trends. The batter_stats
+          // table is the authoritative "is this player a batter" source.
+          .select('id, mlbam_id, name, bats, team_id'),
         supabase
           .from('teams')
           .select('id, abbrev, name, mlb_id'),
@@ -432,9 +445,23 @@ export function useTrends() {
     cold_count: rows.value.filter(r => r.trend_score < -0.10).length,
   }))
 
-  // Realtime: if batter_stats updates (nightly cron), refresh
+  // Realtime: if batter_stats updates (nightly cron), refresh. Debounce
+  // because the nightly stats refresh inserts/updates ~10k rows in quick
+  // succession — without debouncing we'd issue hundreds of refetch
+  // requests in a few minutes. 3 seconds is long enough for a batch
+  // update to settle but short enough to feel responsive.
   let channel = null
   let dayCheckTimer = null
+  let reloadStatsTimer = null
+  let reloadLineupsTimer = null
+  function scheduleStatsReload() {
+    if (reloadStatsTimer) clearTimeout(reloadStatsTimer)
+    reloadStatsTimer = setTimeout(() => loadStats(), 3000)
+  }
+  function scheduleLineupsReload() {
+    if (reloadLineupsTimer) clearTimeout(reloadLineupsTimer)
+    reloadLineupsTimer = setTimeout(() => loadTodayLineups(), 3000)
+  }
   onMounted(async () => {
     await Promise.all([
       loadStats(),
@@ -446,10 +473,10 @@ export function useTrends() {
       .channel('trends-changes')
       .on('postgres_changes',
           { event: '*', schema: 'public', table: 'batter_stats' },
-          () => loadStats())
+          () => scheduleStatsReload())
       .on('postgres_changes',
           { event: '*', schema: 'public', table: 'lineups' },
-          () => loadTodayLineups())
+          () => scheduleLineupsReload())
       .subscribe()
 
     // Roll-over: poll for date changes every 5 minutes. Avoids stale
@@ -460,6 +487,8 @@ export function useTrends() {
   onUnmounted(() => {
     if (channel) supabase.removeChannel(channel)
     if (dayCheckTimer) clearInterval(dayCheckTimer)
+    if (reloadStatsTimer) clearTimeout(reloadStatsTimer)
+    if (reloadLineupsTimer) clearTimeout(reloadLineupsTimer)
   })
 
   return {

@@ -15,7 +15,7 @@
  *   - Cebolla aesthetic: signal-red trend bar + JetBrains Mono numerics.
  */
 
-import { computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useTrends } from '../composables/useTrends.js'
 import LoadingBrand from '../components/LoadingBrand.vue'
 import TrendCard from '../components/TrendCard.vue'
@@ -53,10 +53,18 @@ const {
 const currentMetricLabel = computed(() => METRIC_LABELS[metric.value] || {})
 
 // Header dates (consistent with SlateView)
-const today = computed(() => new Date())
-const dateLong = computed(() => today.value.toLocaleDateString('en-US', {
-  weekday: 'long', month: 'long', day: 'numeric',
-}))
+//
+// dateTick keeps these reactive across the midnight ET boundary. Bumped
+// once per minute so the header date label updates if a user leaves the
+// page open overnight, matching the underlying data refresh cadence.
+const dateTick = ref(0)
+let dateTimer = null
+onMounted(() => { dateTimer = setInterval(() => dateTick.value++, 60_000) })
+onUnmounted(() => { if (dateTimer) clearInterval(dateTimer) })
+const today = computed(() => {
+  dateTick.value  // reactive dep
+  return new Date()
+})
 const dateShort = computed(() => today.value.toLocaleDateString('en-US', {
   weekday: 'short', month: 'short', day: 'numeric',
 }))
