@@ -338,10 +338,13 @@ async function onDelete(bet) {
 }
 .filter-pill {
   font-family: 'IBM Plex Sans', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 4px 10px;
+  padding: 6px 12px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
   border: 1px solid rgba(255,255,255,0.10);
   color: rgb(180,180,180);
   background: transparent;
@@ -356,11 +359,14 @@ async function onDelete(bet) {
   color: var(--color-accent-red, #FF2A2A);
   border-color: var(--color-accent-red, #FF2A2A);
 }
+/* Action pills (W / L / V / × on each bet row) — bumped from 22px to
+   36x36 because these are critical destructive/state-changing actions
+   and mis-tapping × Delete vs L Loss is a real consequence. */
 .action-pill {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  width: 22px;
-  height: 22px;
+  font-size: 12px;
+  width: 36px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

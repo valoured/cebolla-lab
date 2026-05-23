@@ -381,7 +381,7 @@ const modelMeta = computed(() => {
               v-for="m in ['hits', 'hrr']"
               :key="m"
               @click="secondaryMarket = m"
-              class="text-[11px] px-2.5 py-1 border transition"
+              class="text-[11px] px-2.5 py-1 border transition min-h-[36px] inline-flex items-center"
               :class="secondaryMarket === m
                 ? 'border-signal-400 text-signal-200 bg-signal-400/10'
                 : 'border-bg-200 text-fg-500 hover:border-bg-300 hover:text-fg-700'"
@@ -396,7 +396,7 @@ const modelMeta = computed(() => {
                 v-for="line in [1.5, 2.5, 3.5]"
                 :key="line"
                 @click="hrrLine = line"
-                class="text-[11px] px-2 py-1 border transition font-mono"
+                class="text-[11px] px-2 py-1 border transition font-mono min-h-[36px] min-w-[44px] inline-flex items-center justify-center"
                 :class="hrrLine === line
                   ? 'border-signal-400 text-signal-200 bg-signal-400/10'
                   : 'border-bg-200 text-fg-500 hover:border-bg-300 hover:text-fg-700'"

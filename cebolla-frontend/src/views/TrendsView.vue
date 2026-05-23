@@ -394,8 +394,10 @@ const trendDescription = computed(() => {
 .trends-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
-  padding: 5px 10px;
+  padding: 6px 12px;
+  min-height: 36px;
   font-size: 11px;
   font-family: 'JetBrains Mono', monospace;
   letter-spacing: 0.04em;
@@ -440,22 +442,38 @@ const trendDescription = computed(() => {
   background: rgba(14, 14, 18, 0.6);
   border: 1px solid #1c1c22;
   border-radius: 2px;
-  height: 32px;
+  height: 36px;
 }
 .trends-controls__slider {
   appearance: none;
   -webkit-appearance: none;
   width: 90px;
-  height: 2px;
-  background: #33333D;
+  /* Larger height = larger tap area for the whole rail on mobile, even
+     though we visually keep the track thin via background-clip. The
+     thumb size below is what most users grab. */
+  height: 22px;
+  background: transparent;
   outline: none;
   cursor: pointer;
+}
+/* Visible track — drawn via a pseudo since native track styling is
+   inconsistent across browsers. */
+.trends-controls__slider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: #33333D;
+}
+.trends-controls__slider::-moz-range-track {
+  height: 2px;
+  background: #33333D;
 }
 .trends-controls__slider::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
+  /* Larger thumb on touch — easier to grab without changing the visual
+     much (the inner red dot is what users see). */
+  width: 18px;
+  height: 18px;
+  margin-top: -8px;   /* center thumb on 2px track */
   border-radius: 50%;
   background: #FF2A2A;
   cursor: pointer;
@@ -463,11 +481,11 @@ const trendDescription = computed(() => {
   transition: transform 100ms ease;
 }
 .trends-controls__slider::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
+  transform: scale(1.15);
 }
 .trends-controls__slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #FF2A2A;
   cursor: pointer;

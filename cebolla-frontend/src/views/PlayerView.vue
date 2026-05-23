@@ -494,7 +494,7 @@ function hrPctTone(pct) {
     <div class="px-4 sm:px-6 pt-4 sm:pt-5 pb-2 flex items-center gap-4">
       <button
         @click="router.back()"
-        class="label-caps hover:text-signal-400 transition inline-flex items-center gap-2"
+        class="label-caps hover:text-signal-400 transition inline-flex items-center gap-2 min-h-[36px] -my-2 px-1"
       >
         <span>←</span><span>back</span>
       </button>

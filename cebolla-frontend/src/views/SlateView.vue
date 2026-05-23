@@ -152,7 +152,7 @@ const showDateNav = computed(() => (availableDates.value?.length || 0) > 1)
           v-for="chip in filterChips"
           :key="chip.key"
           @click="toggleFilter(chip.key)"
-          class="text-[11px] px-2.5 py-1 border transition flex items-center gap-2"
+          class="text-[11px] px-2.5 py-1 border transition flex items-center gap-2 min-h-[36px]"
           :class="activeFilter === chip.key
             ? 'border-signal-400 text-signal-200 bg-signal-400/10'
             : 'border-bg-200 text-fg-500 hover:border-bg-300 hover:text-fg-700'"
@@ -164,7 +164,7 @@ const showDateNav = computed(() => (availableDates.value?.length || 0) > 1)
         <button
           v-if="activeFilter"
           @click="activeFilter = null"
-          class="text-[11px] px-2.5 py-1 text-signal-300 hover:text-signal-200 transition ml-auto"
+          class="text-[11px] px-2.5 py-1 text-signal-300 hover:text-signal-200 transition ml-auto min-h-[36px] inline-flex items-center"
         >
           clear ×
         </button>
@@ -200,7 +200,7 @@ const showDateNav = computed(() => (availableDates.value?.length || 0) > 1)
         <div class="display-text text-2xl text-fg-500 italic mb-2">Filtered to zero</div>
         <button
           @click="activeFilter = null"
-          class="label-caps hover:text-signal-400 transition mt-2"
+          class="label-caps hover:text-signal-400 transition mt-2 min-h-[36px] inline-flex items-center px-2"
         >
           clear filter
         </button>
