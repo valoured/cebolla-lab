@@ -1,19 +1,27 @@
 <script setup>
 /**
- * CardBlock — One Cebolla Card row with its stacked legs.
+ * CardBlock — One Cebolla Card with its stacked legs.
  *
- * Consumed by CardsView. Card already has `legs` injected by parent
- * (via legsByCard lookup) and helpers like `legStatusIndicator` etc.
+ * Consumed by CardsView. Parent passes:
+ *   - card:      the row from the `cards` table
+ *   - legs:      array of card_legs rows for this card
+ *   - gamesById: lookup map for game status (live/final classification)
  *
  * Renders:
- *   - Header: tier label + card label + status badge
- *   - Each leg: headshot, name, team vs opp, market, odds, status indicator
- *   - Footer: stake/payout line
+ *   - Header: card label + EV pill + overall status badge
+ *   - Each leg: headshot, name, team vs opp + market chip, proj/odds/edge,
+ *               leg status indicator
+ *   - Footer: stake · combined odds · (cashed/busted/voided/payout-if-hit)
+ *
+ * Status helpers (isGameLive / isGameFinal) route through the shared
+ * src/utils/gameStatus.js module so CardBlock and CardsView stay in
+ * lockstep on the MLB status-string keyword lists.
  */
 
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
+import { isGameLive as isGameLiveUtil, isGameFinal as isGameFinalUtil } from '../utils/gameStatus.js'
 
 const props = defineProps({
   card:       { type: Object, required: true },
@@ -28,51 +36,11 @@ function openPlayer(playerId) {
   router.push({ name: 'player', params: { playerId } })
 }
 
-// ── Status helpers — mirror backend pull_scores classification exactly ──
-// MLB uses many status strings ("In Progress", "Manager Challenge",
-// "Delayed Start: Rain", "Game Over", "Postponed", etc.). Substring match
-// handles them all. Terminal checked first so "Postponed" doesn't trip
-// "delayed" later.
-const LIVE_KEYWORDS = [
-  'in progress', 'manager challenge', 'umpire review',
-  'replay', 'instant replay',
-  'delayed', 'suspended',
-]
-const TERMINAL_KEYWORDS = [
-  'final', 'game over', 'completed', 'postponed',
-  'cancelled', 'canceled', 'forfeit',
-]
-const PREGAME_KEYWORDS = [
-  'scheduled', 'pre-game', 'pregame', 'warmup', 'status unknown',
-]
-function classifyGameStatus(rawStatus) {
-  const s = (rawStatus || '').toLowerCase().trim()
-  if (!s) return 'unknown'
-  if (TERMINAL_KEYWORDS.some(k => s.includes(k))) return 'final'
-  if (LIVE_KEYWORDS.some(k => s.includes(k)))     return 'live'
-  if (PREGAME_KEYWORDS.some(k => s.includes(k)))  return 'pregame'
-  return 'unknown'
-}
-
-function isGameLive(gameId) {
-  const g = props.gamesById[gameId]
-  if (!g) return false
-  const klass = classifyGameStatus(g.status)
-  if (klass === 'live') return true
-  if (klass === 'pregame' || klass === 'unknown') {
-    if (g.game_time_utc) {
-      const start = new Date(g.game_time_utc).getTime()
-      const now = Date.now()
-      if (now > start + 5 * 60_000 && now < start + 4 * 60 * 60_000) return true
-    }
-  }
-  return false
-}
-function isGameFinal(gameId) {
-  const g = props.gamesById[gameId]
-  if (!g) return false
-  return classifyGameStatus(g.status) === 'final'
-}
+// ── Game-status thin wrappers around the shared util ──
+// CardsView duplicates this logic too; both files now route through
+// src/utils/gameStatus.js so the keyword lists stay in lockstep.
+function isGameLive(gameId)  { return isGameLiveUtil(props.gamesById, gameId) }
+function isGameFinal(gameId) { return isGameFinalUtil(props.gamesById, gameId) }
 
 function legStatusIndicator(leg) {
   if (leg.status === 'win')  return { kind: 'hit',     label: 'HIT'   }
@@ -82,6 +50,17 @@ function legStatusIndicator(leg) {
   if (isGameFinal(leg.game_id)) return { kind: 'awaiting', label: 'GRADING' }
   return { kind: 'pregame', label: 'PREGAME' }
 }
+
+// Compute indicators once per render keyed by leg.id — template was
+// calling legStatusIndicator twice per leg (once for kind, once for
+// label). For a 4-leg parlay that's 8 calls every reactive update.
+const legIndicators = computed(() => {
+  const map = {}
+  for (const leg of props.legs) {
+    map[leg.id] = legStatusIndicator(leg)
+  }
+  return map
+})
 
 const cardStatusBadge = computed(() => {
   const c = props.card
@@ -111,6 +90,7 @@ function fmtMoney(n, signed = false) {
 }
 function marketLabel(market, line) {
   if (market === 'hr_anytime') return 'HR'
+  if (market === 'hr_0.5')     return 'HR'  // legacy POD market name
   if (market === 'hits_yes')   return `Hits O${line ?? 0.5}`
   if (market === 'rbi_yes')    return `RBI O${line ?? 0.5}`
   if (market && market.startsWith('h_r_rbi_')) {
@@ -124,6 +104,7 @@ function marketLabel(market, line) {
 // ("will hit"), through yellow/orange = medium, red = HR longshot.
 function marketColorClass(market) {
   if (market === 'hr_anytime')    return 'market-hr'
+  if (market === 'hr_0.5')        return 'market-hr'  // legacy POD market name
   if (market === 'hits_yes')      return 'market-hits'
   if (market === 'rbi_yes')       return 'market-rbi'
   if (market === 'h_r_rbi_1.5')   return 'market-hrr-low'
@@ -138,26 +119,33 @@ function marketColorClass(market) {
   <div class="card-frame">
     <!-- Header -->
     <div class="card-header">
-      <div class="flex items-baseline gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2 flex-wrap min-w-0">
         <span class="card-label">{{ card.label || 'Card' }}</span>
-        <span v-if="card.ev_per_dollar" class="card-ev"
-              :class="card.ev_per_dollar >= 0.1 ? 'text-signal-400' : 'text-fg-500'">
-          EV +{{ (card.ev_per_dollar * 100).toFixed(0) }}%
+        <span v-if="card.ev_per_dollar != null" class="card-ev"
+              :class="card.ev_per_dollar >= 0.1 ? 'text-signal-400' : (card.ev_per_dollar >= 0 ? 'text-fg-500' : 'text-edge-cold-1')">
+          EV {{ card.ev_per_dollar >= 0 ? '+' : '' }}{{ (card.ev_per_dollar * 100).toFixed(0) }}%
         </span>
       </div>
-      <span class="badge" :class="`badge-${cardStatusBadge.kind}`">
+      <span class="badge shrink-0 ml-2" :class="`badge-${cardStatusBadge.kind}`">
         {{ cardStatusBadge.label }}
       </span>
     </div>
 
     <!-- Legs -->
     <div>
-      <div v-for="leg in legs" :key="leg.id" class="leg-row" @click="openPlayer(leg.player_id)">
+      <div v-for="leg in legs" :key="leg.id"
+           class="leg-row"
+           :class="{ 'leg-row--disabled': !leg.player_id }"
+           @click="openPlayer(leg.player_id)">
         <img v-if="leg.player_mlbam_id"
              :src="playerHeadshotUrl(leg.player_mlbam_id)"
              :alt="leg.player_name"
              class="leg-headshot"
+             loading="lazy"
              @error="hideOnError" />
+        <span v-else class="leg-headshot leg-headshot--fallback" aria-hidden="true">
+          <span class="font-mono text-[10px] text-fg-500">?</span>
+        </span>
         <div class="leg-body">
           <div class="leg-name">{{ leg.player_name }}</div>
           <div class="leg-meta">
@@ -170,21 +158,23 @@ function marketColorClass(market) {
             <span class="leg-proj">{{ fmtPct(leg.projected_prob) }} proj</span>
             <span class="leg-odds">{{ fmtOdds(leg.american_odds) }}</span>
             <span class="leg-edge"
-                  :class="Number(leg.edge) > 0 ? 'text-signal-400' : 'text-fg-500'">
-              {{ Number(leg.edge) >= 0 ? '+' : '' }}{{ fmtPct(leg.edge) }} edge
+                  :class="leg.edge != null && Number(leg.edge) >= 0 ? 'text-signal-400' : 'text-fg-500'">
+              <template v-if="leg.edge != null && Number.isFinite(Number(leg.edge))">{{ Number(leg.edge) >= 0 ? '+' : '' }}{{ fmtPct(leg.edge) }} edge</template>
+              <template v-else>— edge</template>
             </span>
           </div>
         </div>
-        <span class="leg-status" :class="`leg-status-${legStatusIndicator(leg).kind}`">
+        <!-- Compute the indicator once per leg (was called twice — kind + label) -->
+        <span class="leg-status" :class="`leg-status-${legIndicators[leg.id].kind}`">
           <span class="status-dot"></span>
-          {{ legStatusIndicator(leg).label }}
+          {{ legIndicators[leg.id].label }}
         </span>
       </div>
     </div>
 
     <!-- Footer: stake → payout line -->
     <div class="card-footer">
-      <span class="text-fg-500">${{ Number(card.stake_rec).toFixed(0) }} stake</span>
+      <span class="text-fg-500">{{ fmtMoney(card.stake_rec) }} stake</span>
       <span class="text-fg-500">·</span>
       <span class="text-fg-500">{{ fmtOdds(card.combined_odds) }}</span>
       <span class="text-fg-500">·</span>
@@ -194,15 +184,24 @@ function marketColorClass(market) {
       <span v-else-if="card.status === 'loss'" class="text-edge-cold-1 display-num">
         busted {{ fmtMoney(card.payout, true) }}
       </span>
+      <span v-else-if="card.status === 'void'" class="text-fg-500 display-num">
+        voided
+      </span>
       <span v-else class="text-fg-700 display-num">
-        → ${{ Number(card.payout_if_hit).toFixed(2) }} if hits
+        → {{ fmtMoney(card.payout_if_hit) }} if hits
       </span>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* All same styles as CardsView — duplicated for component isolation */
+/* CSS mirrors the styles in CardsView.vue's <style scoped> block so the
+   visual treatment stays consistent (CardBlock renders today's cards;
+   CardsView's history table renders settled PODs as straight rows).
+   The game-status JS logic was deduped into src/utils/gameStatus.js
+   (CB-10); CSS is harder to share because Vue scoped styles are
+   component-local. If you tweak market colors or leg-status badges
+   here, also update CardsView. */
 .card-frame {
   border: 1px solid var(--bg-200, #1c1c20);
   background: rgba(255, 42, 42, 0.025);
@@ -241,6 +240,7 @@ function marketColorClass(market) {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  flex-wrap: wrap;
   padding-top: 8px;
   margin-top: 10px;
   border-top: 1px dashed rgba(255, 255, 255, 0.08);
@@ -257,6 +257,12 @@ function marketColorClass(market) {
   transition: opacity 120ms ease;
 }
 .leg-row:hover { opacity: 0.85; }
+/* When a leg has no player_id, openPlayer() noops — remove the click
+   affordance so users don't tap expecting navigation. */
+.leg-row--disabled {
+  cursor: default;
+}
+.leg-row--disabled:hover { opacity: 1; }
 .leg-row + .leg-row { border-top: 1px dashed rgba(255, 255, 255, 0.06); }
 
 .leg-headshot {
@@ -267,10 +273,23 @@ function marketColorClass(market) {
   border: 1px solid var(--bg-300, #26262c);
   flex-shrink: 0;
 }
+/* Fallback when leg.player_mlbam_id is null — keeps row layout consistent.
+   Same size and border as the real headshot. */
+.leg-headshot--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.03);
+  border-style: dashed;
+}
 
 .leg-body { flex: 1; min-width: 0; }
 .leg-name {
-  font-family: 'Inter', sans-serif;
+  /* IBM Plex Sans is the site body font (style.css). Inter was specified
+     here but never loaded by index.html, so this was silently falling
+     back to the system sans-serif and breaking visual cohesion with
+     the rest of the cards section. */
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
   font-size: 14px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.85);

@@ -24,6 +24,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../supabase.js'
 import { playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
+import { isGameLive as isGameLiveUtil, isGameFinal as isGameFinalUtil } from '../utils/gameStatus.js'
 import LoadingBrand from '../components/LoadingBrand.vue'
 import CardBlock from '../components/CardBlock.vue'
 
@@ -228,56 +229,15 @@ const threeLegCards = computed(() => cardsByTier('three_leg'))
 const fourLegCards  = computed(() => cardsByTier('four_leg'))
 
 // ── Status helpers ────────────────────────────────────────────
+// classifyGameStatus / isGameLive / isGameFinal are imported from
+// src/utils/gameStatus.js — CardBlock uses the same module so the
+// keyword lists stay in lockstep across files.
 function gameStatusFor(gameId) {
   return gamesById.value[gameId]?.status || null
 }
 
-// Mirror backend pull_scores classification exactly. MLB uses many status
-// strings ("In Progress", "Manager Challenge", "Delayed Start: Rain",
-// "Game Over", "Postponed", etc.) — substring keyword match handles them.
-// Terminal checked FIRST so "Postponed" doesn't match "delayed" later.
-const LIVE_KEYWORDS = [
-  'in progress', 'manager challenge', 'umpire review',
-  'replay', 'instant replay',
-  'delayed', 'suspended',
-]
-const TERMINAL_KEYWORDS = [
-  'final', 'game over', 'completed', 'postponed',
-  'cancelled', 'canceled', 'forfeit',
-]
-const PREGAME_KEYWORDS = [
-  'scheduled', 'pre-game', 'pregame', 'warmup', 'status unknown',
-]
-function classifyGameStatus(rawStatus) {
-  const s = (rawStatus || '').toLowerCase().trim()
-  if (!s) return 'unknown'
-  if (TERMINAL_KEYWORDS.some(k => s.includes(k))) return 'final'
-  if (LIVE_KEYWORDS.some(k => s.includes(k)))     return 'live'
-  if (PREGAME_KEYWORDS.some(k => s.includes(k)))  return 'pregame'
-  return 'unknown'
-}
-
-// Is the game live? Uses classifier + time-based override for cases where
-// pull_scores hasn't fired yet (the row still says "Scheduled" but game has
-// definitely started).
-function isGameLive(gameId) {
-  const g = gamesById.value[gameId]
-  if (!g) return false
-  const klass = classifyGameStatus(g.status)
-  if (klass === 'live') return true
-  // Time-based override for stale 'pregame' / 'unknown'
-  if (klass === 'pregame' || klass === 'unknown') {
-    if (g.game_time_utc) {
-      const start = new Date(g.game_time_utc).getTime()
-      const now = Date.now()
-      if (now > start + 5 * 60_000 && now < start + 4 * 60 * 60_000) return true
-    }
-  }
-  return false
-}
-function isGameFinal(gameId) {
-  return classifyGameStatus(gameStatusFor(gameId)) === 'final'
-}
+function isGameLive(gameId)  { return isGameLiveUtil(gamesById.value, gameId) }
+function isGameFinal(gameId) { return isGameFinalUtil(gamesById.value, gameId) }
 
 // Leg status — picks the right indicator class + label.
 function legStatusIndicator(leg) {
