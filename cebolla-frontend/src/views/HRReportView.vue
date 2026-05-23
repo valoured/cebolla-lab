@@ -60,6 +60,12 @@ const awayLogo = computed(() => teamLogoUrl(game.value?.away_team?.mlb_id))
 const homeLogo = computed(() => teamLogoUrl(game.value?.home_team?.mlb_id))
 
 // ── Live / final score display ──
+//
+// isInProgress is permissive — includes delayed/suspended so scores still
+// show during weather delays. isActivelyLive is stricter — used for the
+// pulsing inning indicator, which should only animate when the game is
+// actually being played (not paused). statusBadge mirrors that split:
+// LIVE for actively-playing, DELAYED/SUSPENDED for paused.
 const isInProgress = computed(() => {
   const s = (game.value?.status || '').toLowerCase()
   return s.includes('progress') ||
@@ -67,6 +73,13 @@ const isInProgress = computed(() => {
          s.includes('replay') ||
          s.includes('delayed') ||
          s.includes('suspended')
+})
+
+const isActivelyLive = computed(() => {
+  const s = (game.value?.status || '').toLowerCase()
+  return s.includes('progress') ||
+         s.includes('manager challenge') ||
+         s.includes('replay')
 })
 
 const isFinal = computed(() => {
@@ -93,8 +106,11 @@ const homeScoreLeading = computed(() => {
 })
 
 // ── Inning indicator when live ──
+// Only renders when the game is actively being played — NOT when delayed
+// or suspended. The pulse animation would falsely suggest "live action" on
+// a paused game, contradicting the DELAYED/SUSPENDED status badge.
 const inningDisplay = computed(() => {
-  if (!isInProgress.value) return null
+  if (!isActivelyLive.value) return null
   const inning = game.value?.current_inning
   const state = (game.value?.inning_state || '').toLowerCase()
   if (!inning) return null
