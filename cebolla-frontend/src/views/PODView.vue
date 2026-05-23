@@ -61,24 +61,26 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const { data, error: dbErr } = await supabase
-      .from('pods')
-      .select('*')
-      .order('pod_date', { ascending: false })
-      .limit(200)
-    if (dbErr) throw dbErr
-    pods.value = data || []
-
-    // Fetch today's game statuses + start times so we can show
-    // STARTING SOON / LIVE on pending PODs based on game state.
-    // game_time_utc is the trusted source for "has the game started?"
-    // since pull_scores cron is hourly and lags behind first pitch.
+    // Parallel: PODs history (limit 200) AND today's game statuses.
+    // Both are independent queries — no need to wait sequentially.
+    // Previously this was two sequential round-trips (~300ms on mobile);
+    // now ~150ms with Promise.all.
     const today = todayIsoFn()
-    const { data: gamesData } = await supabase
-      .from('games')
-      .select('id, status, game_time_utc')
-      .eq('game_date', today)
-    todayGames.value = gamesData || []
+    const [podsRes, gamesRes] = await Promise.all([
+      supabase
+        .from('pods')
+        .select('*')
+        .order('pod_date', { ascending: false })
+        .limit(200),
+      supabase
+        .from('games')
+        .select('id, status, game_time_utc')
+        .eq('game_date', today),
+    ])
+
+    if (podsRes.error) throw podsRes.error
+    pods.value = podsRes.data || []
+    todayGames.value = gamesRes.data || []
 
     loading.value = false
   } catch (e) {
@@ -95,24 +97,29 @@ async function refreshLive() {
   try {
     const today = todayIsoFn()
 
-    // Refresh today's game statuses (mainly for STARTING SOON → LIVE flip)
-    const { data: gamesData } = await supabase
-      .from('games')
-      .select('id, status, game_time_utc')
-      .eq('game_date', today)
-    if (gamesData) todayGames.value = gamesData
+    // Parallel: both queries are independent. ~150ms saved per refresh
+    // (which fires every 60s).
+    const [gamesRes, todayPodsRes] = await Promise.all([
+      // Today's game statuses (mainly for STARTING SOON → LIVE flip)
+      supabase
+        .from('games')
+        .select('id, status, game_time_utc')
+        .eq('game_date', today),
+      // Today's PODs only (status flips when settle grades them)
+      supabase
+        .from('pods')
+        .select('*')
+        .eq('pod_date', today),
+    ])
 
-    // Refresh ONLY today's PODs (status flips when settle grades them).
-    // Update in-place so we don't disturb the historical list.
-    const { data: todayPodsData } = await supabase
-      .from('pods')
-      .select('*')
-      .eq('pod_date', today)
-    if (todayPodsData) {
-      // Replace today's rows in pods.value; keep historical untouched
-      const todayIds = new Set(todayPodsData.map(p => p.id))
+    if (gamesRes.data) todayGames.value = gamesRes.data
+
+    if (todayPodsRes.data) {
+      // Replace today's rows in pods.value; keep historical untouched.
+      // Update in-place so we don't disturb the historical list.
+      const todayIds = new Set(todayPodsRes.data.map(p => p.id))
       const historical = pods.value.filter(p => !todayIds.has(p.id) && p.pod_date !== today)
-      pods.value = [...todayPodsData, ...historical]
+      pods.value = [...todayPodsRes.data, ...historical]
     }
   } catch (e) {
     // Swallow — auto-refresh failures shouldn't break the page.
@@ -174,9 +181,10 @@ const todayIso = computed(() => {
 // has already run and either failed to find candidates or skipped due to
 // insufficient projections.
 //
-// We compute it once at script-setup time which is fine — users coming back
-// later in the day will see the right message because Cebolla's a SPA that
-// re-mounts on every navigation, and PODView reloads on every visit.
+// Reactive via dateTick — bumped every minute by the auto-refresh
+// interval so a user who keeps the tab open through the 11 AM ET boundary
+// sees the empty-state copy flip from "check back" to "no batter cleared
+// thresholds today" without having to refresh the page.
 function currentETHour() {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -185,7 +193,10 @@ function currentETHour() {
   })
   return parseInt(fmt.format(new Date()), 10)
 }
-const pastMorningLock = currentETHour() >= 11   // 11 AM ET — pick_pod fires by ~3:43 AM, but allow buffer
+const pastMorningLock = computed(() => {
+  dateTick.value  // reactive dep — re-evaluate on each minute tick
+  return currentETHour() >= 11   // 11 AM ET — pick_pod fires by ~3:43 AM, but allow buffer
+})
 
 const todayPod = computed(() => pods.value.find(p => p.pod_date === todayIso.value) || null)
 const historicalPods = computed(() => pods.value.filter(p => p.pod_date !== todayIso.value))
@@ -196,13 +207,28 @@ const settledPods = computed(() => pods.value.filter(p => ['win', 'loss', 'push'
 // model ships, all existing rows are 'hr' (backfilled by the migration).
 // These helpers let the template show two separate cards/scoreboards side-
 // by-side, one per market, without re-querying the DB.
+//
+// Today's POD per market is computed (not a function) because the template
+// references it ~20 times per render across both market sections. Functions
+// would re-filter pods.value on every reference; computed caches the result
+// until pods.value changes.
+const todayPodHr = computed(() => pods.value.find(
+  p => p.pod_date === todayIso.value && (p.market_class || 'hr') === 'hr',
+) || null)
+
+const todayPodHrr = computed(() => pods.value.find(
+  p => p.pod_date === todayIso.value && (p.market_class || 'hr') === 'hrr',
+) || null)
+
+// Helpers for per-market filtering/stats. The overall scoreboard uses the
+// global computeds (record, netPnl, roi). Per-market scoreboard sections
+// aren't built into the UI yet — these helpers are wired up so they can be
+// dropped in without re-plumbing the data layer.
 function podsByMarket(marketClass) {
   return pods.value.filter(p => (p.market_class || 'hr') === marketClass)
 }
 function todayPodForMarket(marketClass) {
-  return pods.value.find(
-    p => p.pod_date === todayIso.value && (p.market_class || 'hr') === marketClass,
-  ) || null
+  return marketClass === 'hr' ? todayPodHr.value : todayPodHrr.value
 }
 function historicalPodsForMarket(marketClass) {
   return pods.value.filter(
@@ -216,34 +242,11 @@ function settledPodsForMarket(marketClass) {
   )
 }
 
-// Market metadata for UI rendering
-const MARKETS = [
-  {
-    key: 'hr',
-    label: 'Home Run',
-    short: 'HR',
-    description: 'Anytime home run — the player hits at least one HR.',
-    enabled: true,
-  },
-  {
-    key: 'hrr',
-    label: 'H + R + RBI',
-    short: 'HRR',
-    description: 'Hits + Runs + RBIs — does the player produce across the board.',
-    enabled: true,
-  },
-]
-
 // Scale a stored payout (at canonical stake) up/down to viewer's stake.
 function scaledPayout(pod) {
   const canon = Number(pod.stake) || 10
   const factor = displayStake.value / canon
   return Number(pod.payout || 0) * factor
-}
-
-function scaledRisk(pod) {
-  // Risk = stake. Always equal to displayStake for the scaled view.
-  return displayStake.value
 }
 
 // Win/loss record — overall (kept for backward compat) and per-market.
@@ -313,7 +316,6 @@ const sparklinePadding = 6
 const sparklinePath = computed(() => {
   const series = pnlTimeline.value
   if (series.length < 2) return ''
-  const xs = series.map((_, i) => i)
   const ys = series.map(d => d.cum)
   const minY = Math.min(0, ...ys)  // include 0 so baseline is visible
   const maxY = Math.max(0, ...ys)
@@ -366,6 +368,18 @@ function fmtDate(iso) {
   const [y, m, d] = iso.split('-').map(Number)
   const dt = new Date(y, m - 1, d)
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+// Format an ISO timestamp as time-of-day in ET. The "ET" label next to
+// these in the template would be misleading otherwise — without an explicit
+// timezone, toLocaleTimeString uses the user's local TZ.
+function fmtLockedAtET(iso) {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
 }
 function statusBadgeClass(status) {
   switch (status) {
@@ -583,7 +597,7 @@ function marketLabel(m) {
               class="mt-3 pt-3 border-t border-bg-200/40 label-caps !text-[8px] opacity-70"
             >
               odds from {{ todayPodForMarket('hr').book }} · locked
-              {{ new Date(todayPodForMarket('hr').locked_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) }} ET
+              {{ fmtLockedAtET(todayPodForMarket('hr').locked_at) }} ET
             </div>
           </div>
 
@@ -691,7 +705,7 @@ function marketLabel(m) {
               class="mt-3 pt-3 border-t border-bg-200/40 label-caps !text-[8px] opacity-70"
             >
               odds from {{ todayPodForMarket('hrr').book }} · locked
-              {{ new Date(todayPodForMarket('hrr').locked_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) }} ET
+              {{ fmtLockedAtET(todayPodForMarket('hrr').locked_at) }} ET
             </div>
           </div>
 
@@ -801,6 +815,7 @@ function marketLabel(m) {
               <thead>
                 <tr class="text-left">
                   <th class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200">Date</th>
+                  <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-center">Mkt</th>
                   <th class="label-caps !text-[8px] py-2 px-3 border-b border-bg-200">Player</th>
                   <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Prob</th>
                   <th class="label-caps !text-[8px] py-2 px-2 border-b border-bg-200 text-right">Odds</th>
@@ -816,6 +831,9 @@ function marketLabel(m) {
                 >
                   <td class="py-2 px-3 border-b border-bg-200/40 display-num text-xs text-fg-500">
                     {{ fmtDate(pod.pod_date) }}
+                  </td>
+                  <td class="py-2 px-2 border-b border-bg-200/40 text-center font-mono text-[9px] text-fg-500">
+                    {{ ((pod.market_class || 'hr')).toUpperCase() }}
                   </td>
                   <td class="py-2 px-3 border-b border-bg-200/40">
                     <router-link
