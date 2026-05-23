@@ -75,7 +75,8 @@ async function load() {
   error.value = null
 
   try {
-    // 1. Player record + team
+    // 1. Player record + team (must succeed before anything else — gives us
+    //    the existence check and the team data).
     const { data: p, error: pErr } = await supabase
       .from('players')
       .select(`
@@ -90,56 +91,63 @@ async function load() {
     player.value = p
     team.value = p.team || null
 
-    // 2. All windows for this batter, vs_hand = 'A' (overall)
-    const { data: ws } = await supabase
-      .from('batter_stats')
-      .select('*')
-      .eq('batter_id', playerId.value)
-      .eq('season', CURRENT_SEASON)
-      .eq('vs_hand', 'A')
+    // 2. Everything else in parallel — no inter-dependency.
+    //    Previous version did these sequentially: ~6 round-trips of waterfall.
+    //    On mobile (~200ms RTT) that's ~1.2 seconds saved by parallelizing.
+    const [windowsRes, splitsRes, trendsRes] = await Promise.all([
+      // Windows (season, l30, l14, l7) for overall vs_hand='A'
+      supabase
+        .from('batter_stats')
+        .select('*')
+        .eq('batter_id', playerId.value)
+        .eq('season', CURRENT_SEASON)
+        .eq('vs_hand', 'A'),
 
-    // Sort into season/l30/l14/l7 order
-    const wsByType = {}
-    for (const r of (ws || [])) wsByType[r.window_type] = r
-    windows.value = WINDOW_ORDER
-      .map(t => wsByType[t])
-      .filter(Boolean)
+      // Vs LHP / vs RHP splits, season window only
+      supabase
+        .from('batter_stats')
+        .select('*')
+        .eq('batter_id', playerId.value)
+        .eq('season', CURRENT_SEASON)
+        .eq('window_type', 'season')
+        .in('vs_hand', ['L', 'R']),
 
-    // 3. Vs LHP / vs RHP splits (season only)
-    const { data: splits } = await supabase
-      .from('batter_stats')
-      .select('*')
-      .eq('batter_id', playerId.value)
-      .eq('season', CURRENT_SEASON)
-      .eq('window_type', 'season')
-      .in('vs_hand', ['L', 'R'])
-
-    for (const s of (splits || [])) {
-      if (s.vs_hand === 'L') splitVsL.value = s
-      else if (s.vs_hand === 'R') splitVsR.value = s
-    }
-
-    // 4. Tonight's matchup — find if this player is in any upcoming lineup
-    await loadTonightMatchup()
-
-    // 5. Latest Combined Heat snapshot. Wrapped in its own try/catch so
-    //    a missing batter_trends table (migration not yet applied) doesn't
-    //    crash the whole page — the panel just won't render.
-    try {
-      const { data: trendRows, error: trendErr } = await supabase
+      // Latest Combined Heat snapshot. Errors swallowed — a missing
+      // batter_trends table (migration not yet applied) shouldn't crash
+      // the whole page; the panel just won't render.
+      supabase
         .from('batter_trends')
         .select('*')
         .eq('batter_id', playerId.value)
         .order('trend_date', { ascending: false })
         .limit(1)
-      if (trendErr) {
-        console.warn('[PlayerView] trend query failed (non-fatal):', trendErr.message)
-      } else {
-        trendData.value = trendRows?.[0] || null
-      }
-    } catch (e) {
-      console.warn('[PlayerView] trend fetch failed (non-fatal):', e?.message || e)
+        .then(r => r, e => ({ data: null, error: e })),
+    ])
+
+    // Sort windows into season/l30/l14/l7 order
+    const wsByType = {}
+    for (const r of (windowsRes.data || [])) wsByType[r.window_type] = r
+    windows.value = WINDOW_ORDER
+      .map(t => wsByType[t])
+      .filter(Boolean)
+
+    // Splits
+    for (const s of (splitsRes.data || [])) {
+      if (s.vs_hand === 'L') splitVsL.value = s
+      else if (s.vs_hand === 'R') splitVsR.value = s
     }
+
+    // Trends (non-fatal)
+    if (trendsRes.error) {
+      console.warn('[PlayerView] trend query failed (non-fatal):', trendsRes.error.message || trendsRes.error)
+    } else {
+      trendData.value = trendsRes.data?.[0] || null
+    }
+
+    // 3. Tonight's matchup — separate function with its own dependent
+    //    sub-queries (games → lineups → pitcher_stats). Kept sequential
+    //    inside because each one needs the previous result.
+    await loadTonightMatchup()
 
     loading.value = false
   } catch (e) {
@@ -200,7 +208,14 @@ async function loadTonightMatchup() {
   const enriched = lineupRows
     .map(lr => ({ lr, g: gameById[lr.game_id] }))
     .filter(x => x.g)
-    .sort((a, b) => new Date(a.g.game_time_utc) - new Date(b.g.game_time_utc))
+    .sort((a, b) => {
+      // TBD games (null game_time_utc) sort LAST so we surface the soonest
+      // scheduled one first. Without this guard, `new Date(null)` evaluates
+      // to 1970-01-01 and TBD games would surface as the "soonest".
+      const at = a.g.game_time_utc ? new Date(a.g.game_time_utc).getTime() : Infinity
+      const bt = b.g.game_time_utc ? new Date(b.g.game_time_utc).getTime() : Infinity
+      return at - bt
+    })
 
   if (!enriched.length) return
 
@@ -219,22 +234,33 @@ async function loadTonightMatchup() {
     opponentTeam,
   }
 
-  // Load pitcher allowed stats (L14) if we have a pitcher
+  // Load pitcher allowed stats (L14) if we have a pitcher.
+  // Wrapped in its own try/catch so a transient query failure (or rare
+  // multi-row uniqueness conflict) doesn't crash the whole page — the
+  // matchup card just won't show the pitcher-allowed strip.
   if (opponentPitcher?.id) {
-    const { data: ps } = await supabase
-      .from('pitcher_stats')
-      .select('barrel_pct, hard_hit_pct, xba, xslg, bbe, window_start')
-      .eq('pitcher_id', opponentPitcher.id)
-      .eq('season', CURRENT_SEASON)
-      .eq('window_type', 'l14')
-      .maybeSingle()
-    pitcherAllowed.value = ps || null
+    try {
+      const { data: ps } = await supabase
+        .from('pitcher_stats')
+        .select('barrel_pct, hard_hit_pct, xba, xslg')
+        .eq('pitcher_id', opponentPitcher.id)
+        .eq('season', CURRENT_SEASON)
+        .eq('window_type', 'l14')
+        .maybeSingle()
+      pitcherAllowed.value = ps || null
+    } catch (e) {
+      console.warn('[PlayerView] pitcher_allowed query failed (non-fatal):', e?.message || e)
+      pitcherAllowed.value = null
+    }
   }
 }
 
 onMounted(load)
 
-// Re-load if route param changes (user navigates to another player without unmount)
+// Re-load if route param changes (user navigates to another player without
+// unmount). In practice App.vue's `:key="route.fullPath"` makes the component
+// remount on navigation so this watch never actually fires — kept here as
+// defensive coverage in case the :key is removed in the future.
 watch(playerId, (newId, oldId) => {
   if (newId && newId !== oldId) {
     player.value = null
@@ -243,6 +269,7 @@ watch(playerId, (newId, oldId) => {
     splitVsR.value = null
     tonightGame.value = null
     pitcherAllowed.value = null
+    trendData.value = null
     load()
   }
 })
@@ -389,8 +416,13 @@ const combinedTrend = computed(() => {
 
 // Was today's snapshot or older? Used to show "stale" warning if data
 // is older than 24h (rare, but cron could fail).
+//
+// Depends on nowTick so the badge updates if the user keeps the tab open
+// past the stale threshold. Without this dep, the computed wouldn't
+// re-evaluate just because time passed.
 const trendIsStale = computed(() => {
   if (!trendData.value?.trend_date) return false
+  nowTick.value  // reactive dep — re-evaluate on each tick
   const td = new Date(trendData.value.trend_date + 'T00:00:00Z')
   const ageDays = (Date.now() - td.getTime()) / (1000 * 60 * 60 * 24)
   return ageDays > 1.5
@@ -404,6 +436,7 @@ const pitchBreakdown = computed(() => {
   if (!bp || typeof bp !== 'object') return []
 
   return Object.entries(bp)
+    .filter(([, stats]) => stats && typeof stats === 'object')
     .map(([code, stats]) => ({
       pitch: code,
       pa: stats.pa ?? null,
