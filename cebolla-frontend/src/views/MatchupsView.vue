@@ -506,7 +506,7 @@ onUnmounted(() => {
           <button
             type="button"
             @click="showGuide = !showGuide"
-            class="label-caps !text-[10px] text-fg-500 hover:text-signal-300 transition flex items-center gap-1"
+            class="label-caps !text-[10px] text-fg-500 hover:text-signal-300 transition flex items-center gap-1 min-h-[36px] -my-1.5"
           >
             <span>{{ showGuide ? 'Hide' : 'How to read this' }}</span>
             <span>{{ showGuide ? '\u2212' : '+' }}</span>

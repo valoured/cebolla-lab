@@ -42,12 +42,31 @@ const inputRef = ref(null)
 let debounceTimer = null
 
 // ── Open / close ────────────────────────────────────────────────
+// Body scroll lock prevents the background page from scrolling while the
+// modal is open. Without this, mobile users dragging on the dim overlay
+// area scroll the page underneath, which is jarring. We save the previous
+// overflow value to restore exactly what was there before — Tailwind or
+// other code may have set it on the body for other reasons.
+let previousBodyOverflow = ''
+
+function lockBodyScroll() {
+  if (typeof document === 'undefined') return
+  previousBodyOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+}
+function unlockBodyScroll() {
+  if (typeof document === 'undefined') return
+  document.body.style.overflow = previousBodyOverflow
+  previousBodyOverflow = ''
+}
+
 function open() {
   isOpen.value = true
   query.value = ''
   players.value = []
   teams.value = []
   highlightIndex.value = 0
+  lockBodyScroll()
   nextTick(() => {
     inputRef.value?.focus()
   })
@@ -55,6 +74,7 @@ function open() {
 function close() {
   isOpen.value = false
   if (debounceTimer) clearTimeout(debounceTimer)
+  unlockBodyScroll()
 }
 
 // ── Global hotkey ───────────────────────────────────────────────
@@ -93,6 +113,10 @@ onUnmounted(() => {
   if (window.__openCebollaSearch === open) {
     delete window.__openCebollaSearch
   }
+  // Defensive: if the modal happens to be open at unmount time (e.g.
+  // route change during search), make sure we don't leave the body
+  // permanently scroll-locked.
+  if (isOpen.value) unlockBodyScroll()
 })
 
 // ── Search ──────────────────────────────────────────────────────
@@ -248,9 +272,22 @@ function teamFlatIndex(i) {
               autocomplete="off"
               spellcheck="false"
             />
+            <!-- Desktop: keyboard hint. Mobile: touch-friendly close button.
+                 Both target the same close() action so users on every device
+                 have a discoverable way to dismiss. -->
             <span class="search-hint">
               <kbd>esc</kbd> to close
             </span>
+            <button
+              type="button"
+              @click="close"
+              class="search-close-btn"
+              aria-label="Close search"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
           <!-- Results body -->
@@ -408,7 +445,12 @@ function teamFlatIndex(i) {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 12vh 16px 0;
+  /* Top padding respects iPhone notch / dynamic island. Side padding
+     respects landscape safe areas. */
+  padding: calc(12vh + env(safe-area-inset-top))
+           calc(16px + env(safe-area-inset-right))
+           0
+           calc(16px + env(safe-area-inset-left));
   z-index: 9000;
 }
 
@@ -423,7 +465,10 @@ function teamFlatIndex(i) {
 
 @media (max-width: 480px) {
   .search-overlay {
-    padding: 6vh 8px 0;
+    padding: calc(6vh + env(safe-area-inset-top))
+             calc(8px + env(safe-area-inset-right))
+             0
+             calc(8px + env(safe-area-inset-left));
   }
 }
 
@@ -441,7 +486,9 @@ function teamFlatIndex(i) {
   outline: none;
   color: rgba(255, 255, 255, 0.92);
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
-  font-size: 15px;
+  /* 16px minimum prevents iOS Safari from auto-zooming the page when the
+     input gets focus (small inputs trigger an annoying zoom-in). */
+  font-size: 16px;
   min-width: 0;
 }
 .search-input::placeholder {
@@ -455,6 +502,34 @@ function teamFlatIndex(i) {
   text-transform: uppercase;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* Touch-friendly close button. Hidden on desktop where the kbd hint
+   and the click-outside-to-close handle dismissal. Shown on mobile
+   where users have no Esc key. */
+.search-close-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: -10px -8px -10px 0;  /* expand tap area without changing layout */
+  border-radius: 4px;
+  transition: color 100ms ease, background-color 100ms ease;
+}
+.search-close-btn:active {
+  color: #fff;
+  background: rgba(255, 42, 42, 0.10);
+}
+
+@media (max-width: 480px) {
+  .search-hint { display: none; }
+  .search-close-btn { display: inline-flex; }
 }
 
 .search-body {

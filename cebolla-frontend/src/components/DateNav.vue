@@ -115,6 +115,10 @@ function selectDate(dateStr) {
   gap: 0.5rem;
   overflow-x: auto;
   overflow-y: hidden;
+  /* Mobile polish: momentum scrolling + contain overscroll so users
+     can't accidentally scroll the whole page when swiping the rail. */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;          /* Firefox */
   -ms-overflow-style: none;       /* IE/Edge legacy */
   padding-bottom: 2px;            /* room for focus rings */
@@ -127,6 +131,7 @@ function selectDate(dateStr) {
   position: relative;
   flex: 0 0 auto;
   min-width: 64px;
+  min-height: 44px;
   padding: 6px 12px 7px;
   border: 1px solid var(--bg-200, #1c1c20);
   background: var(--bg-50, #0c0c0e);
@@ -134,6 +139,11 @@ function selectDate(dateStr) {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   text-align: center;
   line-height: 1.15;
+  /* Center the two-line content vertically inside the taller min-height
+     so visual density stays the same while tap area grows. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
   cursor: pointer;
 }

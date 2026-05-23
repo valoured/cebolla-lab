@@ -912,12 +912,15 @@ function marketLabel(m) {
 
 /* Stake input — looks like the display nums but is editable */
 .stake-input {
-  width: 60px;
+  width: 72px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.85);
   padding: 4px 6px;
-  font-size: 14px;
+  /* 16px minimum prevents iOS Safari from auto-zooming the page when
+     this input gets focus. The stake adjuster is on the POD stats
+     section — a frequent mobile interaction. */
+  font-size: 16px;
   text-align: right;
   font-family: 'JetBrains Mono', monospace;
 }

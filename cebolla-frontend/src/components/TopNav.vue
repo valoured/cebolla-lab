@@ -70,7 +70,7 @@ function openSearch() {
 </script>
 
 <template>
-  <header class="sticky top-0 z-50 bg-bg-0/95 backdrop-blur border-b border-bg-200">
+  <header class="sticky top-0 z-50 bg-bg-0/95 backdrop-blur border-b border-bg-200 topnav-safe">
     <div class="px-3 sm:px-6 h-16 sm:h-20 flex items-center gap-3 sm:gap-6">
       <!-- Brand -->
       <router-link to="/" class="flex items-center group shrink-0">
@@ -82,12 +82,12 @@ function openSearch() {
       </router-link>
 
       <!-- Nav tabs -->
-      <nav class="flex items-center gap-0 sm:gap-1 sm:ml-2 overflow-x-auto scrollbar-none">
+      <nav class="flex items-center gap-0 sm:gap-1 sm:ml-2 overflow-x-auto scrollbar-none h-scroll self-stretch">
         <router-link
           v-for="item in navItems"
           :key="item.name"
           :to="{ name: item.name }"
-          class="px-2 sm:px-3 py-2 text-sm transition relative group shrink-0"
+          class="px-2 sm:px-3 py-2 text-sm transition relative group shrink-0 flex items-center self-stretch"
           :class="[
             isActive(item.name)
               ? 'text-fg-700'
@@ -176,6 +176,17 @@ function openSearch() {
 </template>
 
 <style scoped>
+/* Respect iPhone notch + dynamic island safe areas. With viewport-fit=cover
+   set in the HTML viewport meta, content can extend into the unsafe top
+   area — without this, nav items would clip behind the notch on iPhone X+
+   in portrait mode. Side insets handle landscape orientation (notch + home
+   indicator on the sides). */
+.topnav-safe {
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
 .cebolla-wordmark-nav {
   height: 44px;
   width: auto;
@@ -207,6 +218,7 @@ function openSearch() {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
+  min-height: 36px;
   border: 1px solid var(--bg-200, #1c1c20);
   background: transparent;
   color: var(--fg-500, #8a8a92);
@@ -249,7 +261,8 @@ function openSearch() {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 10px;
   letter-spacing: 0.08em;
-  padding: 3px 7px;
+  padding: 6px 8px;
+  min-height: 32px;
   border: 1px solid var(--bg-200, #1c1c20);
   color: var(--fg-500, #8a8a92);
   background: transparent;

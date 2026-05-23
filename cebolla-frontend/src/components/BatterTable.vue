@@ -769,8 +769,11 @@ const badgeLabel = computed(() => {
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.80);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  padding: 3px 6px;
+  /* 16px prevents iOS Safari from auto-zooming when select gets focus.
+     Smaller fonts trigger the same zoom-in as text inputs. */
+  font-size: 16px;
+  padding: 6px 8px;
+  min-height: 36px;
   outline: none;
   appearance: none;
   -webkit-appearance: none;
@@ -784,8 +787,10 @@ const badgeLabel = computed(() => {
   border: 1px solid rgba(255, 42, 42, 0.4);
   color: rgba(255, 42, 42, 0.95);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  padding: 3px 7px;
+  font-size: 12px;
+  padding: 6px 10px;
+  min-height: 36px;
+  min-width: 36px;
   cursor: pointer;
   line-height: 1;
 }

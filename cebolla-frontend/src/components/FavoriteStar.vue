@@ -87,6 +87,16 @@ const sizeClass = computed(() => `fav-star--${props.size}`)
   transition: color 140ms ease, transform 100ms ease;
   flex-shrink: 0;
   line-height: 0;
+  position: relative;
+}
+/* Invisible tap-area expander. The visual star stays compact (12-22px)
+   but the hit region extends to ~32-40px so thumbs can hit it without
+   mis-tapping the row it's sitting on. The :before pseudo doesn't
+   affect layout or interact with hover styles. */
+.fav-star::before {
+  content: '';
+  position: absolute;
+  inset: -10px;
 }
 .fav-star:hover {
   color: rgba(255, 42, 42, 0.85);

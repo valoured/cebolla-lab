@@ -250,6 +250,16 @@ onUnmounted(() => {
   transition: all 0.15s;
   flex-shrink: 0;
   user-select: none;
+  position: relative;  /* anchor for the tap-area pseudo */
+}
+/* Invisible tap-area expander for touch devices. The icon itself stays
+   small (14-18px) for visual density, but the tap region grows to ~30px
+   so thumbs can hit it reliably. Doesn't affect layout or hover states
+   on desktop — pointer-events only matters during actual taps. */
+.info-icon::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
 }
 .info-icon-sm {
   width: 14px;

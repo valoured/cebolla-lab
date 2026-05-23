@@ -28,7 +28,7 @@ const WINDOWS = [
       :key="w.key"
       type="button"
       @click="$emit('update:modelValue', w.key)"
-      class="px-2.5 py-1 text-[10px] font-mono uppercase tracking-wide2 transition-all"
+      class="window-toggle-btn px-2.5 py-1 text-[10px] font-mono uppercase tracking-wide2 transition-all"
       :class="modelValue === w.key
         ? 'bg-signal-400/15 text-signal-400 font-semibold'
         : 'text-fg-500 hover:text-fg-700 hover:bg-bg-100'"
@@ -37,3 +37,15 @@ const WINDOWS = [
     </button>
   </div>
 </template>
+
+<style scoped>
+/* 36px minimum tap target — these are switched frequently on mobile
+   (Season / L30 / L14 / L7) and tiny pills are easy to mis-tap. */
+.window-toggle-btn {
+  min-height: 36px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+</style>

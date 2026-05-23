@@ -10,6 +10,26 @@ html, body {
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* iOS Safari + Android Chrome: default 16px base prevents auto-zoom
+     when focusing inputs (browsers zoom in on inputs with <16px text
+     to "help" the user — which we don't want). */
+  font-size: 16px;
+  /* Prevent some mobile browsers from auto-resizing text in landscape. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Kill the default gray-flash on tap for iOS Safari. We use our own
+     :active / :focus-visible styles for tap affordance. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent any one rogue child from causing the entire page to scroll
+   horizontally on narrow viewports. Set on body (not html) so that
+   position:sticky descendants still work — sticky needs a scrollable
+   ancestor and setting overflow:hidden on html can break that chain
+   in some browsers. Components that need horizontal scroll (long
+   tables, etc.) should opt in locally via overflow-x:auto. */
+body {
+  overflow-x: hidden;
 }
 
 body {
@@ -106,6 +126,17 @@ body::before {
 ::-webkit-scrollbar-track { background: #08080A; }
 ::-webkit-scrollbar-thumb { background: #26262E; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #FF2A2A; }
+
+/* Horizontal-scroll polish for mobile. Apply to any container that
+   scrolls sideways (date pills, methodology pill nav, nav tabs):
+     class="h-scroll"
+   - momentum on older iOS that doesn't infer it
+   - contains overscroll so swiping past the end doesn't scroll the
+     page underneath */
+.h-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
 
 ::selection {
   background: rgba(255,42,42,0.35);

@@ -21,7 +21,7 @@ import SearchModal from './components/SearchModal.vue'
     <!-- ─── GLOBAL LEGAL FOOTER ────────────────────────────────── -->
     <!-- Sitewide disclaimer per Cebolla legal positioning: research      -->
     <!-- platform, not betting advice. Visible on every page.             -->
-    <footer class="border-t border-bg-200/30 bg-bg-50/60 px-4 sm:px-6 py-6 mt-auto relative z-10">
+    <footer class="border-t border-bg-200/30 bg-bg-50/60 px-4 sm:px-6 py-6 mt-auto relative z-10 footer-safe">
       <div class="max-w-6xl mx-auto space-y-4">
         <!-- Primary disclaimer block -->
         <div class="text-[10px] sm:text-[11px] text-fg-500 leading-relaxed">
@@ -78,4 +78,19 @@ import SearchModal from './components/SearchModal.vue'
   transition: opacity 200ms ease;
 }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* Respect iPhone home-indicator safe area on the footer, plus side
+   insets for landscape. The notch top-inset is handled separately on
+   the TopNav (which is sticky and renders at the top of viewport). */
+.footer-safe {
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+  padding-left: calc(1rem + env(safe-area-inset-left));
+  padding-right: calc(1rem + env(safe-area-inset-right));
+}
+@media (min-width: 640px) {
+  .footer-safe {
+    padding-left: calc(1.5rem + env(safe-area-inset-left));
+    padding-right: calc(1.5rem + env(safe-area-inset-right));
+  }
+}
 </style>

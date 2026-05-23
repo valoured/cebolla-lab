@@ -129,14 +129,14 @@ function scrollTo(id) {
       </aside>
 
       <!-- ── Mobile: section jump (horizontal scroll pills) ─── -->
-      <nav class="lg:hidden -mx-4 px-4 overflow-x-auto">
+      <nav class="lg:hidden -mx-4 px-4 overflow-x-auto h-scroll">
         <div class="flex gap-1.5 pb-3">
           <button
             v-for="s in sections"
             :key="s.id"
             @click="scrollTo(s.id)"
             type="button"
-            class="shrink-0 px-3 py-1.5 text-[11px] border transition whitespace-nowrap"
+            class="shrink-0 px-3 py-1.5 text-[11px] border transition whitespace-nowrap min-h-[36px] inline-flex items-center"
             :class="activeSection === s.id
               ? 'border-signal-400 text-signal-200 bg-signal-400/10'
               : 'border-bg-200 text-fg-500'"
