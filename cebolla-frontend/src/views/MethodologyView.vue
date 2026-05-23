@@ -20,20 +20,31 @@ const sections = [
   { id: 'overview',      label: 'What this is',          code: 'M.03.a' },
   { id: 'data',          label: 'Data philosophy',       code: 'M.03.b' },
   { id: 'windows',       label: 'Rolling windows',       code: 'M.03.c' },
-  { id: 'statcast',      label: 'Statcast stats',        code: 'M.03.d' },
-  { id: 'pitcher-side',  label: 'Pitcher-allowed stats', code: 'M.03.e' },
-  { id: 'park-factors',  label: 'HR park factors',       code: 'M.03.f' },
-  { id: 'lineups',       label: 'Lineups',               code: 'M.03.g' },
-  { id: 'edge',          label: 'Edge',                  code: 'M.03.h' },
-  { id: 'contact-score', label: 'Contact score',         code: 'M.03.i' },
-  { id: 'combined-sort', label: 'Default sort & POD',    code: 'M.03.j' },
-  { id: 'hrr-pod',       label: 'H+R+RBI POD',           code: 'M.03.k' },
-  { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.l' },
-  { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.m' },
-  { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.n' },
+  { id: 'combined-heat', label: 'Combined Heat',         code: 'M.03.d' },
+  { id: 'statcast',      label: 'Statcast stats',        code: 'M.03.e' },
+  { id: 'pitcher-side',  label: 'Pitcher-allowed stats', code: 'M.03.f' },
+  { id: 'park-factors',  label: 'HR park factors',       code: 'M.03.g' },
+  { id: 'lineups',       label: 'Lineups',               code: 'M.03.h' },
+  { id: 'edge',          label: 'Edge',                  code: 'M.03.i' },
+  { id: 'contact-score', label: 'Contact score',         code: 'M.03.j' },
+  { id: 'combined-sort', label: 'Default sort & POD',    code: 'M.03.k' },
+  { id: 'hrr-pod',       label: 'H+R+RBI POD',           code: 'M.03.l' },
+  { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.m' },
+  { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.n' },
+  { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.o' },
 ]
 
 const activeSection = ref('overview')
+
+// Lookup helper so the inline M.03.x codes in each section header are
+// driven by the sections array (single source of truth). Without this,
+// the codes are duplicated between the array and the template's
+// <span class="label-bracket"> tags — which is what caused the
+// combined-heat / statcast code collision originally (both said M.03.d).
+function codeFor(id) {
+  const s = sections.find(x => x.id === id)
+  return s ? s.code : ''
+}
 
 // IntersectionObserver wires the side nav to scroll position so the active
 // pill follows you as you read.
@@ -142,7 +153,7 @@ function scrollTo(id) {
         <section id="overview" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">What this is</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.a</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('overview') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Cebolla Lab is a personal research tool for MLB betting. It pulls raw
@@ -162,7 +173,7 @@ function scrollTo(id) {
         <section id="data" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Data philosophy</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.b</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('data') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             We use four kinds of data, all public:
@@ -201,7 +212,7 @@ function scrollTo(id) {
         <section id="windows" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Rolling windows</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.c</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('windows') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Every player has four versions of their stats on the site:
@@ -243,7 +254,7 @@ function scrollTo(id) {
         <section id="combined-heat" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Combined Heat</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.d</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('combined-heat') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Combined Heat is Cebolla's multi-signal trend score. It answers
@@ -332,7 +343,7 @@ function scrollTo(id) {
         <section id="statcast" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Statcast stats</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.d</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('statcast') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-4">
             Every Statcast number on the site is recomputed from raw pitch-level
@@ -469,7 +480,7 @@ function scrollTo(id) {
         <section id="pitcher-side" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Pitcher-allowed stats</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.e</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('pitcher-side') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             For pitchers, we compute the same Statcast metrics — but
@@ -494,7 +505,7 @@ function scrollTo(id) {
         <section id="park-factors" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">HR park factors</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.f</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('park-factors') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Some stadiums boost home runs, others suppress them. We track
@@ -529,7 +540,7 @@ function scrollTo(id) {
         <section id="lineups" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Lineups</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.g</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('lineups') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Lineups come in three flavors on the site, color-coded:
@@ -559,7 +570,7 @@ function scrollTo(id) {
         <section id="edge" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Edge</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.h</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('edge') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Edge is the headline number on the HR Report. It compares
@@ -600,7 +611,7 @@ function scrollTo(id) {
         <section id="contact-score" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Contact score</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.i</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('contact-score') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             The Contact column on the HR Report is a single 0–100 number that
@@ -659,7 +670,7 @@ function scrollTo(id) {
         <section id="combined-sort" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Default sort & POD</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.j</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('combined-sort') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             By default, the HR Report ranks batters by a multiplicative blend
@@ -710,13 +721,13 @@ function scrollTo(id) {
         <section id="hrr-pod" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">H + R + RBI POD</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.k</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('hrr-pod') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Alongside the HR POD, Cebolla picks a second daily play for the
             <span class="text-fg-700">Hits + Runs + RBIs</span> market — a DraftKings
             prop where the line is posted at 1.5, 2.5, or 3.5 for each batter.
-            Same daily lock window (~2:45 AM ET), same combined edge × contact ranking,
+            Same daily lock window (~10:30 AM ET), same combined edge × contact ranking,
             just a different stat to clear.
           </p>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
@@ -783,7 +794,7 @@ function scrollTo(id) {
         <section id="pitch-types" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Pitch-type breakdown</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.l</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('pitch-types') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             On Player Deep Dive, the pitch-type table shows how a hitter
@@ -806,7 +817,7 @@ function scrollTo(id) {
         <section id="principles" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">What we don't do</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.m</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('principles') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             A short list of what's off the table, by design:
@@ -840,7 +851,7 @@ function scrollTo(id) {
         <section id="freshness" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
             <h2 class="display-text text-xl text-fg-800">Updates & freshness</h2>
-            <span class="label-bracket !text-[8px] text-fg-500">M.03.n</span>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('freshness') }}</span>
           </div>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             Different data refreshes on different schedules:
@@ -856,15 +867,15 @@ function scrollTo(id) {
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Lineups</span>
-              <span class="text-fg-600 text-sm">Pulled mid-morning; flips to confirmed as teams post them.</span>
+              <span class="text-fg-600 text-sm">Pulled at morning lock; refreshed throughout the day as teams post confirmed lineups.</span>
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Odds</span>
-              <span class="text-fg-600 text-sm">Hourly throughout the day, from late morning through the last game.</span>
+              <span class="text-fg-600 text-sm">Captured at morning lock, then refreshed hourly through the last game of the day.</span>
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Live scores</span>
-              <span class="text-fg-600 text-sm">Pulled hourly during the slate; pushed to the UI in real-time.</span>
+              <span class="text-fg-600 text-sm">Pulled every 5 minutes during peak game hours, every 15 minutes off-peak; pushed to the UI in real-time.</span>
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Weather</span>
