@@ -22,7 +22,7 @@
  *   Weak    < 0.6×     → edge-cold-2 darker blue
  *   Small sample (<20 PA vs that pitch) → muted gray
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../supabase.js'
 import { teamLogoUrl, playerHeadshotUrl, hideOnError } from '../utils/mlbImages.js'
 import LoadingBrand from '../components/LoadingBrand.vue'
@@ -81,11 +81,13 @@ async function pickActiveDate() {
   const today = getETDate(0)
   const yesterday = getETDate(-1)
 
+  // Status filter syntax matches PlayerView/TeamView/PitcherDeepDive — values
+  // with spaces need quotes or PostgREST may parse them as separate tokens.
   const { data: y } = await supabase
     .from('games')
     .select('id')
     .eq('game_date', yesterday)
-    .not('status', 'in', '(Final,Game Over,Completed Early)')
+    .not('status', 'in', '("Final","Game Over","Completed Early")')
     .limit(1)
   if (y && y.length > 0) return yesterday
 
@@ -93,7 +95,7 @@ async function pickActiveDate() {
     .from('games')
     .select('game_date')
     .gte('game_date', today)
-    .not('status', 'in', '(Final,Game Over,Completed Early)')
+    .not('status', 'in', '("Final","Game Over","Completed Early")')
     .order('game_date', { ascending: true })
     .limit(1)
   if (t && t.length > 0) return t[0].game_date
@@ -165,7 +167,12 @@ async function loadArsenals(pitcherIds, season) {
   const out = {}
   for (const row of data || []) {
     out[row.pitcher_id] = out[row.pitcher_id] || { L: [], R: [] }
-    out[row.pitcher_id][row.vs_stance].push(row)
+    // Defensive: only push for known stances. The schema constrains vs_stance
+    // to 'L' or 'R' by convention but isn't CHECK-enforced. If an ingest bug
+    // ever wrote 'A' or 'S' or null, the previous version would crash here
+    // with "Cannot read property 'push' of undefined".
+    const bucket = out[row.pitcher_id][row.vs_stance]
+    if (bucket) bucket.push(row)
   }
   for (const pid of Object.keys(out)) {
     for (const stance of ['L', 'R']) {
@@ -208,7 +215,6 @@ function computeDangerPitch(batterStat, pitcherArsenal) {
     const pitcherHrAllowedPct = parseFloat(pitch.hr_pct) || 0
 
     const danger = (usage / 100) * batterHrPct
-    const twoSided = ((batterHrPct + pitcherHrAllowedPct) / 2) * (usage / 100)
 
     if (!best || danger > best.danger_score) {
       best = {
@@ -217,7 +223,6 @@ function computeDangerPitch(batterStat, pitcherArsenal) {
         batter_hr_pct: batterHrPct,
         pitcher_hr_allowed_pct: pitcherHrAllowedPct,
         danger_score: danger,
-        two_sided_score: twoSided,
         batter_pa_vs_pitch: batterPaVsPitch,
         small_sample: batterPaVsPitch < MIN_SAMPLE_PA,
         ratio_to_overall: overallHrPct > 0 ? batterHrPct / overallHrPct : 1.0,
@@ -394,7 +399,13 @@ async function loadAll() {
   try {
     const date = await pickActiveDate()
     activeDate.value = date
-    const season = new Date(date).getFullYear()
+    // Parse year directly from the YYYY-MM-DD string. Using `new Date(date)`
+    // would interpret as UTC midnight, then `.getFullYear()` would use the
+    // user's LOCAL TZ — for a West Coast user, the date "2026-01-01" would
+    // parse to "2025-12-31 16:00 PT" and `.getFullYear()` would return 2025.
+    // No real impact for MLB (no Jan 1 games) but defensive coding for the
+    // year-boundary edge case.
+    const season = parseInt(date.slice(0, 4), 10)
 
     const gamesData = await loadGames(date)
     games.value = gamesData
@@ -441,7 +452,35 @@ async function loadAll() {
   }
 }
 
-onMounted(loadAll)
+// Realtime: re-load when lineups or games change. Lineups especially —
+// they get posted by MLB ~2-3 hours before first pitch and we want the
+// page to reflect "confirmed" (vs "predicted") status without a manual
+// refresh. Debounced because a single lineup post writes 9-13 rows in
+// a quick burst.
+let channel = null
+let reloadTimer = null
+function scheduleReload() {
+  if (reloadTimer) clearTimeout(reloadTimer)
+  reloadTimer = setTimeout(() => loadAll(), 3000)
+}
+
+onMounted(() => {
+  loadAll()
+  channel = supabase
+    .channel('matchups-changes')
+    .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'lineups' },
+        () => scheduleReload())
+    .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'games' },
+        () => scheduleReload())
+    .subscribe()
+})
+
+onUnmounted(() => {
+  if (channel) supabase.removeChannel(channel)
+  if (reloadTimer) clearTimeout(reloadTimer)
+})
 </script>
 
 <template>
@@ -508,7 +547,7 @@ onMounted(loadAll)
       </div>
     </section>
 
-    <LoadingBrand v-if="loading" message="Loading matchups..." />
+    <LoadingBrand v-if="loading" text="Loading matchups…" />
 
     <div v-else-if="error" class="px-6 py-12 text-edge-cold-1 text-sm">
       Couldn't load matchups: {{ error }}
