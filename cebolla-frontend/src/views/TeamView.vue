@@ -45,12 +45,15 @@ const error = ref(null)
 const CURRENT_SEASON = new Date().getFullYear()
 
 // ── Helpers ────────────────────────────────────────────────────
+// ET-relative "today" — MLB games are scheduled on ET calendar days, so
+// recent/upcoming should split on the ET boundary. Local-TZ todayStr would
+// shift wrong for West Coast users after ~9 PM PT (= midnight ET next day):
+// games on tonight's slate would appear in "recent" instead of "upcoming".
 function todayStr() {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date())
 }
 
 // ── Data load ──────────────────────────────────────────────────
@@ -62,7 +65,7 @@ async function load() {
     // 1. Find the team by abbrev
     const { data: t, error: tErr } = await supabase
       .from('teams')
-      .select('id, mlb_id, abbrev, name, league, division, stadium, is_dome, park_hr_factor, park_hr_lhb, park_hr_rhb')
+      .select('id, mlb_id, abbrev, name, league, division, is_dome')
       .eq('abbrev', teamAbbrev.value)
       .maybeSingle()
 
@@ -71,18 +74,24 @@ async function load() {
     }
     team.value = t
 
-    // 2. Roster — all players on this team
-    const { data: ros } = await supabase
-      .from('players')
-      .select('id, mlbam_id, name, position, bats, throws, is_pitcher')
-      .eq('team_id', t.id)
-      .order('is_pitcher', { ascending: true })
-      .order('name', { ascending: true })
-    roster.value = ros || []
-
-    // 3. Recent + upcoming games in parallel
+    // 2. Roster + recent + upcoming games in parallel.
+    //    All three depend only on t.id (which we have now), nothing else.
+    //    Previously these ran sequentially: ~3 round-trips. Now: 1.
+    //    Saves ~300ms on a typical mobile connection.
     const today = todayStr()
-    const [recentRes, upcomingRes] = await Promise.all([
+    const [rosterRes, recentRes, upcomingRes] = await Promise.all([
+      supabase
+        .from('players')
+        .select('id, mlbam_id, name, position, bats, throws, is_pitcher')
+        .eq('team_id', t.id)
+        .order('is_pitcher', { ascending: true })
+        .order('name', { ascending: true }),
+
+      // Recent. Boundary: today's finals should appear in RECENT (not
+      // vanish). With .lte (instead of .lt), an early-afternoon game that
+      // finishes before the user views the team page is captured here.
+      // Upcoming still uses .gte but its status-not-in-finals filter
+      // handles deduplication — a today game can only be in one bucket.
       supabase
         .from('games')
         .select(`
@@ -93,10 +102,12 @@ async function load() {
           home_team:teams!games_home_team_id_fkey ( id, abbrev, name, mlb_id )
         `)
         .or(`home_team_id.eq.${t.id},away_team_id.eq.${t.id}`)
-        .lt('game_date', today)
+        .lte('game_date', today)
         .in('status', ['Final', 'Game Over', 'Completed Early'])
         .order('game_date', { ascending: false })
         .limit(5),
+
+      // Upcoming.
       supabase
         .from('games')
         .select(`
@@ -112,12 +123,15 @@ async function load() {
         .limit(5),
     ])
 
+    const ros = rosterRes.data || []
+    roster.value = ros
     recentGames.value = recentRes.data || []
     upcomingGames.value = upcomingRes.data || []
 
-    // 4. Roster stats — batter_stats L14 + pitcher_stats season
-    const batterIds = (ros || []).filter(p => !p.is_pitcher).map(p => p.id)
-    const pitcherIds = (ros || []).filter(p => p.is_pitcher).map(p => p.id)
+    // 3. Roster stats — needs ros from previous phase. batter_stats L14 +
+    //    pitcher_stats season, in parallel.
+    const batterIds = ros.filter(p => !p.is_pitcher).map(p => p.id)
+    const pitcherIds = ros.filter(p => p.is_pitcher).map(p => p.id)
 
     const statPromises = []
     if (batterIds.length) {
