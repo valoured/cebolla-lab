@@ -85,7 +85,7 @@ from itertools import combinations
 from supabase import create_client
 from dotenv import load_dotenv
 
-# Tier system shared with pick_pod.py
+# Tier system shared with pick_pod.py (incl. the v2 patch layer)
 from tier_system import (
     evaluate_tier1_hr,
     evaluate_tier1_hrr,
@@ -94,6 +94,18 @@ from tier_system import (
     qualification_path,
     primary_pitch_type,
     stake_modifier_for,
+    # v2 patch layer (shared single source)
+    load_thresholds,
+    configure,
+    apply_catcher_boost,
+    calculate_primary_signal,
+    calculate_confidence,
+    confidence_to_tier,
+    _market_context,
+    _cfg_num,
+    LEAGUE_HR_PER_9,
+    PITCHER_FACTOR_MIN,
+    PITCHER_FACTOR_MAX,
 )
 
 load_dotenv()
@@ -400,14 +412,20 @@ def _evaluate_leg_tiers(
     contact_by_player, heat_by_player,
     batter_stats_l14, pitcher_arsenals, bvp_pairs,
     starter_by_game_team, batter_season_by_pitch,
+    cfg=None, pitcher_hr9=None,
 ):
     """
-    Evaluate one candidate through the tier system. Mutates candidate
-    in place with tier fields. Returns False if disqualified, True if
-    qualified (tier_score populated).
+    Evaluate one candidate through the tier system + v2 confidence. Mutates
+    candidate in place. Returns False if disqualified, True if qualified.
 
-    Disqualified means: doesn't pass 2-of-3 T1 AND doesn't pass Stowers
-    (1 T1 + ≥3 T2). Disqualified candidates should not be used as legs.
+    v2 (patches 1 & 9): catcher promotion (Patch 1) into the tier count plus a
+    confidence bonus; continuous confidence_score + tier letter (Patch 9) — the
+    leg ranking signal; display-only market_context. Stack boost (Patch 5) is
+    applied later in detect_vulnerable_stacks (post-grouping). Stake stays
+    stake_modifier_for (Patch 2 not in cards' scope); no near-miss / user flags
+    (Patches 6/7 not in scope).
+
+    Disqualified = fails 2-of-3 T1 AND Stowers (1 T1 + ≥3 T2).
     """
     game = games_by_id.get(candidate["game_id"])
     player = players_by_id.get(candidate["player_id"])
@@ -418,9 +436,11 @@ def _evaluate_leg_tiers(
     is_home = player.get("team_id") == game.get("home_team_id")
     opposing_team_id = game.get("away_team_id") if is_home else game.get("home_team_id")
     opposing_pitcher_id = starter_by_game_team.get((candidate["game_id"], opposing_team_id))
+    candidate["opposing_pitcher_id"] = opposing_pitcher_id  # Patch 5 stack grouping key
 
     bstats = batter_stats_l14.get(candidate["player_id"])
     bvp_row = bvp_pairs.get((candidate["player_id"], opposing_pitcher_id)) if opposing_pitcher_id else None
+    sbp = (batter_season_by_pitch or {}).get(candidate["player_id"])
 
     # Pitcher primary pitch (only needed for HR T1C)
     pitcher_primary = None
@@ -428,43 +448,78 @@ def _evaluate_leg_tiers(
         arsenal = pitcher_arsenals.get(opposing_pitcher_id) or []
         pitcher_primary = primary_pitch_type(arsenal)
 
-    # Tier 1
+    # Tier 1 / Tier 2 (cfg-driven thresholds)
     if market_class == "hr":
-        sbp = (batter_season_by_pitch or {}).get(candidate["player_id"])
-        t1_hits, t1_detail = evaluate_tier1_hr(bstats, pitcher_primary, season_by_pitch=sbp)
+        t1_hits, t1_detail = evaluate_tier1_hr(bstats, pitcher_primary, season_by_pitch=sbp, cfg=cfg)
     else:
-        t1_hits, t1_detail = evaluate_tier1_hrr(bstats, bvp_row)
-
-    # Tier 2
+        t1_hits, t1_detail = evaluate_tier1_hrr(bstats, bvp_row, cfg=cfg)
     heat = heat_by_player.get(candidate["player_id"]) if heat_by_player else None
     heat_tier = heat.get("combined_tier") if heat else None
     contact = contact_by_player.get(candidate["player_id"])
-    t2_hits, t2_detail = evaluate_tier2(bstats, heat_tier, contact, bvp_row)
+    t2_hits, t2_detail = evaluate_tier2(bstats, heat_tier, contact, bvp_row, cfg=cfg)
 
-    # Score
-    score = score_candidate(t1_hits, t2_hits)
+    # Patch 1 — catcher promotion (tier count + confidence bonus; orthogonal axes).
+    tier_boost, catcher_conf_bonus = apply_catcher_boost(player.get("position"), bstats, cfg=cfg)
+    effective_t1 = t1_hits + tier_boost
+
+    # Score (uses promoted T1 count). Disqualified → not usable as a leg.
+    score = score_candidate(effective_t1, t2_hits, cfg=cfg)
     if score is None:
-        return False  # disqualified
-    qpath = qualification_path(t1_hits, t2_hits)
+        return False
+    qpath = qualification_path(effective_t1, t2_hits, cfg=cfg)
 
-    # Stake modifier (informational)
-    # Park comes from games.hr_factor_overall (for HR) or team.park_ba_factor
-    # via projection.park_adj which compute_projections already wrote.
-    # We just read the leg's stored park_adj/weather_adj from the projection row.
+    # Stake modifier (informational) — Patch 2 NOT in cards' scope; keep v1 path.
     park = candidate.get("park_adj") or 1.0
     weather = candidate.get("weather_adj") or 1.0
-    smod = stake_modifier_for(park, weather)
+    smod = stake_modifier_for(park, weather, cfg=cfg)
+
+    # Patch 4 primary signal → Patch 9 confidence base.
+    factor = ((pitcher_hr9 or {}).get(opposing_pitcher_id) or {}).get("factor", 1.0)
+    if market_class == "hr":
+        primary_signal = calculate_primary_signal(bstats, sbp, pitcher_primary, factor, cfg=cfg)
+    else:
+        # HRR analog: hit_per_pa (calculate_primary_signal is HR-vs-pitch specific).
+        primary_signal = (float(bstats["hit_per_pa"])
+                          if (bstats and bstats.get("hit_per_pa") is not None) else 0.0)
+
+    # Patch 9 — leg confidence. flag bonus here = catcher only; stack_boost is
+    # added later in detect_vulnerable_stacks; no near-miss (Patch 6 out of scope).
+    confidence_score, conf_breakdown = calculate_confidence(
+        primary_signal, t2_hits, catcher_conf_bonus, cfg=cfg
+    )
+    confidence_tier = confidence_to_tier(confidence_score, cfg=cfg)
+
+    # Per-leg ev/$ for the market_context display.
+    decimal = candidate.get("decimal_odds")
+    prob = candidate.get("projected_prob")
+    leg_ev = None
+    if decimal and prob is not None:
+        leg_ev = float(prob) * (float(decimal) - 1.0) - (1.0 - float(prob))
 
     # Mutate candidate
-    candidate["tier1_hits"]     = t1_hits
-    candidate["tier2_hits"]     = t2_hits
-    candidate["tier_score"]     = score
-    candidate["stake_modifier"] = smod
-    candidate["tier_metadata"]  = {
+    candidate["tier1_hits"]       = t1_hits
+    candidate["tier2_hits"]       = t2_hits
+    candidate["tier_score"]       = score
+    candidate["stake_modifier"]   = smod
+    candidate["confidence_score"] = confidence_score
+    candidate["confidence_tier"]  = confidence_tier
+    candidate["market_context"]   = _market_context(candidate.get("edge"), leg_ev, cfg=cfg)
+    candidate["tier_metadata"]    = {
         "tier1": t1_detail,
         "tier2": t2_detail,
         "qualification_path": qpath,
         "stake_modifier": smod,
+        # v2 per-leg logging
+        "tier1_signals": t1_hits,
+        "tier2_signals": t2_hits,
+        "catcher_tier_boost": tier_boost,
+        "catcher_conf_bonus": catcher_conf_bonus,
+        "gate_path": qpath,
+        "primary_signal": round(primary_signal, 5),
+        "base_score": conf_breakdown["base_score"],
+        "tier2_contribution": conf_breakdown["tier2_contribution"],
+        "final_confidence": confidence_score,
+        "tier_letter": confidence_tier,
     }
     return True
 
@@ -614,7 +669,113 @@ def fetch_batter_heat(player_ids, date_iso):
         return {}
 
 
-def fetch_candidates(date_iso, games):
+def fetch_pitcher_hr9(pitcher_ids, season):
+    """
+    {pitcher_id: {"hr_per_9": raw float|None, "factor": clamped float}} from
+    pitcher_stats. The RAW hr_per_9 feeds Patch 5 stack vulnerability; the
+    CLAMPED factor (hr_per_9 / LEAGUE_HR_PER_9, [MIN,MAX]) feeds the Patch 4
+    primary signal that Patch 9 leg confidence is built on. Cards-local fetcher
+    (pick_cards keeps its own DB fetchers by design — see fetch_pitcher_arsenals
+    etc.). Missing row / NULL hr_per_9 → factor 1.0, hr_per_9 None.
+    """
+    if not pitcher_ids:
+        return {}
+    res = sb.table("pitcher_stats") \
+        .select("pitcher_id, hr_per_9, window_type") \
+        .eq("season", season) \
+        .in_("pitcher_id", pitcher_ids) \
+        .execute()
+    chosen = {}
+    for r in res.data or []:
+        pid = r["pitcher_id"]
+        if pid not in chosen or r.get("window_type") == "season":
+            chosen[pid] = r
+    out = {}
+    for pid, r in chosen.items():
+        hr9 = r.get("hr_per_9")
+        if hr9 is None:
+            out[pid] = {"hr_per_9": None, "factor": 1.0}
+        else:
+            f = float(hr9) / LEAGUE_HR_PER_9
+            out[pid] = {"hr_per_9": float(hr9),
+                        "factor": round(max(PITCHER_FACTOR_MIN, min(PITCHER_FACTOR_MAX, f)), 3)}
+    return out
+
+
+def detect_vulnerable_stacks(candidates, pitcher_hr9, cfg=None):
+    """
+    Patch 5 — flag "vulnerable stacks": >= stack_min_candidates qualified batters
+    from the SAME team in the SAME game facing a vulnerable opposing pitcher.
+    Each leg in a detected stack gets stack_boost added to its confidence_score
+    (tier letter re-derived).
+
+    A pitcher is vulnerable if EITHER signal fires (OR):
+      - hr_per_9 >= stack_hr9_min   (tested UNCONDITIONALLY — carries it today)
+      - xfip     >= stack_xfip_min  (tested ONLY if xfip is present)
+    xFIP has no source column yet (pitcher_stats has hr_per_9, not xfip), so the
+    xFIP branch is dormant. TODO: back-compute xFIP from pitcher game logs or pull
+    a Statcast feed; until then HR/9 alone drives stack detection.
+
+    stack_boost is the SAME model_thresholds row (0.10) used by the POD path
+    (where calculate_confidence folds it into flag_bonus_total). Single source of
+    truth — different application points: the POD passes it into
+    calculate_confidence; cards add it here, per-leg, BEFORE card-level
+    aggregation (parlay shape).
+
+    Mutates qualified candidates in place (is_stacked, stack metadata, bumped
+    confidence_score + confidence_tier). Returns the number of stacked legs.
+    """
+    stack_min = int(_cfg_num(cfg, "stack_min_candidates", 3))
+    hr9_min   = _cfg_num(cfg, "stack_hr9_min", 1.3)
+    xfip_min  = _cfg_num(cfg, "stack_xfip_min", 4.25)
+    boost     = _cfg_num(cfg, "stack_boost", 0.10)
+
+    # Group by (game, team): all same-team bats in a game face the same opposing
+    # starter (stored as opposing_pitcher_id on each leg in _evaluate_leg_tiers).
+    groups = {}
+    for c in candidates:
+        groups.setdefault((c.get("game_id"), c.get("team_id")), []).append(c)
+
+    stacked_legs = 0
+    stacks_found = 0
+    for (game_id, team_id), legs in groups.items():
+        if len(legs) < stack_min:
+            continue
+        opp_pid = legs[0].get("opposing_pitcher_id")
+        if not opp_pid:
+            continue
+        pstats = pitcher_hr9.get(opp_pid) or {}
+        hr9 = pstats.get("hr_per_9")
+        xfip = pstats.get("xfip")  # None today — xFIP source not wired (see docstring)
+        vulnerable = False
+        if hr9 is not None and hr9 >= hr9_min:
+            vulnerable = True
+        if xfip is not None and xfip >= xfip_min:
+            vulnerable = True
+        if not vulnerable:
+            continue
+        stacks_found += 1
+        for c in legs:
+            c["is_stacked"] = True
+            new_conf = max(0.0, min(1.0, (c.get("confidence_score") or 0.0) + boost))
+            c["confidence_score"] = round(new_conf, 3)
+            c["confidence_tier"] = confidence_to_tier(new_conf, cfg)
+            meta = c.setdefault("tier_metadata", {})
+            # TODO: when xFIP is wired into pitcher_stats, add "pitcher_xfip": xfip
+            # here (alongside pitcher_hr_per_9) so calibration can see WHICH signal
+            # (HR/9 vs xFIP) triggered each stack flag.
+            meta["stack"] = {
+                "stacked": True, "team_id": team_id, "opposing_pitcher_id": opp_pid,
+                "stack_size": len(legs), "stack_boost": boost, "pitcher_hr_per_9": hr9,
+            }
+            stacked_legs += 1
+    if stacks_found:
+        log.info("Patch 5: %d vulnerable stack(s), %d legs boosted (+%.2f conf)",
+                 stacks_found, stacked_legs, boost)
+    return stacked_legs
+
+
+def fetch_candidates(date_iso, games, cfg=None):
     """
     Build the unified candidate pool across all markets, applying:
       1. Per-market floors (cheap filter)
@@ -651,7 +812,7 @@ def fetch_candidates(date_iso, games):
 
     # Lookup player info in batch
     player_ids = list({p["player_id"] for p in projections if p.get("player_id")})
-    players_res = sb.table("players").select("id, name, mlbam_id, team_id") \
+    players_res = sb.table("players").select("id, name, mlbam_id, team_id, position") \
         .in_("id", player_ids).execute()
     players_by_id = {p["id"]: p for p in (players_res.data or [])}
 
@@ -760,6 +921,9 @@ def fetch_candidates(date_iso, games):
     pitcher_arsenals = fetch_pitcher_arsenals(pitcher_ids, season)
     log.info("  Pitcher arsenals: %d", len(pitcher_arsenals))
 
+    pitcher_hr9 = fetch_pitcher_hr9(pitcher_ids, season)
+    log.info("  Pitcher HR/9: %d", len(pitcher_hr9))
+
     bvp_pairs = fetch_bvp(qualifying_player_ids, pitcher_ids)
     log.info("  BvP pairs: %d", len(bvp_pairs))
 
@@ -776,6 +940,7 @@ def fetch_candidates(date_iso, games):
             contact_by_player, heat_by_player,
             batter_stats_l14, pitcher_arsenals, bvp_pairs,
             starter_by_game_team, batter_season_by_pitch,
+            cfg=cfg, pitcher_hr9=pitcher_hr9,
         )
         if ok:
             qualified.append(cand)
@@ -785,8 +950,12 @@ def fetch_candidates(date_iso, games):
     log.info("Tier evaluation: %d qualified, %d disqualified (failed T1 ≥2 or Stowers)",
              len(qualified), disqualified_count)
 
-    # Sort by tier_score DESC, then edge DESC as tiebreaker
-    qualified.sort(key=lambda c: (c["tier_score"], c["edge"]), reverse=True)
+    # Patch 5 — flag vulnerable stacks; bumps stacked legs' confidence in place.
+    detect_vulnerable_stacks(qualified, pitcher_hr9, cfg=cfg)
+
+    # Patch 9 — rank legs by confidence_score DESC, edge DESC tiebreak (v2 signal,
+    # replaces the v1 tier_score sort). generate_combos slices the top-N here.
+    qualified.sort(key=lambda c: ((c.get("confidence_score") or 0.0), c["edge"]), reverse=True)
     return qualified
 
 
@@ -886,8 +1055,21 @@ def score_combination(math, legs):
     return math["ev_per_dollar"] * 100 + tier_sum * 5
 
 
-def make_combo_record(legs, tier, slate_quality):
-    """Bundle a combination's math + legs + tier into a finalized record."""
+def make_combo_record(legs, tier, slate_quality, cfg=None):
+    """
+    Bundle a combination's math + legs + tier into a finalized record.
+
+    Patch 9 — card-level aggregate confidence:
+      card.confidence_score = SIMPLE MEAN of the legs' confidence_scores.
+    Deliberate choice (NOT geometric mean): card_confidence is a RANKING signal,
+    not a probability — combined-probability math already lives in combined_odds /
+    combined_prob. A simple average is transparent and easy to tune later; if it
+    misbehaves in production we can revisit geometric mean as a future change.
+
+    cards.market_context (Patch 3, per request): aggregate of the legs' display
+    contexts — the per-leg contexts plus edge min/max/mean and any warnings — so
+    the frontend renders card-level market context without re-deriving it.
+    """
     math = parlay_math(legs)
     if not math:
         return None
@@ -900,6 +1082,28 @@ def make_combo_record(legs, tier, slate_quality):
     smods = [float(l.get("stake_modifier") or 1.0) for l in legs]
     avg_smod = round(sum(smods) / len(smods), 3) if smods else 1.0
 
+    # Patch 9 — card confidence = simple mean of leg confidences (see docstring).
+    leg_confs = [float(l.get("confidence_score") or 0.0) for l in legs]
+    card_conf = round(sum(leg_confs) / len(leg_confs), 3) if leg_confs else 0.0
+    card_conf_tier = confidence_to_tier(card_conf, cfg)
+
+    # Aggregate market_context (display-only).
+    edges = [(l.get("market_context") or {}).get("cebolla_edge") for l in legs]
+    edges = [e for e in edges if e is not None]
+    warnings = [(l.get("market_context") or {}).get("edge_warning") for l in legs]
+    warnings = [w for w in warnings if w]
+    market_context = {
+        "legs": [
+            {"player_name": l.get("player_name"), "market": l.get("market"),
+             **(l.get("market_context") or {})}
+            for l in legs
+        ],
+        "edge_min":  round(min(edges), 5) if edges else None,
+        "edge_max":  round(max(edges), 5) if edges else None,
+        "edge_mean": round(sum(edges) / len(edges), 5) if edges else None,
+        "warnings":  warnings,
+    }
+
     return {
         "tier":          tier,
         "leg_count":     len(legs),
@@ -910,6 +1114,10 @@ def make_combo_record(legs, tier, slate_quality):
         "payout_if_hit": profit_if_hit,
         "label":         label_for(legs, tier, math),
         "avg_stake_modifier": avg_smod,
+        # Patch 9 / Patch 3 (cards)
+        "confidence_score": card_conf,
+        "confidence_tier":  card_conf_tier,
+        "market_context":   market_context,
     }
 
 
@@ -937,16 +1145,17 @@ def label_for(legs, tier, math):
 # COMBINATION GENERATION
 # ────────────────────────────────────────────────────────────────────────
 
-def generate_combos(candidates, leg_count, max_keep=200):
+def generate_combos(candidates, leg_count, max_keep=200, cfg=None):
     """
     Generate scored combinations of `leg_count` legs from candidates.
 
     Hard cap on naive combinations (C(n, k) explodes fast). When there are
-    many candidates we restrict to the top tier-scored candidates first.
+    many candidates we restrict to the top candidates first.
 
-    candidates is pre-sorted by (tier_score DESC, edge DESC) so the top-N
-    slice is "the N highest-conviction plays". Within those, combo scoring
-    picks the best EV combinations.
+    candidates is pre-sorted by (confidence_score DESC, edge DESC) (Patch 9) so
+    the top-N slice is "the N highest-conviction plays". Returned combos are
+    ordered by card confidence_score (then EV+tier `score` as tiebreak); the EV
+    eligibility gate is applied later in select_cards (two-stage selection).
     """
     # Cap pool by tier to keep computation reasonable
     if leg_count == 2:
@@ -964,11 +1173,13 @@ def generate_combos(candidates, leg_count, max_keep=200):
         player_ids = [l["player_id"] for l in combo]
         if len(set(player_ids)) != leg_count:
             continue
-        rec = make_combo_record(list(combo), tier_for_legs(leg_count), None)
+        rec = make_combo_record(list(combo), tier_for_legs(leg_count), None, cfg=cfg)
         if rec and rec["score"] > -999:
             combos.append(rec)
 
-    combos.sort(key=lambda r: r["score"], reverse=True)
+    # Patch 9 — order by card confidence (Option A ranking); EV+tier `score` is
+    # the tiebreak. select_cards applies the EV eligibility gate during selection.
+    combos.sort(key=lambda r: ((r.get("confidence_score") or 0.0), r["score"]), reverse=True)
     return combos[:max_keep]
 
 
@@ -983,6 +1194,18 @@ def tier_for_legs(n):
 def select_cards(all_combos_by_tier):
     """
     Greedy selection across tiers with overlap penalties + global exposure caps.
+
+    Two-stage selection (Patch 9, Option A — mirrors the POD's edge-floor +
+    confidence pattern):
+      1. Eligibility gate: a card must clear its tier's EV threshold
+         (EV_GATES[tier]) — unchanged from v1. This prevents absurd negative-EV
+         picks (no high-confidence -200 favorite paying $5).
+      2. Ranking: among eligible cards, selection proceeds in
+         confidence_score DESC order (the combos arrive pre-sorted by card
+         confidence from generate_combos), so the highest-conviction eligible
+         cards surface first.
+    Rationale: EV gates protect against bad-value picks; confidence ordering
+    within the eligible set ensures the strongest cards lead the menu.
 
     Order: select 2-leggers first (most card-slots, most popular), then
     3-leggers (allowed to share at most 1 leg with any 2-legger), then
@@ -1320,6 +1543,10 @@ def fetch_existing_fingerprints(date_iso):
 
 def insert_card(date_iso, combo):
     """Insert one card + its legs with tier-system fields."""
+    # TODO: non-atomic two-step insert can leave orphan card if card_legs insert
+    # fails. Fix via compensating DELETE on cards.id when card_legs.insert()
+    # raises, or via Postgres RPC for true atomicity. Scope: separate follow-up
+    # commit, no schema change required.
     math = combo["math"]
     card_payload = {
         "card_date":     date_iso,
@@ -1335,6 +1562,10 @@ def insert_card(date_iso, combo):
         "stake_rec":     combo["stake_rec"],
         "payout_if_hit": combo["payout_if_hit"],
         "avg_stake_modifier": combo.get("avg_stake_modifier"),
+        # v2 — Patch 9 (card-level aggregate confidence) + Patch 3 (display context)
+        "confidence_score": combo.get("confidence_score"),
+        "confidence_tier":  combo.get("confidence_tier"),
+        "market_context":   combo.get("market_context"),
         "status":        "pending",
     }
     card_res = sb.table("cards").insert(card_payload).execute()
@@ -1369,6 +1600,10 @@ def insert_card(date_iso, combo):
             "stake_modifier":  leg.get("stake_modifier"),
             # tier_metadata is JSONB — pass raw dict, supabase-py serializes.
             "tier_metadata":   leg.get("tier_metadata"),
+            # v2 — Patch 9 (per-leg confidence) + Patch 3 (per-leg display context)
+            "confidence_score": leg.get("confidence_score"),
+            "confidence_tier":  leg.get("confidence_tier"),
+            "market_context":   leg.get("market_context"),
         })
     sb.table("card_legs").insert(legs_payload).execute()
     return card_id
@@ -1398,12 +1633,22 @@ def main():
         )
         return
 
+    # Load tunable thresholds ONCE; cache in tier_system. On a query failure,
+    # the evaluators + v2 functions fall back to documented defaults (resilience).
+    try:
+        cfg = load_thresholds(sb)
+        configure(cfg)
+        log.info("Loaded %d thresholds from model_thresholds.", len(cfg))
+    except Exception as e:
+        cfg = {}
+        log.warning("model_thresholds load failed (%s) — using _DEFAULTS fallbacks.", e)
+
     games = fetch_today_games(today)
     if not games:
         log.warning("No games for %s — skipping", today)
         return
 
-    candidates = fetch_candidates(today, games)
+    candidates = fetch_candidates(today, games, cfg)
     log.info("Candidate pool: %d legs qualifying tier system (T1 ≥2 or Stowers)", len(candidates))
 
     if len(candidates) < 2:
@@ -1428,7 +1673,7 @@ def main():
         if len(candidates) < leg_count:
             all_combos_by_tier[tier_for_legs(leg_count)] = []
             continue
-        combos = generate_combos(candidates, leg_count)
+        combos = generate_combos(candidates, leg_count, cfg=cfg)
         all_combos_by_tier[tier_for_legs(leg_count)] = combos
         log.info("  %d-leg combos generated: %d", leg_count, len(combos))
 
