@@ -20,6 +20,10 @@ on:
     # from tables already populated by the 3:13 chain.
     - cron: '43 7 * * *'
 
+    # ── v2 early-morning jobs (Patch 6 near-miss + Patch 8 calibration) ──
+    - cron: '30 5 * * *'   # 05:30 UTC = 1:30 AM ET — near_miss_ingestion (stub today, no-op)
+    - cron: '8 8 * * *'    # 08:08 UTC = 4:08 AM ET — calibration check + auto-rollback
+
     - cron: '13 14 * * *'  # 14:13 UTC = 10:13 AM ET — schedule, lineups, weather, settle (East Coast finals)
 
     # ── DENSE PULL_SCORES SCHEDULE (LIVE LIVE UPDATES) ──
@@ -62,7 +66,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, morning_lock, schedule, rosters, savant, arsenals, pitcher_stats, batter_counting_stats, batter_game_log, batter_trends, weather, dk_odds, lineups, bvp, scores, projections, pick_pod, pick_cards, capture_closing_lines, settle_bets, settle_pods, settle_cards]
+        options: [all, morning_lock, schedule, rosters, savant, arsenals, pitcher_stats, batter_counting_stats, batter_game_log, batter_trends, weather, dk_odds, lineups, bvp, scores, projections, pick_pod, pick_cards, capture_closing_lines, settle_bets, settle_pods, settle_cards, calibration, near_miss]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -473,3 +477,39 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/capture_closing_lines.py
+
+  # ── CALIBRATION: daily 4:08 AM ET — Patch 8 model-calibration check + auto-rollback.
+  # Runs after the overnight settle (00-03 UTC) + 3:13 AM refresh, so the prior
+  # day's pods/cards are graded. Native GitHub schedule cron (like the other
+  # daily jobs); the worker dispatches only scores + the :17 hourly slate group.
+  calibration:
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '8 8 * * *')
+      || inputs.job == 'calibration'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/calibration.py
+
+  # ── NEAR-MISS INGESTION: daily 1:30 AM ET — Patch 6 (stub today, no-op until
+  # a Statcast / MLBNearHR source is wired into near_miss_ingestion.py). ──
+  near-miss-ingestion:
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *')
+      || inputs.job == 'near_miss'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/near_miss_ingestion.py
