@@ -174,8 +174,27 @@ def main():
                 all_rows.append(row)
 
     if all_rows:
-        sb.table("games").upsert(all_rows, on_conflict="mlb_game_pk").execute()
-        print(f"   ✓ Upserted {len(all_rows)} games across {len(dates_to_pull)} dates")
+        # Dedup by mlb_game_pk before upserting.
+        #
+        # The 3-day window (yesterday/today/tomorrow) can surface the SAME
+        # gamePk from two different /schedule queries: MLB returns a late
+        # west-coast game under both its officialDate and the adjacent
+        # calendar date that its gameDate (UTC) falls into. Postgres
+        # ON CONFLICT cannot update the same target row twice in one batch
+        # ("cannot affect row a second time") — that's the duplicate-key
+        # error that's been failing this job. Collapse to one row per pk,
+        # keeping the last occurrence (latest query wins).
+        deduped = {}
+        for row in all_rows:
+            deduped[row["mlb_game_pk"]] = row
+        deduped_rows = list(deduped.values())
+
+        collapsed = len(all_rows) - len(deduped_rows)
+        print(f"   ⊟ Collapsed {collapsed} duplicate gamePk(s) "
+              f"({len(all_rows)} → {len(deduped_rows)})")
+
+        sb.table("games").upsert(deduped_rows, on_conflict="mlb_game_pk").execute()
+        print(f"   ✓ Upserted {len(deduped_rows)} games across {len(dates_to_pull)} dates")
     else:
         print("   (no games found in window)")
 
