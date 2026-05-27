@@ -54,10 +54,17 @@ def upsert_batter(mlbam_id: int, name: str, position: str | None, bats: str | No
         "name": name,
         "team_id": team_id,
         "position": position,
-        "bats": bats,
         "is_pitcher": False,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Only write bats when we actually have it. Lineup sources (boxscore,
+    # last-known lineup) frequently lack batSide, so bats arrives null here.
+    # An upsert with bats=null would clobber the correct value pull_rosters.py
+    # set (PostgREST updates every supplied column on conflict). Omitting the
+    # key leaves the existing value untouched. This is the regression guard for
+    # the 72%-null-bats data bug; see backfill_bats.py for the one-time repair.
+    if bats:
+        payload["bats"] = bats
     res = sb.table("players").upsert(payload, on_conflict="mlbam_id").execute()
     return res.data[0]["id"]
 
