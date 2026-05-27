@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useRealtimePulse } from '../composables/useRealtimePulse.js'
 
@@ -46,8 +46,14 @@ function isActive(name) {
 // display; 30s is plenty since the lowest displayed unit is minutes.
 const clockTick = ref(0)
 let clockTimer = null
-onMounted(() => { clockTimer = setInterval(() => clockTick.value++, 30_000) })
-onUnmounted(() => { if (clockTimer) clearInterval(clockTimer) })
+onMounted(() => {
+  clockTimer = setInterval(() => clockTick.value++, 30_000)
+  document.addEventListener('keydown', onMenuKeydown)
+})
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
+  document.removeEventListener('keydown', onMenuKeydown)
+})
 
 const now = computed(() => {
   clockTick.value  // reactive dep
@@ -67,6 +73,36 @@ function openSearch() {
     window.__openCebollaSearch()
   }
 }
+
+// ── Mobile nav menu (below lg breakpoint) ──────────────────────────
+// Below lg the horizontal nav is hidden, so this hamburger-driven panel
+// exposes every section. Focus moves into the panel on open and returns to
+// the toggle on close, so keyboard / screen-reader users aren't stranded at
+// the top of the page when the menu dismisses.
+const mobileMenuOpen = ref(false)
+const hamburgerRef = ref(null)
+const mobilePanelRef = ref(null)
+
+function openMobileMenu() {
+  mobileMenuOpen.value = true
+  nextTick(() => {
+    mobilePanelRef.value?.querySelector('a')?.focus()
+  })
+}
+function closeMobileMenu() {
+  if (!mobileMenuOpen.value) return
+  mobileMenuOpen.value = false
+  nextTick(() => {
+    hamburgerRef.value?.focus()
+  })
+}
+function toggleMobileMenu() {
+  if (mobileMenuOpen.value) closeMobileMenu()
+  else openMobileMenu()
+}
+function onMenuKeydown(e) {
+  if (e.key === 'Escape' && mobileMenuOpen.value) closeMobileMenu()
+}
 </script>
 
 <template>
@@ -82,7 +118,7 @@ function openSearch() {
       </router-link>
 
       <!-- Nav tabs -->
-      <nav class="flex items-center gap-0 sm:gap-1 sm:ml-2 overflow-x-auto scrollbar-none h-scroll self-stretch">
+      <nav class="hidden lg:flex items-center gap-0 sm:gap-1 sm:ml-2 overflow-x-auto scrollbar-none h-scroll self-stretch">
         <router-link
           v-for="item in navItems"
           :key="item.name"
@@ -124,8 +160,9 @@ function openSearch() {
           <kbd class="hidden md:inline-flex search-trigger__kbd">⌘K</kbd>
         </button>
 
-        <!-- Sport selector pills -->
-        <div class="flex items-center gap-1">
+        <!-- Sport selector hidden below lg: only MLB is live;
+             restore to hamburger panel when NFL ships -->
+        <div class="hidden lg:flex items-center gap-1">
           <button
             v-for="s in sports"
             :key="s.key"
@@ -170,8 +207,53 @@ function openSearch() {
           <span class="label-caps">UTC</span>
           <span class="display-num text-xs text-fg-600">{{ now }}</span>
         </div>
+
+        <!-- Mobile menu toggle — below lg the horizontal nav is hidden, so this
+             hamburger opens a panel listing every section. -->
+        <button
+          ref="hamburgerRef"
+          type="button"
+          @click="toggleMobileMenu"
+          class="lg:hidden mobile-menu-btn"
+          :aria-expanded="mobileMenuOpen"
+          aria-controls="mobile-nav-panel"
+          :aria-label="mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'"
+        >
+          <svg v-if="!mobileMenuOpen" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18M3 12h18M3 18h18"></path>
+          </svg>
+          <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"></path>
+          </svg>
+        </button>
       </div>
     </div>
+
+    <!-- Mobile nav panel (below lg). Backdrop fades, panel slides down under
+         the header bar. Closes on item click, backdrop click, or Escape. -->
+    <transition name="mobile-panel">
+      <div v-if="mobileMenuOpen" class="lg:hidden">
+        <div class="mobile-backdrop" @click="closeMobileMenu" aria-hidden="true"></div>
+        <nav
+          id="mobile-nav-panel"
+          ref="mobilePanelRef"
+          class="mobile-panel"
+          aria-label="Primary"
+        >
+          <router-link
+            v-for="item in navItems"
+            :key="item.name"
+            :to="{ name: item.name }"
+            @click="closeMobileMenu"
+            class="mobile-panel__item"
+            :class="isActive(item.name) ? 'mobile-panel__item--active' : ''"
+          >
+            <span class="font-medium">{{ item.label }}</span>
+            <span class="label-bracket !text-[8px] opacity-60">{{ item.code }}</span>
+          </router-link>
+        </nav>
+      </div>
+    </transition>
   </header>
 </template>
 
@@ -328,5 +410,98 @@ function openSearch() {
     transform: scale(1);
     filter: drop-shadow(0 0 4px rgba(255, 42, 42, 0.35));
   }
+}
+
+/* ── Mobile nav (below lg) ─────────────────────────────────────────── */
+/* Hamburger toggle — mirrors the search-trigger outline aesthetic. */
+.mobile-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--bg-200, #1c1c20);
+  background: transparent;
+  color: var(--fg-500, #8a8a92);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+.mobile-menu-btn:hover {
+  border-color: rgba(255, 42, 42, 0.45);
+  color: var(--fg-700, #c0c0c8);
+  background: rgba(255, 42, 42, 0.04);
+}
+.mobile-menu-btn:focus-visible {
+  outline: none;
+  border-color: #FF2A2A;
+  box-shadow: 0 0 0 1px rgba(255, 42, 42, 0.35);
+}
+
+/* Full-viewport backdrop catches outside clicks. Sits below the panel but
+   above page content (header owns the stacking context at z-50). */
+.mobile-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
+/* Panel drops down directly under the header bar. */
+.mobile-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0, #08080A);
+  border-top: 1px solid var(--bg-200, #1c1c20);
+  border-bottom: 1px solid var(--bg-200, #1c1c20);
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.mobile-panel__item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  font-size: 14px;
+  color: var(--fg-500, #8a8a92);
+  border-left: 2px solid transparent;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.mobile-panel__item:hover {
+  color: var(--fg-700, #c0c0c8);
+  background: rgba(255, 255, 255, 0.02);
+}
+.mobile-panel__item--active {
+  color: var(--fg-700, #c0c0c8);
+  border-left-color: #FF2A2A;
+  background: rgba(255, 42, 42, 0.06);
+}
+.mobile-panel__item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 42, 42, 0.35);
+}
+
+/* Backdrop fades; panel slides down. */
+.mobile-panel-enter-active,
+.mobile-panel-leave-active {
+  transition: opacity 150ms ease;
+}
+.mobile-panel-enter-active .mobile-panel,
+.mobile-panel-leave-active .mobile-panel {
+  transition: transform 150ms ease;
+}
+.mobile-panel-enter-from,
+.mobile-panel-leave-to {
+  opacity: 0;
+}
+.mobile-panel-enter-from .mobile-panel,
+.mobile-panel-leave-to .mobile-panel {
+  transform: translateY(-8px);
 }
 </style>
