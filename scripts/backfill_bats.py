@@ -134,11 +134,17 @@ def main():
                 continue
             updates.append({"id": row["id"], "bats": code})
 
-        # Batched update via upsert on the primary key. Only id + bats are
-        # supplied, so on conflict PostgREST updates bats alone and leaves every
-        # other column (name, throws, team_id, ...) untouched.
+        # UPDATE (not upsert) is the right verb here: PostgREST upsert is an
+        # INSERT .. ON CONFLICT, so a partial {id, bats} payload fails the
+        # NOT NULL check on mlbam_id before the conflict-update can fire. Group
+        # the batch by code (only L/R/S exist) and update each group by id list,
+        # which touches the bats column alone and leaves every other column be.
         if updates:
-            sb.table("players").upsert(updates, on_conflict="id").execute()
+            by_code: dict[str, list[int]] = {}
+            for u in updates:
+                by_code.setdefault(u["bats"], []).append(u["id"])
+            for code, ids in by_code.items():
+                sb.table("players").update({"bats": code}).in_("id", ids).execute()
             resolved += len(updates)
             log.info("  updated %d (running total %d/%d)",
                      len(updates), resolved, len(players))
