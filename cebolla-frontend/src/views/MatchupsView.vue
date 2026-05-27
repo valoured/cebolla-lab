@@ -276,7 +276,14 @@ const matchupGames = computed(() => {
       return lineupRows.slice(0, 9).map(row => {
         const batter = players.value[row.player_id]
         if (!batter) return null
-        const batSide = batter.bats || row.bats || 'R'
+        // Never default unknown handedness to 'R' — a null players.bats (data
+        // gap, ~72% of position players as of 2026-05) would otherwise display
+        // as right-handed and actively mislead. Null flows through to the
+        // template, which renders "—" instead of a fake hand.
+        // NOTE: effectiveStance below still falls back to 'R' for the danger-
+        // pitch math when handedness is unknown; that's a separate concern the
+        // bats backfill resolves. This change is display-only.
+        const batSide = batter.bats || row.bats || null
         const effectiveStance = batSide === 'S'
           ? (pitcherThrows === 'R' ? 'L' : 'R')
           : (batSide === 'L' ? 'L' : 'R')
@@ -621,8 +628,8 @@ onUnmounted(() => {
                 <span class="display-num text-[10px] text-fg-400 text-center">{{ b.batting_order }}</span>
                 <img v-if="headshot(b.mlbam_id, 40)" :src="headshot(b.mlbam_id, 40)" :alt="b.name" class="w-5 h-5 rounded-full object-cover bg-bg-150" loading="lazy" @error="hideOnError" />
                 <div v-else class="w-5 h-5 rounded-full bg-bg-150"></div>
-                <router-link :to="`/player/${b.player_id}`" class="text-fg-700 hover:text-signal-300 transition truncate min-w-0" :title="`${b.name} \u2014 bats ${b.bats === 'L' ? 'left' : b.bats === 'S' ? 'switch (effectively ' + b.effective_stance + ' vs this pitcher)' : 'right'}`">
-                  {{ b.name }}<span class="text-fg-400 text-[9px] ml-1 display-num">{{ b.bats }}</span>
+                <router-link :to="`/player/${b.player_id}`" class="text-fg-700 hover:text-signal-300 transition truncate min-w-0" :title="b.bats ? `${b.name} \u2014 bats ${b.bats === 'L' ? 'left' : b.bats === 'S' ? 'switch (effectively ' + b.effective_stance + ' vs this pitcher)' : 'right'}` : `${b.name} \u2014 batting handedness unknown`">
+                  {{ b.name }}<span v-if="b.bats" class="text-fg-400 text-[9px] ml-1 display-num">{{ b.bats }}</span><span v-else class="text-fg-400/40 text-[9px] ml-1 display-num" title="Batting handedness unknown">&mdash;</span>
                 </router-link>
                 <span v-if="b.danger" class="display-num text-[10px] px-1.5 py-0.5 rounded-sm bg-bg-150 text-fg-600 whitespace-nowrap" :title="`${pitchName(b.danger.pitch_type)} \u2014 pitcher throws ${Math.round(b.danger.usage_pct)}% of the time`">{{ b.danger.pitch_type }} <span class="text-fg-400">{{ Math.round(b.danger.usage_pct) }}%</span></span>
                 <span v-else class="text-fg-400 text-[10px] text-right">&mdash;</span>
@@ -682,8 +689,8 @@ onUnmounted(() => {
                 <span class="display-num text-[10px] text-fg-400 text-center">{{ b.batting_order }}</span>
                 <img v-if="headshot(b.mlbam_id, 40)" :src="headshot(b.mlbam_id, 40)" :alt="b.name" class="w-5 h-5 rounded-full object-cover bg-bg-150" loading="lazy" @error="hideOnError" />
                 <div v-else class="w-5 h-5 rounded-full bg-bg-150"></div>
-                <router-link :to="`/player/${b.player_id}`" class="text-fg-700 hover:text-signal-300 transition truncate min-w-0" :title="`${b.name} \u2014 bats ${b.bats === 'L' ? 'left' : b.bats === 'S' ? 'switch (effectively ' + b.effective_stance + ' vs this pitcher)' : 'right'}`">
-                  {{ b.name }}<span class="text-fg-400 text-[9px] ml-1 display-num">{{ b.bats }}</span>
+                <router-link :to="`/player/${b.player_id}`" class="text-fg-700 hover:text-signal-300 transition truncate min-w-0" :title="b.bats ? `${b.name} \u2014 bats ${b.bats === 'L' ? 'left' : b.bats === 'S' ? 'switch (effectively ' + b.effective_stance + ' vs this pitcher)' : 'right'}` : `${b.name} \u2014 batting handedness unknown`">
+                  {{ b.name }}<span v-if="b.bats" class="text-fg-400 text-[9px] ml-1 display-num">{{ b.bats }}</span><span v-else class="text-fg-400/40 text-[9px] ml-1 display-num" title="Batting handedness unknown">&mdash;</span>
                 </router-link>
                 <span v-if="b.danger" class="display-num text-[10px] px-1.5 py-0.5 rounded-sm bg-bg-150 text-fg-600 whitespace-nowrap" :title="`${pitchName(b.danger.pitch_type)} \u2014 pitcher throws ${Math.round(b.danger.usage_pct)}% of the time`">{{ b.danger.pitch_type }} <span class="text-fg-400">{{ Math.round(b.danger.usage_pct) }}%</span></span>
                 <span v-else class="text-fg-400 text-[10px] text-right">&mdash;</span>

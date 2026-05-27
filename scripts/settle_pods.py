@@ -179,6 +179,26 @@ def settle_one(pod: dict) -> bool:
         return False
 
     status = (game.get("status") or "")
+
+    # Abandoned games (postponed, cancelled, forfeited) never produce a box
+    # score, so without this they sit pending forever — the settler only ever
+    # accepted "Final"/"Game Over"/"Completed Early" and returned False for
+    # everything else. Settle them as VOID (stake refunded, payout 0), matching
+    # standard sportsbook rules and settle_cards.py's terminal-status handling.
+    # "Suspended" is deliberately excluded: those resume and produce stats
+    # later, so they must stay pending.
+    status_l = status.lower()
+    if any(k in status_l for k in ("postponed", "cancelled", "canceled", "forfeit")):
+        sb.table("pods").update({
+            "status": "void",
+            "payout": 0.0,
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", pod["id"]).execute()
+        log.info("POD %d (%s): VOID — game %s",
+                 pod["id"], pod.get("player_name") or pod["player_id"], status)
+        return True
+
     if status not in ("Final", "Game Over", "Completed Early"):
         return False  # not yet final
 
