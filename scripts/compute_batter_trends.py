@@ -210,6 +210,20 @@ def pick_anchor_metric(per_metric_data: dict) -> str:
 # Data load
 # ──────────────────────────────────────────────────────────────────
 
+# PostgREST default response cap is 1,000 rows per .execute(). The season
+# window of batter_stats (vs_hand='A', current season) crossed 1,000 rows
+# in mid-May 2026 — was 1,348 rows when this fix landed. Without pagination,
+# ~348 batters silently lose their season baseline here, which breaks
+# compute_trend_score (needs both season and l14) and drops them from
+# batter_trends entirely (frontend heat display goes blank for those names).
+# The picker no longer reads heat post-Phase 1, so this is a frontend-only
+# repair. Paginate via .range() in a loop; PostgREST applies the ORDER BY
+# before slicing so pagination is stable across pages and the dedupe-by-
+# batter logic below still picks the most recent row per batter.
+# DO NOT collapse this back to a single .select(...).execute().
+_BATTER_STATS_PAGE = 1000
+
+
 def load_batter_stats(sb: Client, window_type: str) -> list[dict]:
     """
     Pull all batter_stats rows for a given window. Returns one row per
@@ -221,20 +235,29 @@ def load_batter_stats(sb: Client, window_type: str) -> list[dict]:
       - implicit current-season — batter_stats only stores current year per pull_savant
     """
     current_year = datetime.now(timezone.utc).year
-    res = sb.table("batter_stats") \
-        .select("*") \
-        .eq("window_type", window_type) \
-        .eq("vs_hand", "A") \
-        .eq("season", current_year) \
-        .order("window_end", desc=True) \
-        .execute()
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        res = sb.table("batter_stats") \
+            .select("*") \
+            .eq("window_type", window_type) \
+            .eq("vs_hand", "A") \
+            .eq("season", current_year) \
+            .order("window_end", desc=True) \
+            .range(offset, offset + _BATTER_STATS_PAGE - 1) \
+            .execute()
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < _BATTER_STATS_PAGE:
+            break
+        offset += _BATTER_STATS_PAGE
 
     # batter_stats can technically have multiple historical rows per
     # batter per window if the upsert key isn't tight. Dedupe by batter
-    # keeping the most recent (already ordered desc).
+    # keeping the most recent (already ordered desc, stable across pages).
     seen = set()
     out = []
-    for r in res.data or []:
+    for r in rows:
         bid = r["batter_id"]
         if bid in seen:
             continue
