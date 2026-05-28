@@ -471,11 +471,35 @@ LEAGUE_HR_PER_9 = 1.15
 PITCHER_FACTOR_MIN = 0.75
 PITCHER_FACTOR_MAX = 1.40
 
-# Coarse pitch-type → family map for Patch 4 per-family barrel lookup in pa_vs_pitch.
+# Coarse pitch-type → family map. Both batter_stats.by_pitch_type (pull_savant.py)
+# and pitcher_arsenals.pitch_type (pull_arsenals.py) write CANONICAL labels —
+# raw Statcast codes (FF/FA/FT/FC/ST) are normalized at ingest. Canonical labels
+# observed in production data (audit 2026-05-28, 535 batters with non-null
+# by_pitch_type): 4SM SI SL CH CT SW CU FS KC SV (KN absent — no current MLB
+# knuckleballer). Raw Statcast codes are retained as belt-and-suspenders against
+# an ingest-side mapping regression.
 _PITCH_FAMILY = {
-    "4SM": "fastball", "FF": "fastball", "FT": "fastball", "SI": "fastball", "FC": "fastball",
-    "SL": "breaking", "CU": "breaking", "KC": "breaking", "ST": "breaking", "SV": "breaking", "SC": "breaking",
-    "CH": "offspeed", "FS": "offspeed", "FO": "offspeed", "KN": "offspeed",
+    # Fastballs
+    "4SM": "fastball",  # 4-seam     (528 batters)
+    "SI":  "fastball",  # sinker     (449 batters)
+    "CT":  "fastball",  # cutter     (391 batters)  ← was missing pre-Phase 1
+    "FF":  "fastball",  # raw 4-seam fallback
+    "FA":  "fastball",  # raw 4-seam fallback
+    "FT":  "fastball",  # raw 2-seam fallback
+    "FC":  "fastball",  # raw cutter fallback
+    # Breaking
+    "SL":  "breaking",  # slider     (441 batters)
+    "SW":  "breaking",  # sweeper    (368 batters)  ← was missing pre-Phase 1
+    "CU":  "breaking",  # curve      (325 batters)
+    "KC":  "breaking",  # knuckle curve (79 batters)
+    "SV":  "breaking",  # slurve      (2 batters)
+    "ST":  "breaking",  # raw sweeper fallback
+    "SC":  "breaking",  # raw screwball fallback (no MLB use)
+    # Offspeed
+    "CH":  "offspeed",  # change     (427 batters)
+    "FS":  "offspeed",  # splitter   (223 batters)
+    "KN":  "offspeed",  # knuckle    (0 batters this season; map for safety)
+    "FO":  "offspeed",  # raw forkball fallback
 }
 
 # Confidence → letter ordering (Patch 9), best→worst, for the Patch 7 tier floor.
@@ -720,3 +744,335 @@ def _market_context(edge, ev_per_dollar, cfg=None):
         "ev_chart": float(ev_per_dollar) if ev_per_dollar is not None else None,
         "edge_warning": warning,
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 1 — matchup-first eligibility + primary signal + EV screen
+# ════════════════════════════════════════════════════════════════════════════
+# Replaces the v1 tier-1/tier-2/Stowers gating + v2 confidence_score derivation
+# with: two-gate eligibility (A: opportunity, B: matchup exception), a
+# primary_signal in ~[0,1] taken as the max of three matchup-anchored components,
+# and an EV demote screen. Heat is removed from the picker. The v1/v2 functions
+# above (evaluate_tier1_*, evaluate_tier2, score_candidate, calculate_confidence,
+# apply_catcher_boost, etc.) are LEFT IN PLACE so Phase 1 can be reverted by
+# reverting the pick_pod/pick_cards changes alone — no rollback of this file.
+#
+# Thresholds live in model_thresholds (seeded by sql/28). Every function below
+# uses _cfg_num for cfg→default fallback, matching the v2 patch layer pattern.
+
+# Stake-tier ordering best→worst, used by suggested_stake_tier_for() to bump
+# one step worse on an EV "drop" / "warn_drop".
+_PHASE1_STAKE_TIER_ORDER = ["lock", "safe", "risky", "lottery", "donation"]
+
+
+def pitch_family_for(pitch_type: Optional[str]) -> Optional[str]:
+    """Public wrapper around _PITCH_FAMILY. Returns 'fastball'|'breaking'|'offspeed' or None."""
+    if not pitch_type:
+        return None
+    return _PITCH_FAMILY.get(pitch_type)
+
+
+def evaluate_eligibility(
+    bstats_season: Optional[dict],
+    by_pitch_season: Optional[dict],
+    pitcher_primary_pitch_type: Optional[str],
+    bvp_row: Optional[dict],
+    cfg: Optional[dict] = None,
+) -> tuple[bool, Optional[str], dict]:
+    """
+    Phase 1 two-gate eligibility.
+
+    HARD EXCLUSION  season_pa < eligibility_season_pa_hard_min → (False, None, {hard_excluded: True})
+    GATE A (opp.)   season_pa >= gate_a_season_pa_min
+                    AND family-summed pitch_type_pa (across by_pitch_season
+                        labels whose pitch_family_for(...) == primary family)
+                        >= gate_a_pitch_type_pa_min
+    GATE B (match.) bvp.ab >= gate_b_bvp_ab_min
+                    AND (bvp.hr >= gate_b_bvp_hr_min
+                         OR (bvp.avg >= gate_b_bvp_avg_min
+                             AND bvp.hr >= gate_b_bvp_hr_alt_min))
+                    AND (season barrel_pct >= gate_b_barrel_pct_min
+                         OR season xslg >= gate_b_xslg_min)
+
+    Returns (passed, gate, detail). `gate` ∈ {"A","B",None}; "A" wins ties
+    (short-circuit; B only checked when A fails).
+    """
+    detail = {
+        "season_pa": None,
+        "pitch_type_pa": None,
+        "bvp_ab": None,
+        "bvp_hr": None,
+        "bvp_avg": None,
+        "season_barrel_pct": None,
+        "season_xslg": None,
+        "pitcher_primary_pitch_type": pitcher_primary_pitch_type,
+        "pitcher_primary_family": pitch_family_for(pitcher_primary_pitch_type),
+        "hard_excluded": False,
+    }
+
+    hard_min = _cfg_num(cfg, "eligibility_season_pa_hard_min", 50)
+    season_pa = None
+    if bstats_season and bstats_season.get("pa") is not None:
+        try:
+            season_pa = int(bstats_season["pa"])
+        except (TypeError, ValueError):
+            season_pa = None
+    detail["season_pa"] = season_pa
+
+    if season_pa is None or season_pa < hard_min:
+        detail["hard_excluded"] = True
+        return (False, None, detail)
+
+    # ── Gate A — opportunity ────────────────────────────────────────────
+    gate_a_pa_min = _cfg_num(cfg, "eligibility_gate_a_season_pa_min", 120)
+    gate_a_pt_min = _cfg_num(cfg, "eligibility_gate_a_pitch_type_pa_min", 20)
+    primary_family = detail["pitcher_primary_family"]
+
+    pvp = by_pitch_season or {}
+    family_pa = 0
+    if primary_family:
+        # Sum PA across labels in pvp whose family matches. Iterate pvp keys
+        # (not _PITCH_FAMILY keys) so we never double-count canonical + raw
+        # fallback entries — and so labels missing from the family map are
+        # silently excluded rather than raising.
+        for label, entry in pvp.items():
+            if pitch_family_for(label) != primary_family:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            try:
+                family_pa += int(entry.get("pa") or 0)
+            except (TypeError, ValueError):
+                continue
+    detail["pitch_type_pa"] = family_pa
+
+    if season_pa >= gate_a_pa_min and family_pa >= gate_a_pt_min:
+        return (True, "A", detail)
+
+    # ── Gate B — matchup exception ──────────────────────────────────────
+    bvp_ab_min     = _cfg_num(cfg, "eligibility_gate_b_bvp_ab_min", 8)
+    bvp_hr_min     = _cfg_num(cfg, "eligibility_gate_b_bvp_hr_min", 2)
+    bvp_avg_min    = _cfg_num(cfg, "eligibility_gate_b_bvp_avg_min", 0.300)
+    bvp_hr_alt_min = _cfg_num(cfg, "eligibility_gate_b_bvp_hr_alt_min", 1)
+    brl_min        = _cfg_num(cfg, "eligibility_gate_b_barrel_pct_min", 8.0)
+    xslg_min       = _cfg_num(cfg, "eligibility_gate_b_xslg_min", 0.430)
+
+    bvp_ab = bvp_hr = None
+    bvp_avg = None
+    if bvp_row:
+        try:
+            bvp_ab = int(bvp_row.get("ab") or 0)
+        except (TypeError, ValueError):
+            bvp_ab = None
+        try:
+            bvp_hr = int(bvp_row.get("hr") or 0)
+        except (TypeError, ValueError):
+            bvp_hr = None
+        v = bvp_row.get("avg")
+        if v is not None:
+            try:
+                bvp_avg = float(v)
+            except (TypeError, ValueError):
+                bvp_avg = None
+    detail["bvp_ab"] = bvp_ab
+    detail["bvp_hr"] = bvp_hr
+    detail["bvp_avg"] = bvp_avg
+
+    season_brl = season_xslg = None
+    if bstats_season:
+        v = bstats_season.get("barrel_pct")
+        if v is not None:
+            try:
+                season_brl = float(v)
+            except (TypeError, ValueError):
+                pass
+        v = bstats_season.get("xslg")
+        if v is not None:
+            try:
+                season_xslg = float(v)
+            except (TypeError, ValueError):
+                pass
+    detail["season_barrel_pct"] = season_brl
+    detail["season_xslg"] = season_xslg
+
+    bvp_sample_ok = bvp_ab is not None and bvp_ab >= bvp_ab_min
+    bvp_perf_ok = False
+    if bvp_sample_ok:
+        if bvp_hr is not None and bvp_hr >= bvp_hr_min:
+            bvp_perf_ok = True
+        elif (bvp_avg is not None and bvp_avg >= bvp_avg_min
+              and bvp_hr is not None and bvp_hr >= bvp_hr_alt_min):
+            bvp_perf_ok = True
+    power_ok = (
+        (season_brl is not None and season_brl >= brl_min)
+        or (season_xslg is not None and season_xslg >= xslg_min)
+    )
+
+    if bvp_sample_ok and bvp_perf_ok and power_ok:
+        return (True, "B", detail)
+
+    return (False, None, detail)
+
+
+def compute_primary_signal_v3(
+    bvp_row: Optional[dict],
+    by_pitch_season: Optional[dict],
+    pitcher_primary_pitch_type: Optional[str],
+    l7_stats: Optional[dict],
+    l14_stats: Optional[dict],
+    cfg: Optional[dict] = None,
+) -> tuple[float, Optional[str]]:
+    """
+    Phase 1 ranking signal — max of three components, returns (signal, source).
+
+      observed_vs_pitcher    = bvp.hr / bvp.ab            if bvp.ab >= primary_bvp_ab_min
+        source = "bvp_observed"
+
+      observed_vs_pitch_type = by_pitch[primary].hr_pct / 100
+        Reliability gate: FAMILY-SUMMED PA across by_pitch_season entries whose
+        pitch_family_for(label) == family-of-primary >= primary_pitch_type_pa_min.
+        Value uses the SPECIFIC primary pitch's hr_pct (NOT family-averaged) —
+        family-summed PA only gates whether we trust the sample.
+        Returns 0.0 contribution (no candidate added) if the SPECIFIC pitch is
+        missing from by_pitch — we don't synthesize from family averages.
+        source = "pitch_type_observed"
+
+      recent_power_form      = l7.xslg / primary_l7_xslg_divisor
+        If l7.pa >= primary_l7_pa_min and l7.xslg present → source "l7_power_form".
+        Else fall back to l14.xslg / primary_l7_xslg_divisor (any L14 PA, just
+        needs xslg present) → source "l14_power_form".
+
+    All three unavailable → (0.0, None).
+    """
+    divisor   = _cfg_num(cfg, "primary_l7_xslg_divisor", 2.0)
+    bvp_ab_min = _cfg_num(cfg, "primary_bvp_ab_min", 8)
+    pt_pa_min  = _cfg_num(cfg, "primary_pitch_type_pa_min", 20)
+    l7_pa_min  = _cfg_num(cfg, "primary_l7_pa_min", 10)
+
+    candidates: list[tuple[float, str]] = []
+
+    # ── observed_vs_pitcher ─────────────────────────────────────────────
+    if bvp_row:
+        try:
+            ab = int(bvp_row.get("ab") or 0)
+            hr = int(bvp_row.get("hr") or 0)
+        except (TypeError, ValueError):
+            ab = hr = 0
+        if ab >= bvp_ab_min and ab > 0:
+            candidates.append((hr / ab, "bvp_observed"))
+
+    # ── observed_vs_pitch_type ──────────────────────────────────────────
+    pvp = by_pitch_season or {}
+    if pitcher_primary_pitch_type and pvp:
+        entry = pvp.get(pitcher_primary_pitch_type)
+        family = pitch_family_for(pitcher_primary_pitch_type)
+        if entry and isinstance(entry, dict) and family is not None:
+            # Family-summed PA reliability gate
+            family_pa = 0
+            for label, sub in pvp.items():
+                if pitch_family_for(label) != family or not isinstance(sub, dict):
+                    continue
+                try:
+                    family_pa += int(sub.get("pa") or 0)
+                except (TypeError, ValueError):
+                    continue
+            if family_pa >= pt_pa_min and entry.get("hr_pct") is not None:
+                try:
+                    hr_pct = float(entry["hr_pct"])  # stored 0-100
+                    candidates.append((hr_pct / 100.0, "pitch_type_observed"))
+                except (TypeError, ValueError):
+                    pass
+
+    # ── recent_power_form ───────────────────────────────────────────────
+    used_l7 = False
+    if l7_stats:
+        l7_pa = l7_stats.get("pa")
+        l7_xslg = l7_stats.get("xslg")
+        if l7_pa is not None and l7_xslg is not None:
+            try:
+                if int(l7_pa) >= l7_pa_min and divisor:
+                    candidates.append((float(l7_xslg) / divisor, "l7_power_form"))
+                    used_l7 = True
+            except (TypeError, ValueError):
+                pass
+    if not used_l7 and l14_stats:
+        l14_xslg = l14_stats.get("xslg")
+        if l14_xslg is not None and divisor:
+            try:
+                candidates.append((float(l14_xslg) / divisor, "l14_power_form"))
+            except (TypeError, ValueError):
+                pass
+
+    if not candidates:
+        return (0.0, None)
+    value, source = max(candidates, key=lambda x: x[0])
+    return (round(value, 5), source)
+
+
+def apply_ev_screen(edge: Optional[float], cfg: Optional[dict] = None) -> tuple[str, bool]:
+    """
+    Phase 1 EV demote — returns (action, warning_flag).
+      action ∈ {"full","drop","warn_drop","disqualify"}
+      warning_flag True iff action == "warn_drop"
+
+    edge >= ev_edge_full_floor   (default 0.03) → "full"
+    edge >= ev_edge_drop_floor   (default 0.0)  → "drop"
+    edge >= ev_edge_warn_floor   (default -0.10)→ "warn_drop"
+    else / None                                 → "disqualify"
+    """
+    if edge is None:
+        return ("disqualify", False)
+    try:
+        e = float(edge)
+    except (TypeError, ValueError):
+        return ("disqualify", False)
+    if e >= _cfg_num(cfg, "ev_edge_full_floor", 0.03):
+        return ("full", False)
+    if e >= _cfg_num(cfg, "ev_edge_drop_floor", 0.0):
+        return ("drop", False)
+    if e >= _cfg_num(cfg, "ev_edge_warn_floor", -0.10):
+        return ("warn_drop", True)
+    return ("disqualify", False)
+
+
+def suggested_stake_tier_for(
+    primary_signal: float,
+    ev_action: str,
+    cfg: Optional[dict] = None,
+) -> str:
+    """
+    Phase 1 advisory stake tier (display-only — not applied to stake yet).
+
+      primary_signal >= stake_tier_lock_min    (0.65) → "lock"
+                     >= stake_tier_safe_min    (0.50) → "safe"
+                     >= stake_tier_risky_min   (0.30) → "risky"
+                     >= stake_tier_lottery_min (0.15) → "lottery"
+                                                 else → "donation"
+
+    If ev_action in {"drop","warn_drop"}, bump one step worse along
+    _PHASE1_STAKE_TIER_ORDER (lock→safe→risky→lottery→donation; donation
+    is the floor — can't bump further).
+    """
+    try:
+        s = float(primary_signal or 0.0)
+    except (TypeError, ValueError):
+        s = 0.0
+    if s >= _cfg_num(cfg, "stake_tier_lock_min", 0.65):
+        base = "lock"
+    elif s >= _cfg_num(cfg, "stake_tier_safe_min", 0.50):
+        base = "safe"
+    elif s >= _cfg_num(cfg, "stake_tier_risky_min", 0.30):
+        base = "risky"
+    elif s >= _cfg_num(cfg, "stake_tier_lottery_min", 0.15):
+        base = "lottery"
+    else:
+        base = "donation"
+
+    if ev_action in ("drop", "warn_drop"):
+        try:
+            idx = _PHASE1_STAKE_TIER_ORDER.index(base)
+        except ValueError:
+            return base
+        bumped = min(idx + 1, len(_PHASE1_STAKE_TIER_ORDER) - 1)
+        return _PHASE1_STAKE_TIER_ORDER[bumped]
+    return base
