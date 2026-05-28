@@ -201,12 +201,31 @@ def normalize_name(name: str) -> str:
     return " ".join(tokens).lower().strip()
 
 
+# PostgREST default response cap is 1,000 rows per .execute(). Any unbounded
+# select against a table with >1,000 rows silently truncates and the missing
+# rows look like "we don't know about that key" downstream. Players topped
+# 1,000 in mid-May 2026 — Yordan Alvarez (id=248) and ~1,150 other batters
+# stopped appearing in the index, which is why pull_dk_odds odds coverage
+# collapsed without an error. Paginate explicitly via .range() in a loop.
+# DO NOT collapse this back to a single .select(...).execute() unless the
+# PostgREST default has been raised or the row count has shrunk below 1,000.
+_PLAYER_INDEX_PAGE = 1000
+
+
 def build_player_index() -> dict[str, int]:
-    res = sb.table("players").select("id, name").execute()
-    return {
-        normalize_name(p["name"]): p["id"]
-        for p in res.data if p.get("name")
-    }
+    out: dict[str, int] = {}
+    offset = 0
+    while True:
+        res = sb.table("players").select("id, name") \
+            .range(offset, offset + _PLAYER_INDEX_PAGE - 1).execute()
+        rows = res.data or []
+        for p in rows:
+            if p.get("name"):
+                out[normalize_name(p["name"])] = p["id"]
+        if len(rows) < _PLAYER_INDEX_PAGE:
+            break
+        offset += _PLAYER_INDEX_PAGE
+    return out
 
 
 # ────────────────────────────────────────────────────────────────
