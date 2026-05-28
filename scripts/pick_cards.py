@@ -21,13 +21,31 @@ Card-level stake tier derived from mean(leg.primary_signal) + the
 WORST EV action across legs (so a card with one warn_drop leg gets
 its suggested stake tier bumped one step worse).
 
-CARD TIERS (variable per slate quality):
-  two_leg   — up to 6 cards, ev_per_dollar > 0.05
-  three_leg — up to 4 cards, ev_per_dollar > 0.08
-  four_leg  — up to 2 cards, ev_per_dollar > 0.10
+CARD TIERS (uncapped — ship every combo that clears its tier's EV gate
+            and respects the per-batter multi-leg cap):
+  straight   — ev_per_dollar gated only by the per-leg EV screen
+              (the leg's signal is "lock" or "safe" — per-game coverage)
+  two_leg    — ev_per_dollar > 0.05
+  three_leg  — ev_per_dollar > 0.08
+  four_leg   — ev_per_dollar > 0.10
 
 STAKE RECOMMENDATIONS (canonical, frontend can scale):
-  two_leg=$10, three_leg=$5, four_leg=$1
+  straight=$10, two_leg=$10, three_leg=$5, four_leg=$1
+
+PER-BATTER CAP:
+  At most MAX_MULTI_LEG_APPEARANCES_PER_BATTER multi-leg cards reference
+  the same batter. A batter at the cap can still receive a straight — the
+  straight phase evicts the batter's lowest-EV multi-leg card to make room.
+  Net effect: any batter ends up on ≤ MAX_MULTI_LEG_APPEARANCES_PER_BATTER
+  cards total (multi-leg + straight combined).
+
+PER-GAME STRAIGHTS (Lock/Safe only):
+  After multi-leg selection, iterate the candidate pool grouped by
+  (game, batter). For each batter, take their best leg (highest signal,
+  edge tiebreak); if its post-EV-demote suggested_stake_tier is "lock"
+  or "safe", emit a single-leg straight card. Games without a Lock/Safe
+  anchor get no straight (Phase 1 is honest about conviction). The same
+  batter can appear as POD AND as a straight — pickers don't coordinate.
 
 MATH (unchanged):
   combined_prob   = ∏(leg_prob) × (1 - correlation_penalty)
@@ -49,11 +67,13 @@ PER-MARKET PROBABILITY FLOORS (sanity, applied BEFORE Phase 1 enrich):
 The Phase 1 EV screen handles negative-edge cases via demote/disqualify
 downstream; the per-market min_prob is just a data-quality guard.
 
-DEDUP / EXPOSURE (unchanged):
-  Greedy selection per tier; 3-leg ≤1 shared leg with any 2-leg;
-  4-leg ≤2 shared legs with anything. Player exposure cap 3 cards;
-  same-game card cap 1. Market diversification mandates ≥2 non-HR
-  cards via post-selection swap.
+DEDUP / EXPOSURE:
+  Greedy selection per tier, EV gate per tier, per-batter multi-leg cap
+  (default 2). No within-tier or cross-tier overlap rules beyond the
+  per-batter cap, no overall card-count cap, no same-game cap, no
+  market-diversification swap — uncapped output naturally diversifies
+  when the EV gates do their job, and the per-batter cap stops any one
+  hot batter from saturating the menu.
 
 PERSISTED COLUMNS (Phase 1, added in sql/28):
   primary_signal, primary_signal_source, suggested_stake_tier,
@@ -125,26 +145,25 @@ MARKET_MIN_PROB = {
     "rbi_yes":     0.35,
 }
 
-# Stake recommendations by tier (canonical — frontend can scale linearly)
+# Stake recommendations by tier (canonical — frontend can scale linearly).
+# Straights inherit the 2-leg stake — they're single-leg conviction picks
+# for Lock/Safe-tier anchors, analogous to PODs but in the cards stream.
 STAKE_REC = {
-    "two_leg":   10.00,
-    "three_leg":  5.00,
-    "four_leg":   1.00,
+    "straight":   10.00,
+    "two_leg":    10.00,
+    "three_leg":   5.00,
+    "four_leg":    1.00,
 }
 
 # Card-level EV gates by tier — distinct from the per-leg EV screen.
-# A card must clear its tier's gate to ship.
+# Straights use 0.0 because the per-leg EV screen has already gated them:
+# disqualifying edges never reach enrichment, and warn_drop just demotes
+# the suggested stake tier (which is what the Lock/Safe filter sees).
 EV_GATES = {
+    "straight":  0.0,
     "two_leg":   0.05,
     "three_leg": 0.08,
     "four_leg":  0.10,
-}
-
-# Card count caps by tier
-CARD_CAPS = {
-    "two_leg":   6,
-    "three_leg": 4,
-    "four_leg":  2,
 }
 
 # Correlation penalties applied to combined_prob. SGP penalty intentionally
@@ -156,19 +175,31 @@ CORRELATION_PENALTIES = {
     "same_player": 0.15,
 }
 
-# Dedup: max shared legs between selected cards across tiers
-SHARING_LIMITS = {
-    "three_vs_two": 1,
-    "four_vs_any":  2,
-}
+# Per-batter cap on MULTI-LEG card appearances. Was 3 in v0.4.0 (under the
+# old MAX_PLAYER_APPEARANCES name); lowered to 2 so a Lock/Safe straight
+# always has room to land without putting any batter on more than 2 cards
+# total (one straight + at most one multi-leg, or just the straight, or
+# at most two multi-legs if the batter doesn't qualify for a straight).
+MAX_MULTI_LEG_APPEARANCES_PER_BATTER = 2
 
-# Global exposure caps across the entire daily card menu
-MAX_PLAYER_APPEARANCES = 3
-MAX_SAME_GAME_CARDS    = 1
+# Stake tiers that qualify a leg as a straight pick. The full 5-tier scale
+# lives in tier_system.suggested_stake_tier_for; straights are limited to
+# the top two (lock + safe) so per-game coverage only surfaces high-
+# conviction matchups. EV warn_drop / drop already demoted these tiers
+# downward — anything below "safe" reflects either a marginal-signal
+# batter (donation/lottery base) or a negative-edge demote, neither of
+# which is straight-worthy.
+STRAIGHT_QUALIFYING_TIERS = ("lock", "safe")
 
-# Market diversification: mandate at least this many cards use only non-HR
-# markets (Hits / RBI / HRR). A "non-HR card" has zero legs in hr_anytime.
-MIN_NON_HR_CARDS = 2
+# REMOVED in the per-game-coverage rework (Phase 1.1):
+#   CARD_CAPS           — final card-count cap per tier; ship all combos
+#                         that clear their EV gate and the per-batter cap.
+#   SHARING_LIMITS      — three_vs_two / four_vs_any overlap rules; the
+#                         per-batter cap (2) already enforces variety.
+#   MAX_SAME_GAME_CARDS — uncapped output naturally allows SGPs that
+#                         pass EV; the per-batter cap is the bottleneck.
+#   MIN_NON_HR_CARDS    — uncapped output diversifies markets naturally;
+#                         enforce_non_hr_mandate / is_non_hr_card deleted.
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -914,6 +945,11 @@ def make_combo_record(legs, tier, slate_quality, cfg=None):
 
 def label_for(legs, tier, math):
     """Human-readable label for a card based on its character."""
+    # Single-leg straights short-circuit before the same_game check —
+    # a single-leg "card" trivially shares one game and would otherwise
+    # be mislabeled as a Same-Game Combo.
+    if tier == "straight":
+        return "Straight"
     n = len(legs)
     avg_odds = sum(abs(l["american_odds"]) for l in legs) / n
     has_longshot = any(l["american_odds"] >= 500 for l in legs)
@@ -936,28 +972,25 @@ def label_for(legs, tier, math):
 # COMBINATION GENERATION
 # ────────────────────────────────────────────────────────────────────────
 
-def generate_combos(candidates, leg_count, max_keep=200, cfg=None):
+def generate_combos(candidates, leg_count, cfg=None):
     """
     Generate scored combinations of `leg_count` legs.
 
     Candidates arrive pre-sorted by (primary_signal DESC, edge DESC) from
-    fetch_candidates. Pool sizes (20/15/12) unchanged from v0.4.0 — those
-    bounds control combinatorial blow-up, not selection quality.
+    fetch_candidates. NO top-N pool slice — every (player_id-distinct)
+    combination is scored, then ordered by card primary_signal DESC and
+    objective score DESC. The downstream selection step applies the per-tier
+    EV gate and the per-batter cap; this function's job is just to enumerate
+    and score.
 
-    Combos are returned ordered by card primary_signal DESC then objective
-    score DESC; select_cards applies the EV eligibility gate during selection.
+    Combinatorial cost: C(N, k). For typical slates (≤60 qualifying legs)
+    even k=4 stays well under a second. If a future heavy slate makes this
+    a hot path, the right fix is a heuristic prune at this layer (e.g. cap
+    pool at top-K by primary_signal) — restoring the v0.4.0 20/15/12 slice
+    would be the simplest first knob.
     """
-    if leg_count == 2:
-        pool = candidates[:20]
-    elif leg_count == 3:
-        pool = candidates[:15]
-    elif leg_count == 4:
-        pool = candidates[:12]
-    else:
-        pool = candidates
-
     combos = []
-    for combo in combinations(pool, leg_count):
+    for combo in combinations(candidates, leg_count):
         player_ids = [l["player_id"] for l in combo]
         if len(set(player_ids)) != leg_count:
             continue
@@ -969,11 +1002,11 @@ def generate_combos(candidates, leg_count, max_keep=200, cfg=None):
         key=lambda r: ((r.get("primary_signal") or 0.0), r["score"]),
         reverse=True,
     )
-    return combos[:max_keep]
+    return combos
 
 
 def tier_for_legs(n):
-    return {2: "two_leg", 3: "three_leg", 4: "four_leg"}.get(n, "straight")
+    return {1: "straight", 2: "two_leg", 3: "three_leg", 4: "four_leg"}.get(n, "straight")
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -982,33 +1015,33 @@ def tier_for_legs(n):
 
 def select_cards(all_combos_by_tier):
     """
-    Greedy selection across tiers with overlap penalties + global exposure caps.
+    Phase 1.1 uncapped multi-leg selection.
 
-    Two-stage selection:
-      1. Eligibility gate: each combo must clear its tier's EV threshold
-         (EV_GATES[tier]).
-      2. Ranking: among eligible combos, walks in primary_signal DESC order
-         (combos arrive pre-sorted from generate_combos).
+    For each tier (2-leg, 3-leg, 4-leg) walk combos in primary_signal DESC
+    order (combos arrive pre-sorted from generate_combos) and commit every
+    combo that:
+      · clears its tier's EV gate (EV_GATES[tier]); AND
+      · does not push any of its batters above
+        MAX_MULTI_LEG_APPEARANCES_PER_BATTER total multi-leg appearances
+        (across all tiers combined).
 
-    Order: 2-leggers first, then 3-leggers (≤1 leg shared with any 2-legger),
-    then 4-leggers (≤2 legs shared with anything selected). Global caps:
-    any player ≤ MAX_PLAYER_APPEARANCES cards, ≤ MAX_SAME_GAME_CARDS fully
-    same-game cards.
+    No final card-count cap, no same-game cap, no cross-tier overlap rules,
+    no within-tier player dedup beyond the per-batter cap, no market
+    diversification swap. The per-batter cap is the only structural
+    constraint — every other knob the v0.4.0 picker used to limit output
+    has been retired here. The straight phase (generate_straights) runs
+    after this and is allowed to evict a multi-leg card to make room when
+    a batter's straight beats their lowest-EV multi-leg appearance.
     """
     selected = {"two_leg": [], "three_leg": [], "four_leg": []}
-
     global_player_counts = {}
-    same_game_card_count = 0
 
-    def player_caps_ok(legs):
+    def per_batter_cap_ok(legs):
         for leg in legs:
             pid = leg["player_id"]
-            if global_player_counts.get(pid, 0) >= MAX_PLAYER_APPEARANCES:
+            if global_player_counts.get(pid, 0) >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER:
                 return False
         return True
-
-    def is_same_game_card(legs):
-        return len(set(l["game_id"] for l in legs)) == 1
 
     def commit(combo, tier_bucket):
         tier_bucket.append(combo)
@@ -1016,183 +1049,137 @@ def select_cards(all_combos_by_tier):
             pid = leg["player_id"]
             global_player_counts[pid] = global_player_counts.get(pid, 0) + 1
 
-    # ── Two-leggers ──────────────────────────────────────────────────
-    two_legs = all_combos_by_tier.get("two_leg", [])
-    used_players_2 = set()
-    for combo in two_legs:
-        if len(selected["two_leg"]) >= CARD_CAPS["two_leg"]:
-            break
-        if combo["math"]["ev_per_dollar"] < EV_GATES["two_leg"]:
-            continue
-        legs = combo["legs"]
-        player_ids = set(l["player_id"] for l in legs)
-        if player_ids & used_players_2:
-            continue
-        if not player_caps_ok(legs):
-            continue
-        if is_same_game_card(legs) and same_game_card_count >= MAX_SAME_GAME_CARDS:
-            continue
-        commit(combo, selected["two_leg"])
-        used_players_2.update(player_ids)
-        if is_same_game_card(legs):
-            same_game_card_count += 1
-
-    # ── Three-leggers ────────────────────────────────────────────────
-    three_legs = all_combos_by_tier.get("three_leg", [])
-    used_players_3 = set()
-    for combo in three_legs:
-        if len(selected["three_leg"]) >= CARD_CAPS["three_leg"]:
-            break
-        if combo["math"]["ev_per_dollar"] < EV_GATES["three_leg"]:
-            continue
-        legs = combo["legs"]
-        player_ids = set(l["player_id"] for l in legs)
-        if player_ids & used_players_3:
-            continue
-        if not player_caps_ok(legs):
-            continue
-        if is_same_game_card(legs) and same_game_card_count >= MAX_SAME_GAME_CARDS:
-            continue
-        too_overlapping = False
-        for tl in selected["two_leg"]:
-            tl_players = set(l["player_id"] for l in tl["legs"])
-            if len(player_ids & tl_players) > SHARING_LIMITS["three_vs_two"]:
-                too_overlapping = True
-                break
-        if too_overlapping:
-            continue
-        commit(combo, selected["three_leg"])
-        used_players_3.update(player_ids)
-        if is_same_game_card(legs):
-            same_game_card_count += 1
-
-    # ── Four-leggers ─────────────────────────────────────────────────
-    four_legs = all_combos_by_tier.get("four_leg", [])
-    for combo in four_legs:
-        if len(selected["four_leg"]) >= CARD_CAPS["four_leg"]:
-            break
-        if combo["math"]["ev_per_dollar"] < EV_GATES["four_leg"]:
-            continue
-        legs = combo["legs"]
-        player_ids = set(l["player_id"] for l in legs)
-        if not player_caps_ok(legs):
-            continue
-        if is_same_game_card(legs) and same_game_card_count >= MAX_SAME_GAME_CARDS:
-            continue
-        too_overlapping = False
-        for other in selected["two_leg"] + selected["three_leg"]:
-            other_players = set(l["player_id"] for l in other["legs"])
-            if len(player_ids & other_players) > SHARING_LIMITS["four_vs_any"]:
-                too_overlapping = True
-                break
-        if too_overlapping:
-            continue
-        commit(combo, selected["four_leg"])
-        if is_same_game_card(legs):
-            same_game_card_count += 1
-
-    # ── Market diversification: ensure ≥ MIN_NON_HR_CARDS in menu ────
-    enforce_non_hr_mandate(selected, all_combos_by_tier)
+    for tier_key in ("two_leg", "three_leg", "four_leg"):
+        gate = EV_GATES[tier_key]
+        for combo in all_combos_by_tier.get(tier_key, []):
+            if combo["math"]["ev_per_dollar"] < gate:
+                continue
+            if not per_batter_cap_ok(combo["legs"]):
+                continue
+            commit(combo, selected[tier_key])
     return selected
 
 
-def is_non_hr_card(combo):
-    """A card is 'non-HR' if NONE of its legs are hr_anytime."""
-    return all(leg["market"] != "hr_anytime" for leg in combo["legs"])
+# ────────────────────────────────────────────────────────────────────────
+# STRAIGHT PHASE — per-game Lock/Safe coverage
+# ────────────────────────────────────────────────────────────────────────
 
-
-def enforce_non_hr_mandate(selected, all_combos_by_tier):
+def count_multi_leg_appearances(selected):
     """
-    Post-selection: ensure ≥ MIN_NON_HR_CARDS cards use only non-HR markets.
-    Evicts the lowest-EV HR-heavy card in a tier and swaps in the highest-EV
-    non-HR alternative from the same tier that also clears its EV gate.
-    Respects global exposure caps; mutates `selected` in place.
+    {player_id: count} of appearances across the multi-leg buckets of
+    `selected`. Walked anew each call so eviction in the straight phase
+    doesn't have to keep a parallel counter in sync.
     """
-    def count_non_hr():
-        total = 0
-        for tier_list in selected.values():
-            for combo in tier_list:
-                if is_non_hr_card(combo):
-                    total += 1
-        return total
-
-    def all_selected_tier_pairs():
-        for tier_key, tier_list in selected.items():
-            for combo in tier_list:
-                yield tier_key, combo
-
-    deficit = MIN_NON_HR_CARDS - count_non_hr()
-    if deficit <= 0:
-        return
-
-    log.info("  market diversification: %d non-HR card%s short, attempting swap",
-             deficit, "" if deficit == 1 else "s")
-
-    non_hr_pool = []
-    for tier_key, combos in all_combos_by_tier.items():
-        gate = EV_GATES.get(tier_key, 0.05)
-        for combo in combos:
-            if is_non_hr_card(combo) and combo["math"]["ev_per_dollar"] >= gate:
-                non_hr_pool.append((tier_key, combo))
-    non_hr_pool.sort(key=lambda x: x[1]["math"]["ev_per_dollar"], reverse=True)
-
-    if not non_hr_pool:
-        log.warning("  no non-HR alternatives clear EV gates — slate is HR-only tonight")
-        return
-
-    swaps_done = 0
-    swaps_needed = deficit
-    seen_combo_ids = set()
-
-    for tier_key, non_hr_combo in non_hr_pool:
-        if swaps_done >= swaps_needed:
-            break
-        combo_id = id(non_hr_combo)
-        if combo_id in seen_combo_ids:
-            continue
-        seen_combo_ids.add(combo_id)
-
-        non_hr_player_ids = set(l["player_id"] for l in non_hr_combo["legs"])
-
-        evictable = []
-        for sel_tier_key, sel_combo in all_selected_tier_pairs():
-            if sel_tier_key != tier_key:
-                continue
-            if is_non_hr_card(sel_combo):
-                continue
-            evictable.append(sel_combo)
-        if not evictable:
-            continue
-        evictable.sort(key=lambda c: c["math"]["ev_per_dollar"])
-        victim = evictable[0]
-
-        proj_player_counts = {}
-        for sel_tier_key, sel_combo in all_selected_tier_pairs():
-            if sel_combo is victim:
-                continue
-            for leg in sel_combo["legs"]:
+    counts = {}
+    for tier_key in ("two_leg", "three_leg", "four_leg"):
+        for card in selected.get(tier_key, []):
+            for leg in card["legs"]:
                 pid = leg["player_id"]
-                proj_player_counts[pid] = proj_player_counts.get(pid, 0) + 1
-        violates_cap = False
-        for pid in non_hr_player_ids:
-            new_count = proj_player_counts.get(pid, 0) + 1
-            if new_count > MAX_PLAYER_APPEARANCES:
-                violates_cap = True
-                break
-        if violates_cap:
+                counts[pid] = counts.get(pid, 0) + 1
+    return counts
+
+
+def generate_straights(candidates, selected, games, cfg=None):
+    """
+    Phase 1.1 per-game straight pick generation.
+
+    Walks the qualified candidate pool grouped by (game_id, player_id),
+    picks each batter's best leg (highest primary_signal, edge tiebreak),
+    and emits a single-leg straight for each batter whose post-EV-demote
+    suggested_stake_tier is in STRAIGHT_QUALIFYING_TIERS (lock or safe).
+
+    If the straight's batter already appears in
+    MAX_MULTI_LEG_APPEARANCES_PER_BATTER multi-leg cards, the lowest-EV
+    multi-leg card containing that batter is evicted from `selected` to
+    make room. Lock/Safe conviction wins over multi-leg participation;
+    net effect is at most MAX_MULTI_LEG_APPEARANCES_PER_BATTER cards per
+    batter across all tiers combined.
+
+    Mutates `selected` in place when eviction fires. Returns:
+        (straights, lock_count, safe_count, demoted_out_count,
+         games_with_straights_count)
+    """
+    # Build per-(game, batter) best leg map. Ties broken by edge.
+    by_game_batter = {}
+    for c in candidates:
+        gid = c.get("game_id")
+        pid = c.get("player_id")
+        if gid is None or pid is None:
             continue
+        key = (gid, pid)
+        cur = by_game_batter.get(key)
+        if cur is None:
+            by_game_batter[key] = c
+            continue
+        cur_key = ((cur.get("primary_signal") or 0.0), (cur.get("edge") or 0.0))
+        new_key = ((c.get("primary_signal") or 0.0), (c.get("edge") or 0.0))
+        if new_key > cur_key:
+            by_game_batter[key] = c
 
-        selected[tier_key].remove(victim)
-        selected[tier_key].append(non_hr_combo)
-        swaps_done += 1
-        log.info("  swap %d: evict %s (%s, EV=%.3f) → add %s (%s, EV=%.3f)",
-                 swaps_done,
-                 victim.get("label", "?"), tier_key, victim["math"]["ev_per_dollar"],
-                 non_hr_combo.get("label", "?"), tier_key, non_hr_combo["math"]["ev_per_dollar"])
+    straights = []
+    lock_count = 0
+    safe_count = 0
+    demoted_out_count = 0
+    games_with_straights = set()
 
-    if swaps_done < swaps_needed:
-        log.warning("  market diversification: only %d/%d swaps possible (exposure caps blocked rest)",
-                    swaps_done, swaps_needed)
+    # Walk best-batter-per-game in primary_signal DESC order so the most
+    # confident anchors get processed first (matters for the eviction
+    # tiebreak when two straights target the same victim multi-leg card).
+    walk_order = sorted(
+        by_game_batter.items(),
+        key=lambda kv: ((kv[1].get("primary_signal") or 0.0),
+                        (kv[1].get("edge") or 0.0)),
+        reverse=True,
+    )
+
+    for (game_id, pid), leg in walk_order:
+        actual_tier = leg.get("suggested_stake_tier")
+        if actual_tier in STRAIGHT_QUALIFYING_TIERS:
+            rec = make_combo_record([leg], "straight", None, cfg=cfg)
+            if rec is None:
+                continue
+            # The "straight" EV gate is 0.0 — the per-leg EV screen already
+            # disqualified negative-edge picks. This stays as a defensive
+            # check so the gate dict is still consulted (cfg-driven).
+            if rec["math"]["ev_per_dollar"] < EV_GATES.get("straight", 0.0):
+                continue
+
+            appearances = count_multi_leg_appearances(selected).get(pid, 0)
+            if appearances >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER:
+                victims = []
+                for tk in ("two_leg", "three_leg", "four_leg"):
+                    for card in selected.get(tk, []):
+                        if any(l["player_id"] == pid for l in card["legs"]):
+                            victims.append((tk, card))
+                if victims:
+                    victims.sort(key=lambda tc: tc[1]["math"]["ev_per_dollar"])
+                    evict_tier, victim = victims[0]
+                    selected[evict_tier].remove(victim)
+                    log.info(
+                        "  evict for straight: %s [%s] (EV=%.3f) to make room "
+                        "for %s straight (%s)",
+                        evict_tier, victim.get("label", "?"),
+                        victim["math"]["ev_per_dollar"],
+                        leg.get("player_name"), actual_tier,
+                    )
+
+            straights.append(rec)
+            if actual_tier == "lock":
+                lock_count += 1
+            else:
+                safe_count += 1
+            games_with_straights.add(game_id)
+        else:
+            # Was the batter Lock/Safe at the SIGNAL level (pre-EV-demote)
+            # but the EV screen knocked them below safe? Track for the
+            # informational log; do not emit a straight.
+            sig = leg.get("primary_signal") or 0.0
+            base_tier = suggested_stake_tier_for(sig, "full", cfg=cfg)
+            if base_tier in STRAIGHT_QUALIFYING_TIERS:
+                demoted_out_count += 1
+
+    return (straights, lock_count, safe_count, demoted_out_count,
+            len(games_with_straights))
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1392,8 +1379,8 @@ def main():
     candidates = fetch_candidates(today, games, cfg)
     log.info("Candidate pool: %d legs qualifying Phase 1 gates", len(candidates))
 
-    if len(candidates) < 2:
-        log.warning("Too few candidates (need >=2 for 2-leggers) — no cards today")
+    if not candidates:
+        log.warning("No qualifying candidates — no cards today")
         wipe_today(today)
         return
 
@@ -1408,7 +1395,7 @@ def main():
     log.info("Slate quality: %s (%d plays with 5%%+ edge)",
              slate_quality, len(strong_plays))
 
-    # ── Generate combinations per tier ──────────────────────────────────
+    # ── Generate multi-leg combinations per tier (uncapped) ─────────────
     all_combos_by_tier = {}
     for leg_count in [2, 3, 4]:
         if len(candidates) < leg_count:
@@ -1418,17 +1405,54 @@ def main():
         all_combos_by_tier[tier_for_legs(leg_count)] = combos
         log.info("  %d-leg combos generated: %d", leg_count, len(combos))
 
-    # ── Select cards with dedup ─────────────────────────────────────────
+    # ── Select multi-leg cards (no count cap; per-batter cap=%d) ────────
     selected = select_cards(all_combos_by_tier)
+    multi_leg_total = sum(
+        len(selected.get(t, [])) for t in ("two_leg", "three_leg", "four_leg")
+    )
+    log.info(
+        "Multi-leg cards: %d total (two_leg=%d, three_leg=%d, four_leg=%d)",
+        multi_leg_total,
+        len(selected.get("two_leg", [])),
+        len(selected.get("three_leg", [])),
+        len(selected.get("four_leg", [])),
+    )
+
+    # Per-batter usage top-5 across multi-leg cards
+    multi_counts = count_multi_leg_appearances(selected)
+    batter_names = {}
+    for tier_key in ("two_leg", "three_leg", "four_leg"):
+        for card in selected.get(tier_key, []):
+            for leg in card["legs"]:
+                batter_names[leg["player_id"]] = leg.get("player_name")
+    top5 = sorted(multi_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    if top5:
+        top5_str = ", ".join(
+            f"{batter_names.get(pid, '?')}({c})" for pid, c in top5
+        )
+    else:
+        top5_str = "(none)"
+    log.info("Per-batter usage (multi-leg): top 5 — %s", top5_str)
+
+    # ── Straight phase: per-game Lock/Safe coverage ─────────────────────
+    straights, lock_c, safe_c, demoted_c, games_covered = generate_straights(
+        candidates, selected, games, cfg
+    )
+    selected["straight"] = straights
+    log.info(
+        "Straight picks: %d (Lock=%d, Safe=%d, demoted out via EV screen=%d)",
+        len(straights), lock_c, safe_c, demoted_c,
+    )
+    log.info(
+        "Games covered by straights: %d/%d (%d games had no Lock/Safe anchor)",
+        games_covered, len(games), len(games) - games_covered,
+    )
+
     total_selected = sum(len(v) for v in selected.values())
     if total_selected == 0:
-        log.info("No combinations cleared EV gates — no cards today")
+        log.info("No cards qualified — no inserts today")
         wipe_today(today)
         return
-
-    log.info("Selected: %d two-leg, %d three-leg, %d four-leg",
-             len(selected["two_leg"]), len(selected["three_leg"]),
-             len(selected["four_leg"]))
 
     # ── Wipe today's pending cards, dedup vs settled, insert ────────────
     wipe_today(today)
@@ -1439,8 +1463,9 @@ def main():
 
     inserted_count = 0
     skipped_dups = 0
-    for tier in ["two_leg", "three_leg", "four_leg"]:
-        for combo in selected[tier]:
+    inserted_game_ids = set()
+    for tier in ["two_leg", "three_leg", "four_leg", "straight"]:
+        for combo in selected.get(tier, []):
             fp = combo_fingerprint(combo["legs"])
             if fp in existing_fingerprints:
                 skipped_dups += 1
@@ -1453,6 +1478,9 @@ def main():
                 continue
             existing_fingerprints.add(fp)
             inserted_count += 1
+            for leg in combo["legs"]:
+                if leg.get("game_id") is not None:
+                    inserted_game_ids.add(leg["game_id"])
 
             math = combo["math"]
             card_sig = combo.get("primary_signal") or 0.0
@@ -1480,6 +1508,10 @@ def main():
 
     log.info("✓ Cards picker complete — inserted=%d, skipped_dups=%d",
              inserted_count, skipped_dups)
+    log.info(
+        "Slate coverage: %d/%d games represented across all cards + straights",
+        len(inserted_game_ids), len(games),
+    )
 
 
 if __name__ == "__main__":
