@@ -41,11 +41,32 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# PostgREST default response cap is 1,000 rows per .execute(). The
+# is_pitcher=True filter currently returns 755 rows (May 2026) so the cap
+# isn't firing yet, but the rest of the scripts/ directory has been
+# scrubbed of this anti-pattern in commits 0cb5bb5 / b11e870 / 629dda6
+# and this is the last unbounded select-without-pagination against a
+# wide table. Paginating now is a proactive cleanup; behavior is
+# unchanged today but prevents a silent breakage as the pitcher pool
+# grows past 1,000. DO NOT collapse this back into a single
+# .select(...).execute().
+_PITCHERS_PAGE = 1000
+
+
 def get_pitchers() -> list[dict]:
     """All pitchers we know about."""
-    res = sb.table("players").select("id, mlbam_id, name, throws") \
-        .eq("is_pitcher", True).execute()
-    return res.data
+    out: list[dict] = []
+    offset = 0
+    while True:
+        res = sb.table("players").select("id, mlbam_id, name, throws") \
+            .eq("is_pitcher", True) \
+            .range(offset, offset + _PITCHERS_PAGE - 1).execute()
+        rows = res.data or []
+        out.extend(rows)
+        if len(rows) < _PITCHERS_PAGE:
+            break
+        offset += _PITCHERS_PAGE
+    return out
 
 
 def fetch_pitcher_season(mlbam_id: int) -> dict | None:
