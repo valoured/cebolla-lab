@@ -41,10 +41,33 @@ log = logging.getLogger(__name__)
 # Player upsert helpers
 # ────────────────────────────────────────────────────────────────
 
+# PostgREST default response cap is 1,000 rows per .execute(). Players topped
+# 1,000 in mid-May 2026 — the unbounded select silently truncated to the
+# first 1,000 rows, so any batter outside that window failed the
+# {mlbam_id: id} lookup here. The downstream upsert was bailed out by the
+# players_mlbam_id_key UNIQUE constraint (no duplicate rows ever created),
+# but it meant wasted UPDATEs on every cron tick: rows the lookup thought
+# were "missing" got re-upserted, overwriting the same fields with the
+# same values. Paginate via .range() in a loop.
+# DO NOT collapse this back to a single .select(...).execute() unless the
+# PostgREST default has been raised or the row count has shrunk below 1,000.
+_PLAYERS_PAGE = 1000
+
+
 def get_player_map() -> dict[int, int]:
     """{mlbam_id: players.id} for everyone we've seen."""
-    res = sb.table("players").select("id, mlbam_id").execute()
-    return {p["mlbam_id"]: p["id"] for p in res.data}
+    out: dict[int, int] = {}
+    offset = 0
+    while True:
+        res = sb.table("players").select("id, mlbam_id") \
+            .range(offset, offset + _PLAYERS_PAGE - 1).execute()
+        rows = res.data or []
+        for p in rows:
+            out[p["mlbam_id"]] = p["id"]
+        if len(rows) < _PLAYERS_PAGE:
+            break
+        offset += _PLAYERS_PAGE
+    return out
 
 
 def upsert_batter(mlbam_id: int, name: str, position: str | None, bats: str | None,

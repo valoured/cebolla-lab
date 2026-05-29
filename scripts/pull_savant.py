@@ -66,9 +66,37 @@ PITCH_TYPE_MAP = {
 }
 
 
+# PostgREST default response cap is 1,000 rows per .execute(). Players topped
+# 1,000 in mid-May 2026 — the two callers below (get_known_batters and
+# get_known_pitchers) both filter is_pitcher in Python AFTER the query, so
+# the unbounded select silently truncated to the first 1,000 rows. The
+# downstream upsert was bailed out by the players_mlbam_id_key UNIQUE
+# constraint (no duplicate rows ever created), but the truncated lookup
+# meant Statcast rows for batters/pitchers outside the 1,000-row window
+# triggered re-upserts of existing rows on every cron tick — wasted writes,
+# but harmless data-wise. Helper paginates via .range() in a loop; each
+# caller filters in Python as before.
+# DO NOT collapse the helper back into a single .select(...).execute() unless
+# the PostgREST default has been raised or the row count has shrunk below 1,000.
+_PLAYERS_PAGE = 1000
+
+
+def _all_players() -> list[dict]:
+    out: list[dict] = []
+    offset = 0
+    while True:
+        res = sb.table("players").select("id, mlbam_id, is_pitcher") \
+            .range(offset, offset + _PLAYERS_PAGE - 1).execute()
+        rows = res.data or []
+        out.extend(rows)
+        if len(rows) < _PLAYERS_PAGE:
+            break
+        offset += _PLAYERS_PAGE
+    return out
+
+
 def get_known_batters() -> dict[int, int]:
-    res = sb.table("players").select("id, mlbam_id, is_pitcher").execute()
-    return {p["mlbam_id"]: p["id"] for p in res.data if not p["is_pitcher"]}
+    return {p["mlbam_id"]: p["id"] for p in _all_players() if not p["is_pitcher"]}
 
 
 def upsert_batter(mlbam_id: int, name: str) -> int:
@@ -315,8 +343,8 @@ def filter_window(df: pd.DataFrame, days: int | None, today: date) -> tuple[pd.D
 
 def get_known_pitchers() -> dict[int, int]:
     """{mlbam_id: players.id} for everyone we've registered as a pitcher."""
-    res = sb.table("players").select("id, mlbam_id, is_pitcher").execute()
-    return {p["mlbam_id"]: p["id"] for p in res.data if p["is_pitcher"]}
+    # See the _all_players helper above for the PostgREST 1000-row cap context.
+    return {p["mlbam_id"]: p["id"] for p in _all_players() if p["is_pitcher"]}
 
 
 def aggregate_pitcher(group: pd.DataFrame,
