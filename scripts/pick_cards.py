@@ -182,14 +182,27 @@ CORRELATION_PENALTIES = {
 # at most two multi-legs if the batter doesn't qualify for a straight).
 MAX_MULTI_LEG_APPEARANCES_PER_BATTER = 2
 
-# Stake tiers that qualify a leg as a straight pick. The full 5-tier scale
-# lives in tier_system.suggested_stake_tier_for; straights are limited to
-# the top two (lock + safe) so per-game coverage only surfaces high-
-# conviction matchups. EV warn_drop / drop already demoted these tiers
-# downward — anything below "safe" reflects either a marginal-signal
-# batter (donation/lottery base) or a negative-edge demote, neither of
-# which is straight-worthy.
-STRAIGHT_QUALIFYING_TIERS = ("lock", "safe")
+# Stake tiers that qualify a leg as a straight pick. Includes "risky" so the
+# per-game coverage isn't dominated by silence on slates that don't produce
+# many lock/safe-tier anchors — Risky is still a positive-signal pick (≥0.30),
+# just less convicted. EV warn_drop / drop already demoted these tiers
+# downward — anything below "risky" reflects either a marginal-signal
+# batter (donation/lottery base) or a deep negative-edge demote.
+STRAIGHT_QUALIFYING_TIERS = ("lock", "safe", "risky")
+
+# Minimum straight-pick floor. If the tier filter above leaves fewer than this
+# many straights, the next-best anchors by primary_signal (regardless of tier)
+# get promoted as "signal-floor straights" until the floor is reached or the
+# anchor pool is exhausted (whichever comes first — we don't manufacture).
+STRAIGHT_MIN_FLOOR = 5
+
+# Minimum multi-leg coverage by tier. After multi-leg selection (EV-gated) and
+# the straight phase (which may evict multi-leg cards to make room), if either
+# tier has fewer than its minimum, force-add the highest-scoring combos until
+# the minimum is reached. The per-batter total-cards cap still applies — a
+# force-add never pushes a batter to 3+ cards across multi-leg + straight.
+MIN_THREE_LEG_CARDS = 2
+MIN_FOUR_LEG_CARDS  = 2
 
 # REMOVED in the per-game-coverage rework (Phase 1.1):
 #   CARD_CAPS           — final card-count cap per tier; ship all combos
@@ -697,6 +710,12 @@ def fetch_candidates(date_iso, games, cfg=None):
                 line = None
         elif p["market"] == "hr_anytime":
             line = 0.5
+        elif p["market"] == "hits_yes":
+            # hits_yes is the "1+ hits" market — over 0.5 conceptually. The
+            # column used to be written as NULL here; now write 0.5 so the
+            # leg row matches the math and the display helper has a value
+            # to anchor on.
+            line = 0.5
 
         is_home = player["team_id"] == game["home_team_id"]
         own = (game["home_team"] if is_home else game["away_team"]) or {}
@@ -943,6 +962,28 @@ def make_combo_record(legs, tier, slate_quality, cfg=None):
     }
 
 
+def _market_display(market, line):
+    """
+    Per-leg market display string for log output. Frontend reads market+line
+    directly and applies its own rendering — this helper is for the picker
+    log so the audit trail uses the same human-readable shape ("1+ Hits"
+    instead of "hits_yes line=None"). Fires on market alone for hits_yes
+    (line column was historically NULL for that market; fetch_candidates
+    now writes 0.5 but pre-existing rows still have NULL).
+    """
+    if market == "hits_yes":
+        return "1+ Hits"
+    if market == "hr_anytime":
+        return "Anytime HR"
+    if market and market.startswith("h_r_rbi_") and line is not None:
+        # h_r_rbi_1.5 -> "1+ H+R+RBI"
+        try:
+            return f"{int(line + 0.5)}+ H+R+RBI"
+        except (TypeError, ValueError):
+            pass
+    return market or "?"
+
+
 def label_for(legs, tier, math):
     """Human-readable label for a card based on its character."""
     # Single-leg straights short-circuit before the same_game check —
@@ -1068,7 +1109,10 @@ def count_multi_leg_appearances(selected):
     """
     {player_id: count} of appearances across the multi-leg buckets of
     `selected`. Walked anew each call so eviction in the straight phase
-    doesn't have to keep a parallel counter in sync.
+    doesn't have to keep a parallel counter in sync. Used by the straight
+    phase's eviction check, which is multi-leg-only by design (a straight
+    + an existing multi-leg appearance for the same batter is allowed up
+    to the cap).
     """
     counts = {}
     for tier_key in ("two_leg", "three_leg", "four_leg"):
@@ -1079,25 +1123,84 @@ def count_multi_leg_appearances(selected):
     return counts
 
 
+def count_all_appearances(selected):
+    """
+    {player_id: count} of appearances across EVERY bucket of `selected`,
+    including 'straight'. Used by the force-minimum-coverage pass: when
+    we backfill multi-leg cards to hit the per-tier floor, the per-batter
+    cap is measured against the TOTAL card count (so the post-straight
+    eviction state and the floor pass agree on the same ceiling).
+    """
+    counts = {}
+    for tier_key, cards in selected.items():
+        for card in cards:
+            for leg in card["legs"]:
+                pid = leg["player_id"]
+                counts[pid] = counts.get(pid, 0) + 1
+    return counts
+
+
+def force_minimum_coverage(selected, all_combos_by_tier, tier_key, min_count):
+    """
+    Backfill `selected[tier_key]` up to `min_count` cards by force-adding
+    the highest-scoring combos from `all_combos_by_tier[tier_key]` that:
+      · are not already in selected[tier_key] (id-based identity check);
+      · would not push any of their batters above
+        MAX_MULTI_LEG_APPEARANCES_PER_BATTER total cards across all tiers
+        (multi-leg + straight, via count_all_appearances).
+
+    Returns the number of force-added cards. Combos that fail their tier's
+    EV gate ARE ELIGIBLE here — the floor is a coverage guarantee, not an
+    EV gate. Combos that violate the per-batter total cap are skipped.
+
+    Idempotent semantics: if selected[tier_key] already has >= min_count,
+    the function is a no-op and returns 0.
+    """
+    current = len(selected.get(tier_key, []))
+    if current >= min_count:
+        return 0
+    needed = min_count - current
+    already = {id(c) for c in selected.get(tier_key, [])}
+    pool = [c for c in all_combos_by_tier.get(tier_key, []) if id(c) not in already]
+    pool.sort(key=lambda c: c["score"], reverse=True)
+
+    force_added = 0
+    for combo in pool:
+        if force_added >= needed:
+            break
+        counts = count_all_appearances(selected)
+        if any(counts.get(leg["player_id"], 0) >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER
+               for leg in combo["legs"]):
+            continue
+        selected[tier_key].append(combo)
+        force_added += 1
+    return force_added
+
+
 def generate_straights(candidates, selected, games, cfg=None):
     """
-    Phase 1.1 per-game straight pick generation.
+    Phase 1.1 per-game straight pick generation (two-pass: qualifying + floor).
 
     Walks the qualified candidate pool grouped by (game_id, player_id),
     picks each batter's best leg (highest primary_signal, edge tiebreak),
-    and emits a single-leg straight for each batter whose post-EV-demote
-    suggested_stake_tier is in STRAIGHT_QUALIFYING_TIERS (lock or safe).
+    and emits a single-leg straight for:
+      Pass 1 — every batter whose post-EV-demote suggested_stake_tier is in
+        STRAIGHT_QUALIFYING_TIERS (lock / safe / risky). Counted toward
+        the tier-specific lock/safe/risky tallies in the return tuple.
+      Pass 2 — if fewer than STRAIGHT_MIN_FLOOR straights came out of pass 1,
+        the next-best anchors (regardless of tier, walked in primary_signal
+        DESC order) are promoted as "signal_floor" straights until the floor
+        is reached or the anchor pool is exhausted. Counted as signal_floor.
 
     If the straight's batter already appears in
     MAX_MULTI_LEG_APPEARANCES_PER_BATTER multi-leg cards, the lowest-EV
     multi-leg card containing that batter is evicted from `selected` to
-    make room. Lock/Safe conviction wins over multi-leg participation;
-    net effect is at most MAX_MULTI_LEG_APPEARANCES_PER_BATTER cards per
-    batter across all tiers combined.
+    make room. Net effect: any batter ends up on at most
+    MAX_MULTI_LEG_APPEARANCES_PER_BATTER cards (multi-leg + straight).
 
     Mutates `selected` in place when eviction fires. Returns:
-        (straights, lock_count, safe_count, demoted_out_count,
-         games_with_straights_count)
+        (straights, lock_count, safe_count, risky_count,
+         signal_floor_count, demoted_out_count, games_with_straights_count)
     """
     # Build per-(game, batter) best leg map. Ties broken by edge.
     by_game_batter = {}
@@ -1116,15 +1219,10 @@ def generate_straights(candidates, selected, games, cfg=None):
         if new_key > cur_key:
             by_game_batter[key] = c
 
-    straights = []
-    lock_count = 0
-    safe_count = 0
-    demoted_out_count = 0
-    games_with_straights = set()
-
-    # Walk best-batter-per-game in primary_signal DESC order so the most
-    # confident anchors get processed first (matters for the eviction
-    # tiebreak when two straights target the same victim multi-leg card).
+    # Sort all best-batter-per-game entries by primary_signal DESC so pass 1
+    # processes the most-convicted anchors first (matters for the eviction
+    # tiebreak when two straights target the same victim multi-leg card),
+    # AND so pass 2 promotes the next-best leftovers in the same order.
     walk_order = sorted(
         by_game_batter.items(),
         key=lambda kv: ((kv[1].get("primary_signal") or 0.0),
@@ -1132,53 +1230,86 @@ def generate_straights(candidates, selected, games, cfg=None):
         reverse=True,
     )
 
+    # Pass 1 — bucket into qualifying-tier vs leftovers
+    qualifying = []  # [(key, leg, actual_tier), ...]
+    leftovers  = []  # [(key, leg), ...]
+    demoted_out_count = 0
     for (game_id, pid), leg in walk_order:
         actual_tier = leg.get("suggested_stake_tier")
         if actual_tier in STRAIGHT_QUALIFYING_TIERS:
-            rec = make_combo_record([leg], "straight", None, cfg=cfg)
-            if rec is None:
-                continue
-            # The "straight" EV gate is 0.0 — the per-leg EV screen already
-            # disqualified negative-edge picks. This stays as a defensive
-            # check so the gate dict is still consulted (cfg-driven).
-            if rec["math"]["ev_per_dollar"] < EV_GATES.get("straight", 0.0):
-                continue
-
-            appearances = count_multi_leg_appearances(selected).get(pid, 0)
-            if appearances >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER:
-                victims = []
-                for tk in ("two_leg", "three_leg", "four_leg"):
-                    for card in selected.get(tk, []):
-                        if any(l["player_id"] == pid for l in card["legs"]):
-                            victims.append((tk, card))
-                if victims:
-                    victims.sort(key=lambda tc: tc[1]["math"]["ev_per_dollar"])
-                    evict_tier, victim = victims[0]
-                    selected[evict_tier].remove(victim)
-                    log.info(
-                        "  evict for straight: %s [%s] (EV=%.3f) to make room "
-                        "for %s straight (%s)",
-                        evict_tier, victim.get("label", "?"),
-                        victim["math"]["ev_per_dollar"],
-                        leg.get("player_name"), actual_tier,
-                    )
-
-            straights.append(rec)
-            if actual_tier == "lock":
-                lock_count += 1
-            else:
-                safe_count += 1
-            games_with_straights.add(game_id)
+            qualifying.append(((game_id, pid), leg, actual_tier))
         else:
-            # Was the batter Lock/Safe at the SIGNAL level (pre-EV-demote)
-            # but the EV screen knocked them below safe? Track for the
-            # informational log; do not emit a straight.
             sig = leg.get("primary_signal") or 0.0
             base_tier = suggested_stake_tier_for(sig, "full", cfg=cfg)
             if base_tier in STRAIGHT_QUALIFYING_TIERS:
+                # Base tier WOULD have qualified, but EV demote knocked the
+                # actual tier below "risky". Tracked for the informational log;
+                # not emitted as a straight (pass 2 may promote them by floor,
+                # in which case they're recategorized as signal_floor).
                 demoted_out_count += 1
+            leftovers.append(((game_id, pid), leg))
 
-    return (straights, lock_count, safe_count, demoted_out_count,
+    # Pass 2 — apply the minimum-floor promotion (don't manufacture beyond
+    # the pool size).
+    deficit = max(0, STRAIGHT_MIN_FLOOR - len(qualifying))
+    floor_promoted = leftovers[:deficit] if deficit > 0 else []
+
+    # Emit helper. Encapsulates the EV-gate check + eviction logic for both
+    # passes; tallies the per-tier counter the caller asks for.
+    straights: list[dict] = []
+    lock_count = 0
+    safe_count = 0
+    risky_count = 0
+    signal_floor_count = 0
+    games_with_straights: set = set()
+
+    def _emit(game_id, pid, leg, counter_key):
+        nonlocal lock_count, safe_count, risky_count, signal_floor_count
+        rec = make_combo_record([leg], "straight", None, cfg=cfg)
+        if rec is None:
+            return
+        # Straight EV gate is 0.0 by config; the per-leg EV screen already
+        # filtered disqualifies. Defensive check kept so the gate dict is
+        # still authoritative.
+        if rec["math"]["ev_per_dollar"] < EV_GATES.get("straight", 0.0):
+            return
+        appearances = count_multi_leg_appearances(selected).get(pid, 0)
+        if appearances >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER:
+            victims = []
+            for tk in ("two_leg", "three_leg", "four_leg"):
+                for card in selected.get(tk, []):
+                    if any(l["player_id"] == pid for l in card["legs"]):
+                        victims.append((tk, card))
+            if victims:
+                victims.sort(key=lambda tc: tc[1]["math"]["ev_per_dollar"])
+                evict_tier, victim = victims[0]
+                selected[evict_tier].remove(victim)
+                log.info(
+                    "  evict for straight: %s [%s] (EV=%.3f) to make room "
+                    "for %s straight (%s)",
+                    evict_tier, victim.get("label", "?"),
+                    victim["math"]["ev_per_dollar"],
+                    leg.get("player_name"), counter_key,
+                )
+        straights.append(rec)
+        if counter_key == "lock":
+            lock_count += 1
+        elif counter_key == "safe":
+            safe_count += 1
+        elif counter_key == "risky":
+            risky_count += 1
+        elif counter_key == "signal_floor":
+            signal_floor_count += 1
+        games_with_straights.add(game_id)
+
+    for (game_id, pid), leg, actual_tier in qualifying:
+        _emit(game_id, pid, leg, actual_tier)
+
+    for (game_id, pid), leg in floor_promoted:
+        _emit(game_id, pid, leg, "signal_floor")
+
+    return (straights, lock_count, safe_count, risky_count,
+            signal_floor_count, demoted_out_count,
             len(games_with_straights))
 
 
@@ -1434,18 +1565,43 @@ def main():
         top5_str = "(none)"
     log.info("Per-batter usage (multi-leg): top 5 — %s", top5_str)
 
-    # ── Straight phase: per-game Lock/Safe coverage ─────────────────────
-    straights, lock_c, safe_c, demoted_c, games_covered = generate_straights(
-        candidates, selected, games, cfg
-    )
+    # ── Straight phase: per-game Lock/Safe/Risky coverage + signal floor ──
+    straights, lock_c, safe_c, risky_c, sigfloor_c, demoted_c, games_covered = \
+        generate_straights(candidates, selected, games, cfg)
     selected["straight"] = straights
     log.info(
-        "Straight picks: %d (Lock=%d, Safe=%d, demoted out via EV screen=%d)",
-        len(straights), lock_c, safe_c, demoted_c,
+        "Straight picks: %d (Lock=%d, Safe=%d, Risky=%d, signal_floor=%d, "
+        "demoted out via EV screen=%d)",
+        len(straights), lock_c, safe_c, risky_c, sigfloor_c, demoted_c,
     )
     log.info(
-        "Games covered by straights: %d/%d (%d games had no Lock/Safe anchor)",
+        "Games covered by straights: %d/%d (%d games had no qualifying anchor)",
         games_covered, len(games), len(games) - games_covered,
+    )
+
+    # ── Force-minimum coverage for three-leg + four-leg tiers ──────────
+    # Runs AFTER generate_straights so the per-batter total-cards cap
+    # (count_all_appearances) sees the post-eviction state. Cards added here
+    # bypass the per-tier EV gate — the floor is a coverage guarantee, not
+    # an EV gate — but still respect MAX_MULTI_LEG_APPEARANCES_PER_BATTER
+    # as a total-card ceiling.
+    three_pre_force  = len(selected.get("three_leg", []))
+    four_pre_force   = len(selected.get("four_leg", []))
+    three_force_added = force_minimum_coverage(
+        selected, all_combos_by_tier, "three_leg", MIN_THREE_LEG_CARDS
+    )
+    four_force_added = force_minimum_coverage(
+        selected, all_combos_by_tier, "four_leg", MIN_FOUR_LEG_CARDS
+    )
+    log.info(
+        "Three-leg coverage: %d selected by EV gate, %d force-added "
+        "for minimum coverage",
+        three_pre_force, three_force_added,
+    )
+    log.info(
+        "Four-leg coverage:  %d selected by EV gate, %d force-added "
+        "for minimum coverage",
+        four_pre_force, four_force_added,
     )
 
     total_selected = sum(len(v) for v in selected.values())
@@ -1499,7 +1655,8 @@ def main():
                 gate = leg.get("gate") or "—"
                 ev_a = leg.get("ev_action") or "—"
                 log.info("    leg%d: %s %s @ %s (proj=%.2f%%, edge=+%.2f%%)  sig=%s [%s, gate %s]  ev=%s",
-                         i, leg["player_name"], leg["market"],
+                         i, leg["player_name"],
+                         _market_display(leg.get("market"), leg.get("line")),
                          "+%d" % leg["american_odds"] if leg["american_odds"] >= 0
                                                        else str(leg["american_odds"]),
                          leg["projected_prob"] * 100,
