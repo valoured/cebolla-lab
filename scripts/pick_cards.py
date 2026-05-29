@@ -204,6 +204,24 @@ STRAIGHT_MIN_FLOOR = 5
 MIN_THREE_LEG_CARDS = 2
 MIN_FOUR_LEG_CARDS  = 2
 
+# Pool size caps for combination generation. The per-batter cap (2) is the
+# real downstream constraint; these caps prevent C(N,k) factorial blowup
+# when the qualified candidate pool is large (445 qualifying legs on a
+# healthy slate → C(445,4) ≈ 1.6 billion combos, which times out the
+# Actions runner). Candidates are pre-sorted by primary_signal DESC so
+# top-N preserves the best matchup signals.
+#
+# Math reference (450-candidate slate):
+#   C(80, 2) =  3,160
+#   C(50, 3) = 19,600
+#   C(30, 4) = 27,405
+#   Total:   ~50k combinations enumerated (vs ~1.6B uncapped at 4-leg).
+COMBO_POOL_CAPS = {
+    2: 80,
+    3: 50,
+    4: 30,
+}
+
 # REMOVED in the per-game-coverage rework (Phase 1.1):
 #   CARD_CAPS           — final card-count cap per tier; ship all combos
 #                         that clear their EV gate and the per-batter cap.
@@ -1018,20 +1036,23 @@ def generate_combos(candidates, leg_count, cfg=None):
     Generate scored combinations of `leg_count` legs.
 
     Candidates arrive pre-sorted by (primary_signal DESC, edge DESC) from
-    fetch_candidates. NO top-N pool slice — every (player_id-distinct)
-    combination is scored, then ordered by card primary_signal DESC and
-    objective score DESC. The downstream selection step applies the per-tier
-    EV gate and the per-batter cap; this function's job is just to enumerate
-    and score.
+    fetch_candidates. To prevent factorial blowup on healthy slates, the
+    input pool is capped to COMBO_POOL_CAPS[leg_count] before enumeration.
+    The cap preserves the highest-primary_signal candidates (since the list
+    is pre-sorted), which is the same set the EV-gate + per-batter-cap
+    selection would prefer anyway.
 
-    Combinatorial cost: C(N, k). For typical slates (≤60 qualifying legs)
-    even k=4 stays well under a second. If a future heavy slate makes this
-    a hot path, the right fix is a heuristic prune at this layer (e.g. cap
-    pool at top-K by primary_signal) — restoring the v0.4.0 20/15/12 slice
-    would be the simplest first knob.
+    Math reference (450-candidate slate):
+      C(80, 2) =  3,160
+      C(50, 3) = 19,600
+      C(30, 4) = 27,405
+      Total:    ~50k combinations enumerated (vs ~1.6B uncapped at 4-leg).
     """
+    pool_cap = COMBO_POOL_CAPS.get(leg_count, len(candidates))
+    pool = candidates[:pool_cap]
+
     combos = []
-    for combo in combinations(candidates, leg_count):
+    for combo in combinations(pool, leg_count):
         player_ids = [l["player_id"] for l in combo]
         if len(set(player_ids)) != leg_count:
             continue
@@ -1431,7 +1452,7 @@ def insert_card(date_iso, combo):
             "opponent_abbrev": leg["opponent_abbrev"],
             "market":          leg["market"],
             "line":            leg["line"],
-            "projected_prob":  leg["projected_prob"],
+            "projected_prob": leg["projected_prob"],
             "no_vig_prob":     leg["no_vig_prob"],
             "american_odds":   leg["american_odds"],
             "edge":            leg["edge"],
