@@ -21,31 +21,33 @@ Card-level stake tier derived from mean(leg.primary_signal) + the
 WORST EV action across legs (so a card with one warn_drop leg gets
 its suggested stake tier bumped one step worse).
 
-CARD TIERS (uncapped — ship every combo that clears its tier's EV gate
-            and respects the per-batter multi-leg cap):
-  straight   — ev_per_dollar gated only by the per-leg EV screen
-              (the leg's signal is "lock" or "safe" — per-game coverage)
-  two_leg    — ev_per_dollar > 0.05
-  three_leg  — ev_per_dollar > 0.08
-  four_leg   — ev_per_dollar > 0.10
+CARD BUCKETS (market-segregated; targets are aims, not hard counts):
+  hr   bucket — 7-8 cards   (legs: hr_anytime)
+  hrr  bucket — 6-7 cards   (legs: h_r_rbi_1.5 OR h_r_rbi_2.5)
+  hits bucket — 6-7 cards   (legs: hits_yes)
+  mix  bucket — <=3 cards   (cross-market: >=2 distinct families per card)
+  rbi_yes is NOT bucketed by this rebuild.
 
-STAKE RECOMMENDATIONS (canonical, frontend can scale):
+  Each hr/hrr/hits bucket holds a SCORE-ranked mix of single-leg straights
+  (qualifying tier lock/safe/risky) and 2/3/4-leg MARKET-PURE parlays
+  competing head-to-head for slots. Fill is two-pass: positive-EV combos
+  (ev_per_dollar > 0) first, then negative-EV force-add to reach the target.
+  Mix is best-effort — no force-add.
+
+STAKE RECOMMENDATIONS (canonical, frontend can scale; keyed on leg-count):
   straight=$10, two_leg=$10, three_leg=$5, four_leg=$1
 
-PER-BATTER CAP:
-  At most MAX_MULTI_LEG_APPEARANCES_PER_BATTER multi-leg cards reference
-  the same batter. A batter at the cap can still receive a straight — the
-  straight phase evicts the batter's lowest-EV multi-leg card to make room.
-  Net effect: any batter ends up on ≤ MAX_MULTI_LEG_APPEARANCES_PER_BATTER
-  cards total (multi-leg + straight combined).
+PER-BATTER CAP (PER_BATTER_CAP, global):
+  At most PER_BATTER_CAP cards across ALL buckets (hr+hrr+hits+mix) reference
+  the same batter. HARD — never violated, not even by force-add. Buckets fill
+  in priority order (HR -> HRR -> Hits -> mix); a batter at the cap is
+  excluded from every later card. If the cap blocks force-add, a bucket ships
+  under its target rather than exceeding the cap.
 
-PER-GAME STRAIGHTS (Lock/Safe only):
-  After multi-leg selection, iterate the candidate pool grouped by
-  (game, batter). For each batter, take their best leg (highest signal,
-  edge tiebreak); if its post-EV-demote suggested_stake_tier is "lock"
-  or "safe", emit a single-leg straight card. Games without a Lock/Safe
-  anchor get no straight (Phase 1 is honest about conviction). The same
-  batter can appear as POD AND as a straight — pickers don't coordinate.
+SCHEMA (migration 29):
+  cards.card_market in (hr|hrr|hits|mix). Independent of cards.tier, which
+  still carries leg-count (straight/two_leg/three_leg/four_leg) so the
+  existing leg-count-grouped frontend keeps working unchanged.
 
 MATH (unchanged):
   combined_prob   = ∏(leg_prob) × (1 - correlation_penalty)
@@ -68,16 +70,16 @@ The Phase 1 EV screen handles negative-edge cases via demote/disqualify
 downstream; the per-market min_prob is just a data-quality guard.
 
 DEDUP / EXPOSURE:
-  Greedy selection per tier, EV gate per tier, per-batter multi-leg cap
-  (default 2). No within-tier or cross-tier overlap rules beyond the
-  per-batter cap, no overall card-count cap, no same-game cap, no
-  market-diversification swap — uncapped output naturally diversifies
-  when the EV gates do their job, and the per-batter cap stops any one
-  hot batter from saturating the menu.
+  Greedy score-ranked fill per bucket under one global per-batter cap
+  (PER_BATTER_CAP). No same-game cap and no cross-bucket overlap rules
+  beyond the per-batter cap — market segregation + the cap provide the
+  structural variety the old per-tier overlap knobs used to. Fingerprint
+  dedup against already-settled cards still applies on re-runs.
 
-PERSISTED COLUMNS (Phase 1, added in sql/28):
-  primary_signal, primary_signal_source, suggested_stake_tier,
-  phase1_metadata — on BOTH cards and card_legs.
+PERSISTED COLUMNS:
+  Phase 1 (sql/28): primary_signal, primary_signal_source,
+  suggested_stake_tier, phase1_metadata — on BOTH cards and card_legs.
+  Rebuild (sql/29): cards.card_market (hr|hrr|hits|mix) on cards.
   Back-compat: primary_signal is ALSO written to confidence_score
   on both tables until the frontend cuts over.
 
@@ -155,16 +157,11 @@ STAKE_REC = {
     "four_leg":    1.00,
 }
 
-# Card-level EV gates by tier — distinct from the per-leg EV screen.
-# Straights use 0.0 because the per-leg EV screen has already gated them:
-# disqualifying edges never reach enrichment, and warn_drop just demotes
-# the suggested stake tier (which is what the Lock/Safe filter sees).
-EV_GATES = {
-    "straight":  0.0,
-    "two_leg":   0.05,
-    "three_leg": 0.08,
-    "four_leg":  0.10,
-}
+# NOTE: the old per-tier card-level EV_GATES (straight 0.0 / two 0.05 /
+# three 0.08 / four 0.10) were removed in the market-segregated rebuild.
+# Bucket fill now uses a single EV boundary: ev_per_dollar > 0 qualifies a
+# combo for pass 1, and pass 2 force-adds ev_per_dollar <= 0 combos to reach
+# the bucket target. See fill_bucket().
 
 # Correlation penalties applied to combined_prob. SGP penalty intentionally
 # HIGHER than initial design — SGPs usually carry unfavorable correlation
@@ -175,62 +172,64 @@ CORRELATION_PENALTIES = {
     "same_player": 0.15,
 }
 
-# Per-batter cap on MULTI-LEG card appearances. Was 3 in v0.4.0 (under the
-# old MAX_PLAYER_APPEARANCES name); lowered to 2 so a Lock/Safe straight
-# always has room to land without putting any batter on more than 2 cards
-# total (one straight + at most one multi-leg, or just the straight, or
-# at most two multi-legs if the batter doesn't qualify for a straight).
-MAX_MULTI_LEG_APPEARANCES_PER_BATTER = 2
+# ── Market-segregated bucket model (rebuild) ─────────────────────────────
+# Each slate fills four buckets. HR/HRR/Hits each hold a SCORE-ranked mix of
+# single-leg straights + 2/3/4-leg market-pure parlays competing head-to-head
+# for slots; the mix bucket holds cross-market combos only. Targets are aims,
+# not hard counts — a bucket ships short if the per-batter cap blocks force-add.
+HR_BUCKET_TARGET   = 8   # aim 7-8
+HRR_BUCKET_TARGET  = 7   # aim 6-7  (h_r_rbi_1.5 AND h_r_rbi_2.5 both => "hrr")
+HITS_BUCKET_TARGET = 7   # aim 6-7
+MIX_BUCKET_MAX     = 3   # cross-market only; best-effort, never force-added
 
-# Stake tiers that qualify a leg as a straight pick. Includes "risky" so the
-# per-game coverage isn't dominated by silence on slates that don't produce
-# many lock/safe-tier anchors — Risky is still a positive-signal pick (≥0.30),
-# just less convicted. EV warn_drop / drop already demoted these tiers
-# downward — anything below "risky" reflects either a marginal-signal
-# batter (donation/lottery base) or a deep negative-edge demote.
+# Global per-batter exposure cap across ALL buckets (hr + hrr + hits + mix).
+# HARD: never violated, not even by force-add. Buckets fill in priority order
+# (HR -> HRR -> Hits -> mix); a batter at the cap is excluded from every later
+# card. Mix runs last and sees the most-constrained appearance counts.
+PER_BATTER_CAP = 2
+
+# Stake tiers that qualify a SINGLE leg as a straight pick. Applies ONLY to
+# straight eligibility — multi-leg parlay legs are never tier-filtered.
 STRAIGHT_QUALIFYING_TIERS = ("lock", "safe", "risky")
 
-# Minimum straight-pick floor. If the tier filter above leaves fewer than this
-# many straights, the next-best anchors by primary_signal (regardless of tier)
-# get promoted as "signal-floor straights" until the floor is reached or the
-# anchor pool is exhausted (whichever comes first — we don't manufacture).
-STRAIGHT_MIN_FLOOR = 5
+# Combinatorial pool caps — top-N legs (candidates arrive pre-sorted by
+# primary_signal DESC, edge DESC) fed into combinations() per leg-count, which
+# bounds C(N,k). Per-market pools are already partitioned + small, so they get
+# the tighter cap; the mix pool is the full cross-market candidate set, so it
+# gets the wider cap.
+PER_MARKET_COMBO_CAPS = {2: 30, 3: 24, 4: 20}
+MIX_COMBO_CAPS        = {2: 80, 3: 50, 4: 30}
 
-# Minimum multi-leg coverage by tier. After multi-leg selection (EV-gated) and
-# the straight phase (which may evict multi-leg cards to make room), if either
-# tier has fewer than its minimum, force-add the highest-scoring combos until
-# the minimum is reached. The per-batter total-cards cap still applies — a
-# force-add never pushes a batter to 3+ cards across multi-leg + straight.
-MIN_THREE_LEG_CARDS = 2
-MIN_FOUR_LEG_CARDS  = 2
-
-# Pool size caps for combination generation. The per-batter cap (2) is the
-# real downstream constraint; these caps prevent C(N,k) factorial blowup
-# when the qualified candidate pool is large (445 qualifying legs on a
-# healthy slate → C(445,4) ≈ 1.6 billion combos, which times out the
-# Actions runner). Candidates are pre-sorted by primary_signal DESC so
-# top-N preserves the best matchup signals.
-#
-# Math reference (450-candidate slate):
-#   C(80, 2) =  3,160
-#   C(50, 3) = 19,600
-#   C(30, 4) = 27,405
-#   Total:   ~50k combinations enumerated (vs ~1.6B uncapped at 4-leg).
-COMBO_POOL_CAPS = {
-    2: 80,
-    3: 50,
-    4: 30,
+# Per-bucket card-count targets, keyed by market family, for the fill loop.
+BUCKET_TARGETS = {
+    "hr":   HR_BUCKET_TARGET,
+    "hrr":  HRR_BUCKET_TARGET,
+    "hits": HITS_BUCKET_TARGET,
 }
 
-# REMOVED in the per-game-coverage rework (Phase 1.1):
-#   CARD_CAPS           — final card-count cap per tier; ship all combos
-#                         that clear their EV gate and the per-batter cap.
-#   SHARING_LIMITS      — three_vs_two / four_vs_any overlap rules; the
-#                         per-batter cap (2) already enforces variety.
-#   MAX_SAME_GAME_CARDS — uncapped output naturally allows SGPs that
-#                         pass EV; the per-batter cap is the bottleneck.
-#   MIN_NON_HR_CARDS    — uncapped output diversifies markets naturally;
-#                         enforce_non_hr_mandate / is_non_hr_card deleted.
+# Market string -> bucket family. rbi_yes (and anything unmapped) is NOT
+# bucketed by this rebuild — see market_family().
+#
+# NOTE: this supersedes the standalone COMBO_POOL_CAPS={2:80,3:50,4:30}
+# hotfix (commit a095af4, the C(445,4)=1.6B factorial-blowup fix). Its
+# intent is preserved: MIX_COMBO_CAPS above applies the same 80/50/30 caps
+# to the full cross-market pool (the real blowup risk), and the tighter
+# PER_MARKET_COMBO_CAPS covers the now-partitioned single-market pools.
+MARKET_FAMILY = {
+    "hr_anytime":  "hr",
+    "h_r_rbi_1.5": "hrr",
+    "h_r_rbi_2.5": "hrr",
+    "hits_yes":    "hits",
+}
+
+
+def market_family(market):
+    """
+    Bucket family for a market string: 'hr' | 'hrr' | 'hits', or None when the
+    market is not bucketed (e.g. 'rbi_yes' or any future/unknown market). The
+    HRR family intentionally collapses both h_r_rbi_1.5 and h_r_rbi_2.5.
+    """
+    return MARKET_FAMILY.get(market)
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1031,30 +1030,29 @@ def label_for(legs, tier, math):
 # COMBINATION GENERATION
 # ────────────────────────────────────────────────────────────────────────
 
-def generate_combos(candidates, leg_count, cfg=None):
+def generate_combos(candidates, leg_count, cfg=None, pool_cap=None, combo_filter=None):
     """
-    Generate scored combinations of `leg_count` legs.
+    Generate scored, player-distinct combinations of `leg_count` legs.
 
     Candidates arrive pre-sorted by (primary_signal DESC, edge DESC) from
-    fetch_candidates. To prevent factorial blowup on healthy slates, the
-    input pool is capped to COMBO_POOL_CAPS[leg_count] before enumeration.
-    The cap preserves the highest-primary_signal candidates (since the list
-    is pre-sorted), which is the same set the EV-gate + per-batter-cap
-    selection would prefer anyway.
+    fetch_candidates. `pool_cap` (an int) slices the top-N candidates BEFORE
+    enumerating, which bounds C(N, k) on heavy slates — callers pass the
+    relevant PER_MARKET_COMBO_CAPS / MIX_COMBO_CAPS entry for this leg-count.
+    `combo_filter`, if given, is a predicate over the leg tuple; combos for
+    which it returns False are skipped (the mix bucket uses this to require
+    >= 2 distinct market families per card).
 
-    Math reference (450-candidate slate):
-      C(80, 2) =  3,160
-      C(50, 3) = 19,600
-      C(30, 4) = 27,405
-      Total:    ~50k combinations enumerated (vs ~1.6B uncapped at 4-leg).
+    Returns combos ordered by (card primary_signal DESC, objective score DESC).
+    The caller owns the per-bucket EV boundary, the per-batter cap, and the
+    re-sort by score when straights and parlays compete head-to-head.
     """
-    pool_cap = COMBO_POOL_CAPS.get(leg_count, len(candidates))
-    pool = candidates[:pool_cap]
-
+    pool = candidates[:pool_cap] if pool_cap else candidates
     combos = []
     for combo in combinations(pool, leg_count):
         player_ids = [l["player_id"] for l in combo]
         if len(set(player_ids)) != leg_count:
+            continue
+        if combo_filter is not None and not combo_filter(combo):
             continue
         rec = make_combo_record(list(combo), tier_for_legs(leg_count), None, cfg=cfg)
         if rec and rec["score"] > -999:
@@ -1072,266 +1070,150 @@ def tier_for_legs(n):
 
 
 # ────────────────────────────────────────────────────────────────────────
-# DEDUP / SELECTION
+# BUCKET FILL — market-segregated selection
 # ────────────────────────────────────────────────────────────────────────
 
-def select_cards(all_combos_by_tier):
+def _cap_ok(combo, appearances):
     """
-    Phase 1.1 uncapped multi-leg selection.
-
-    For each tier (2-leg, 3-leg, 4-leg) walk combos in primary_signal DESC
-    order (combos arrive pre-sorted from generate_combos) and commit every
-    combo that:
-      · clears its tier's EV gate (EV_GATES[tier]); AND
-      · does not push any of its batters above
-        MAX_MULTI_LEG_APPEARANCES_PER_BATTER total multi-leg appearances
-        (across all tiers combined).
-
-    No final card-count cap, no same-game cap, no cross-tier overlap rules,
-    no within-tier player dedup beyond the per-batter cap, no market
-    diversification swap. The per-batter cap is the only structural
-    constraint — every other knob the v0.4.0 picker used to limit output
-    has been retired here. The straight phase (generate_straights) runs
-    after this and is allowed to evict a multi-leg card to make room when
-    a batter's straight beats their lowest-EV multi-leg appearance.
+    True iff committing `combo` keeps every one of its batters at or under
+    PER_BATTER_CAP. Combos are player-distinct (generate_combos enforces it),
+    so a single combo never double-counts a batter; we simply reject a combo
+    any of whose legs belongs to a batter ALREADY at the cap. HARD constraint —
+    applied in both the positive-EV pass and the negative-EV force-add pass.
     """
-    selected = {"two_leg": [], "three_leg": [], "four_leg": []}
-    global_player_counts = {}
-
-    def per_batter_cap_ok(legs):
-        for leg in legs:
-            pid = leg["player_id"]
-            if global_player_counts.get(pid, 0) >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER:
-                return False
-        return True
-
-    def commit(combo, tier_bucket):
-        tier_bucket.append(combo)
-        for leg in combo["legs"]:
-            pid = leg["player_id"]
-            global_player_counts[pid] = global_player_counts.get(pid, 0) + 1
-
-    for tier_key in ("two_leg", "three_leg", "four_leg"):
-        gate = EV_GATES[tier_key]
-        for combo in all_combos_by_tier.get(tier_key, []):
-            if combo["math"]["ev_per_dollar"] < gate:
-                continue
-            if not per_batter_cap_ok(combo["legs"]):
-                continue
-            commit(combo, selected[tier_key])
-    return selected
+    for leg in combo["legs"]:
+        if appearances.get(leg["player_id"], 0) >= PER_BATTER_CAP:
+            return False
+    return True
 
 
-# ────────────────────────────────────────────────────────────────────────
-# STRAIGHT PHASE — per-game Lock/Safe coverage
-# ────────────────────────────────────────────────────────────────────────
+def _commit_card(combo, bucket, appearances, card_market):
+    """Append `combo` to `bucket`, tag its card_market, bump the appearances counter."""
+    combo["card_market"] = card_market
+    bucket.append(combo)
+    for leg in combo["legs"]:
+        pid = leg["player_id"]
+        appearances[pid] = appearances.get(pid, 0) + 1
 
-def count_multi_leg_appearances(selected):
+
+def make_straight_records(pool, cfg=None):
     """
-    {player_id: count} of appearances across the multi-leg buckets of
-    `selected`. Walked anew each call so eviction in the straight phase
-    doesn't have to keep a parallel counter in sync. Used by the straight
-    phase's eviction check, which is multi-leg-only by design (a straight
-    + an existing multi-leg appearance for the same batter is allowed up
-    to the cap).
+    Single-leg straight candidates from a market pool: one record per leg
+    whose suggested_stake_tier is in STRAIGHT_QUALIFYING_TIERS (lock/safe/
+    risky). NO per-batter dedup here (locked decision) — a batter's straights
+    in different buckets are distinct cards, and the global PER_BATTER_CAP
+    governs total exposure. Returns make_combo_record([leg], "straight") recs.
     """
-    counts = {}
-    for tier_key in ("two_leg", "three_leg", "four_leg"):
-        for card in selected.get(tier_key, []):
-            for leg in card["legs"]:
-                pid = leg["player_id"]
-                counts[pid] = counts.get(pid, 0) + 1
-    return counts
+    out = []
+    for leg in pool:
+        if leg.get("suggested_stake_tier") in STRAIGHT_QUALIFYING_TIERS:
+            rec = make_combo_record([leg], "straight", None, cfg=cfg)
+            if rec and rec["score"] > -999:
+                out.append(rec)
+    return out
 
 
-def count_all_appearances(selected):
+def fill_bucket(pool, target, appearances, card_market, cfg=None):
     """
-    {player_id: count} of appearances across EVERY bucket of `selected`,
-    including 'straight'. Used by the force-minimum-coverage pass: when
-    we backfill multi-leg cards to hit the per-tier floor, the per-batter
-    cap is measured against the TOTAL card count (so the post-straight
-    eviction state and the floor pass agree on the same ceiling).
+    Fill one market bucket (hr / hrr / hits) up to `target` cards.
+
+    `pool` is the partitioned single-market candidate list, so every parlay
+    drawn from it is automatically market-pure. Straights and 2/3/4-leg
+    parlays compete head-to-head, ranked by the existing objective score
+    (ev_per_dollar*100 + sum(primary_signal)*5):
+
+      pass 1  — append positive-EV combos (ev_per_dollar > 0) by score until
+                the target is hit, skipping any that violate PER_BATTER_CAP.
+      pass 2  — if still short, FORCE-ADD ev_per_dollar <= 0 combos by score
+                (negative EV allowed) until the target is hit. The per-batter
+                cap is STILL HARD here — if the cap blocks, the bucket ships
+                short rather than exceeding the cap.
+
+    Mutates `appearances` (the global per-batter counter) as it commits.
+    Returns (bucket_list, forced_count).
     """
-    counts = {}
-    for tier_key, cards in selected.items():
-        for card in cards:
-            for leg in card["legs"]:
-                pid = leg["player_id"]
-                counts[pid] = counts.get(pid, 0) + 1
-    return counts
+    straights = make_straight_records(pool, cfg=cfg)
+    parlays = []
+    for k in (2, 3, 4):
+        if len(pool) >= k:
+            parlays.extend(
+                generate_combos(pool, k, cfg=cfg, pool_cap=PER_MARKET_COMBO_CAPS.get(k))
+            )
 
-
-def force_minimum_coverage(selected, all_combos_by_tier, tier_key, min_count):
-    """
-    Backfill `selected[tier_key]` up to `min_count` cards by force-adding
-    the highest-scoring combos from `all_combos_by_tier[tier_key]` that:
-      · are not already in selected[tier_key] (id-based identity check);
-      · would not push any of their batters above
-        MAX_MULTI_LEG_APPEARANCES_PER_BATTER total cards across all tiers
-        (multi-leg + straight, via count_all_appearances).
-
-    Returns the number of force-added cards. Combos that fail their tier's
-    EV gate ARE ELIGIBLE here — the floor is a coverage guarantee, not an
-    EV gate. Combos that violate the per-batter total cap are skipped.
-
-    Idempotent semantics: if selected[tier_key] already has >= min_count,
-    the function is a no-op and returns 0.
-    """
-    current = len(selected.get(tier_key, []))
-    if current >= min_count:
-        return 0
-    needed = min_count - current
-    already = {id(c) for c in selected.get(tier_key, [])}
-    pool = [c for c in all_combos_by_tier.get(tier_key, []) if id(c) not in already]
-    pool.sort(key=lambda c: c["score"], reverse=True)
-
-    force_added = 0
-    for combo in pool:
-        if force_added >= needed:
-            break
-        counts = count_all_appearances(selected)
-        if any(counts.get(leg["player_id"], 0) >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER
-               for leg in combo["legs"]):
-            continue
-        selected[tier_key].append(combo)
-        force_added += 1
-    return force_added
-
-
-def generate_straights(candidates, selected, games, cfg=None):
-    """
-    Phase 1.1 per-game straight pick generation (two-pass: qualifying + floor).
-
-    Walks the qualified candidate pool grouped by (game_id, player_id),
-    picks each batter's best leg (highest primary_signal, edge tiebreak),
-    and emits a single-leg straight for:
-      Pass 1 — every batter whose post-EV-demote suggested_stake_tier is in
-        STRAIGHT_QUALIFYING_TIERS (lock / safe / risky). Counted toward
-        the tier-specific lock/safe/risky tallies in the return tuple.
-      Pass 2 — if fewer than STRAIGHT_MIN_FLOOR straights came out of pass 1,
-        the next-best anchors (regardless of tier, walked in primary_signal
-        DESC order) are promoted as "signal_floor" straights until the floor
-        is reached or the anchor pool is exhausted. Counted as signal_floor.
-
-    If the straight's batter already appears in
-    MAX_MULTI_LEG_APPEARANCES_PER_BATTER multi-leg cards, the lowest-EV
-    multi-leg card containing that batter is evicted from `selected` to
-    make room. Net effect: any batter ends up on at most
-    MAX_MULTI_LEG_APPEARANCES_PER_BATTER cards (multi-leg + straight).
-
-    Mutates `selected` in place when eviction fires. Returns:
-        (straights, lock_count, safe_count, risky_count,
-         signal_floor_count, demoted_out_count, games_with_straights_count)
-    """
-    # Build per-(game, batter) best leg map. Ties broken by edge.
-    by_game_batter = {}
-    for c in candidates:
-        gid = c.get("game_id")
-        pid = c.get("player_id")
-        if gid is None or pid is None:
-            continue
-        key = (gid, pid)
-        cur = by_game_batter.get(key)
-        if cur is None:
-            by_game_batter[key] = c
-            continue
-        cur_key = ((cur.get("primary_signal") or 0.0), (cur.get("edge") or 0.0))
-        new_key = ((c.get("primary_signal") or 0.0), (c.get("edge") or 0.0))
-        if new_key > cur_key:
-            by_game_batter[key] = c
-
-    # Sort all best-batter-per-game entries by primary_signal DESC so pass 1
-    # processes the most-convicted anchors first (matters for the eviction
-    # tiebreak when two straights target the same victim multi-leg card),
-    # AND so pass 2 promotes the next-best leftovers in the same order.
-    walk_order = sorted(
-        by_game_batter.items(),
-        key=lambda kv: ((kv[1].get("primary_signal") or 0.0),
-                        (kv[1].get("edge") or 0.0)),
+    cands = straights + parlays
+    cands.sort(
+        key=lambda r: (r["score"], (r.get("primary_signal") or 0.0)),
         reverse=True,
     )
 
-    # Pass 1 — bucket into qualifying-tier vs leftovers
-    qualifying = []  # [(key, leg, actual_tier), ...]
-    leftovers  = []  # [(key, leg), ...]
-    demoted_out_count = 0
-    for (game_id, pid), leg in walk_order:
-        actual_tier = leg.get("suggested_stake_tier")
-        if actual_tier in STRAIGHT_QUALIFYING_TIERS:
-            qualifying.append(((game_id, pid), leg, actual_tier))
-        else:
-            sig = leg.get("primary_signal") or 0.0
-            base_tier = suggested_stake_tier_for(sig, "full", cfg=cfg)
-            if base_tier in STRAIGHT_QUALIFYING_TIERS:
-                # Base tier WOULD have qualified, but EV demote knocked the
-                # actual tier below "risky". Tracked for the informational log;
-                # not emitted as a straight (pass 2 may promote them by floor,
-                # in which case they're recategorized as signal_floor).
-                demoted_out_count += 1
-            leftovers.append(((game_id, pid), leg))
+    bucket = []
+    # pass 1 — positive EV
+    for combo in cands:
+        if len(bucket) >= target:
+            break
+        if combo["math"]["ev_per_dollar"] <= 0:
+            continue
+        if not _cap_ok(combo, appearances):
+            continue
+        _commit_card(combo, bucket, appearances, card_market)
 
-    # Pass 2 — apply the minimum-floor promotion (don't manufacture beyond
-    # the pool size).
-    deficit = max(0, STRAIGHT_MIN_FLOOR - len(qualifying))
-    floor_promoted = leftovers[:deficit] if deficit > 0 else []
+    # pass 2 — force-add negative EV to reach target (cap stays hard)
+    forced = 0
+    if len(bucket) < target:
+        for combo in cands:
+            if len(bucket) >= target:
+                break
+            if combo["math"]["ev_per_dollar"] > 0:
+                continue  # already considered in pass 1
+            if not _cap_ok(combo, appearances):
+                continue
+            _commit_card(combo, bucket, appearances, card_market)
+            forced += 1
 
-    # Emit helper. Encapsulates the EV-gate check + eviction logic for both
-    # passes; tallies the per-tier counter the caller asks for.
-    straights: list[dict] = []
-    lock_count = 0
-    safe_count = 0
-    risky_count = 0
-    signal_floor_count = 0
-    games_with_straights: set = set()
+    return bucket, forced
 
-    def _emit(game_id, pid, leg, counter_key):
-        nonlocal lock_count, safe_count, risky_count, signal_floor_count
-        rec = make_combo_record([leg], "straight", None, cfg=cfg)
-        if rec is None:
-            return
-        # Straight EV gate is 0.0 by config; the per-leg EV screen already
-        # filtered disqualifies. Defensive check kept so the gate dict is
-        # still authoritative.
-        if rec["math"]["ev_per_dollar"] < EV_GATES.get("straight", 0.0):
-            return
-        appearances = count_multi_leg_appearances(selected).get(pid, 0)
-        if appearances >= MAX_MULTI_LEG_APPEARANCES_PER_BATTER:
-            victims = []
-            for tk in ("two_leg", "three_leg", "four_leg"):
-                for card in selected.get(tk, []):
-                    if any(l["player_id"] == pid for l in card["legs"]):
-                        victims.append((tk, card))
-            if victims:
-                victims.sort(key=lambda tc: tc[1]["math"]["ev_per_dollar"])
-                evict_tier, victim = victims[0]
-                selected[evict_tier].remove(victim)
-                log.info(
-                    "  evict for straight: %s [%s] (EV=%.3f) to make room "
-                    "for %s straight (%s)",
-                    evict_tier, victim.get("label", "?"),
-                    victim["math"]["ev_per_dollar"],
-                    leg.get("player_name"), counter_key,
-                )
-        straights.append(rec)
-        if counter_key == "lock":
-            lock_count += 1
-        elif counter_key == "safe":
-            safe_count += 1
-        elif counter_key == "risky":
-            risky_count += 1
-        elif counter_key == "signal_floor":
-            signal_floor_count += 1
-        games_with_straights.add(game_id)
 
-    for (game_id, pid), leg, actual_tier in qualifying:
-        _emit(game_id, pid, leg, actual_tier)
+def fill_mix(candidates, max_cards, appearances, cfg=None):
+    """
+    Fill the cross-market mix bucket (max `max_cards`, best-effort, NO force-add).
 
-    for (game_id, pid), leg in floor_promoted:
-        _emit(game_id, pid, leg, "signal_floor")
+    The mix pool is the FULL cross-market candidate set — every leg whose
+    market_family is hr / hrr / hits (rbi_yes and unmapped markets excluded),
+    NOT just leftovers from the three market buckets. Combos must contain legs
+    from >= 2 distinct families. Walked in score order, skipping PER_BATTER_CAP
+    violators (mix runs last, so the cap is at its tightest here).
 
-    return (straights, lock_count, safe_count, risky_count,
-            signal_floor_count, demoted_out_count,
-            len(games_with_straights))
+    Mutates `appearances`. Returns the mix bucket list.
+    """
+    pool = [c for c in candidates
+            if market_family(c.get("market")) in ("hr", "hrr", "hits")]
+
+    def cross_market(combo):
+        fams = {market_family(leg.get("market")) for leg in combo}
+        fams.discard(None)
+        return len(fams) >= 2
+
+    combos = []
+    for k in (2, 3, 4):
+        if len(pool) >= k:
+            combos.extend(
+                generate_combos(pool, k, cfg=cfg,
+                                pool_cap=MIX_COMBO_CAPS.get(k),
+                                combo_filter=cross_market)
+            )
+    combos.sort(
+        key=lambda r: (r["score"], (r.get("primary_signal") or 0.0)),
+        reverse=True,
+    )
+
+    bucket = []
+    for combo in combos:
+        if len(bucket) >= max_cards:
+            break
+        if not _cap_ok(combo, appearances):
+            continue
+        _commit_card(combo, bucket, appearances, "mix")
+    return bucket
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1428,6 +1310,9 @@ def insert_card(date_iso, combo):
         "primary_signal":       card_sig,
         "suggested_stake_tier": combo.get("suggested_stake_tier"),
         "phase1_metadata":      combo.get("phase1_metadata"),
+        # Market-segregated bucket (migration 29). Independent of `tier`,
+        # which still carries leg-count (straight/two_leg/three_leg/four_leg).
+        "card_market":          combo.get("card_market"),
         # Back-compat dual write
         "confidence_score":     card_sig,
         "status":               "pending",
@@ -1547,83 +1432,66 @@ def main():
     log.info("Slate quality: %s (%d plays with 5%%+ edge)",
              slate_quality, len(strong_plays))
 
-    # ── Generate multi-leg combinations per tier (uncapped) ─────────────
-    all_combos_by_tier = {}
-    for leg_count in [2, 3, 4]:
-        if len(candidates) < leg_count:
-            all_combos_by_tier[tier_for_legs(leg_count)] = []
-            continue
-        combos = generate_combos(candidates, leg_count, cfg=cfg)
-        all_combos_by_tier[tier_for_legs(leg_count)] = combos
-        log.info("  %d-leg combos generated: %d", leg_count, len(combos))
-
-    # ── Select multi-leg cards (no count cap; per-batter cap=%d) ────────
-    selected = select_cards(all_combos_by_tier)
-    multi_leg_total = sum(
-        len(selected.get(t, [])) for t in ("two_leg", "three_leg", "four_leg")
-    )
+    # ── Partition candidates into market buckets ────────────────────────
+    # A leg lands in exactly one pool, dictated by its market family. rbi_yes
+    # and any unmapped market are excluded from every bucket (this rebuild
+    # does not bucket RBI — see market_family).
+    pools = {"hr": [], "hrr": [], "hits": []}
+    ignored_market = 0
+    for c in candidates:
+        fam = market_family(c.get("market"))
+        if fam in pools:
+            pools[fam].append(c)
+        else:
+            ignored_market += 1
     log.info(
-        "Multi-leg cards: %d total (two_leg=%d, three_leg=%d, four_leg=%d)",
-        multi_leg_total,
-        len(selected.get("two_leg", [])),
-        len(selected.get("three_leg", [])),
-        len(selected.get("four_leg", [])),
+        "Market pools: hr=%d, hrr=%d, hits=%d  (%d legs ignored — rbi_yes/unmapped)",
+        len(pools["hr"]), len(pools["hrr"]), len(pools["hits"]), ignored_market,
     )
 
-    # Per-batter usage top-5 across multi-leg cards
-    multi_counts = count_multi_leg_appearances(selected)
+    # ── Fill market buckets in priority order under one global per-batter
+    #    cap. `appearances` is the single source of truth for exposure across
+    #    every bucket; HR fills first (least constrained), mix fills last. ──
+    appearances = {}          # player_id -> total cards across ALL buckets
+    selected = {}
+    for market in ("hr", "hrr", "hits"):
+        bucket, forced = fill_bucket(
+            pools[market], BUCKET_TARGETS[market], appearances, market, cfg=cfg
+        )
+        selected[market] = bucket
+        by_legs = {1: 0, 2: 0, 3: 0, 4: 0}
+        for card in bucket:
+            by_legs[card["leg_count"]] = by_legs.get(card["leg_count"], 0) + 1
+        log.info(
+            "%-4s bucket: %d/%d cards (%d force-added)  "
+            "[straight=%d, 2-leg=%d, 3-leg=%d, 4-leg=%d]",
+            market.upper(), len(bucket), BUCKET_TARGETS[market], forced,
+            by_legs[1], by_legs[2], by_legs[3], by_legs[4],
+        )
+
+    # ── Mix bucket: cross-market combos only, best-effort (NO force-add) ──
+    mix = fill_mix(candidates, MIX_BUCKET_MAX, appearances, cfg=cfg)
+    selected["mix"] = mix
+    mix_by_legs = {2: 0, 3: 0, 4: 0}
+    for card in mix:
+        mix_by_legs[card["leg_count"]] = mix_by_legs.get(card["leg_count"], 0) + 1
+    log.info(
+        "MIX  bucket: %d/%d cards  [2-leg=%d, 3-leg=%d, 4-leg=%d]",
+        len(mix), MIX_BUCKET_MAX, mix_by_legs[2], mix_by_legs[3], mix_by_legs[4],
+    )
+
+    # ── Per-batter usage top-5 across ALL buckets (cap audit) ───────────
     batter_names = {}
-    for tier_key in ("two_leg", "three_leg", "four_leg"):
-        for card in selected.get(tier_key, []):
+    for bucket in selected.values():
+        for card in bucket:
             for leg in card["legs"]:
                 batter_names[leg["player_id"]] = leg.get("player_name")
-    top5 = sorted(multi_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    if top5:
-        top5_str = ", ".join(
-            f"{batter_names.get(pid, '?')}({c})" for pid, c in top5
-        )
-    else:
-        top5_str = "(none)"
-    log.info("Per-batter usage (multi-leg): top 5 — %s", top5_str)
-
-    # ── Straight phase: per-game Lock/Safe/Risky coverage + signal floor ──
-    straights, lock_c, safe_c, risky_c, sigfloor_c, demoted_c, games_covered = \
-        generate_straights(candidates, selected, games, cfg)
-    selected["straight"] = straights
-    log.info(
-        "Straight picks: %d (Lock=%d, Safe=%d, Risky=%d, signal_floor=%d, "
-        "demoted out via EV screen=%d)",
-        len(straights), lock_c, safe_c, risky_c, sigfloor_c, demoted_c,
-    )
-    log.info(
-        "Games covered by straights: %d/%d (%d games had no qualifying anchor)",
-        games_covered, len(games), len(games) - games_covered,
-    )
-
-    # ── Force-minimum coverage for three-leg + four-leg tiers ──────────
-    # Runs AFTER generate_straights so the per-batter total-cards cap
-    # (count_all_appearances) sees the post-eviction state. Cards added here
-    # bypass the per-tier EV gate — the floor is a coverage guarantee, not
-    # an EV gate — but still respect MAX_MULTI_LEG_APPEARANCES_PER_BATTER
-    # as a total-card ceiling.
-    three_pre_force  = len(selected.get("three_leg", []))
-    four_pre_force   = len(selected.get("four_leg", []))
-    three_force_added = force_minimum_coverage(
-        selected, all_combos_by_tier, "three_leg", MIN_THREE_LEG_CARDS
-    )
-    four_force_added = force_minimum_coverage(
-        selected, all_combos_by_tier, "four_leg", MIN_FOUR_LEG_CARDS
-    )
-    log.info(
-        "Three-leg coverage: %d selected by EV gate, %d force-added "
-        "for minimum coverage",
-        three_pre_force, three_force_added,
-    )
-    log.info(
-        "Four-leg coverage:  %d selected by EV gate, %d force-added "
-        "for minimum coverage",
-        four_pre_force, four_force_added,
-    )
+    top5 = sorted(appearances.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top5_str = ", ".join(
+        f"{batter_names.get(pid, '?')}({c})" for pid, c in top5
+    ) if top5 else "(none)"
+    log.info("Per-batter usage (all buckets, cap=%d): top 5 — %s",
+             PER_BATTER_CAP, top5_str)
 
     total_selected = sum(len(v) for v in selected.values())
     if total_selected == 0:
@@ -1641,13 +1509,13 @@ def main():
     inserted_count = 0
     skipped_dups = 0
     inserted_game_ids = set()
-    for tier in ["two_leg", "three_leg", "four_leg", "straight"]:
-        for combo in selected.get(tier, []):
+    for bucket_key in ("hr", "hrr", "hits", "mix"):
+        for combo in selected.get(bucket_key, []):
             fp = combo_fingerprint(combo["legs"])
             if fp in existing_fingerprints:
                 skipped_dups += 1
-                log.info("  ⊘ skipped %s [%s] — fingerprint already in DB (settled earlier)",
-                         combo["tier"], combo["label"])
+                log.info("  ⊘ skipped %s/%s [%s] — fingerprint already in DB (settled earlier)",
+                         bucket_key, combo["tier"], combo["label"])
                 continue
 
             cid = insert_card(today, combo)
@@ -1661,8 +1529,8 @@ def main():
 
             math = combo["math"]
             card_sig = combo.get("primary_signal") or 0.0
-            log.info("  ✓ %s [%s] EV=%.3f edge=%.3f odds=%s card_sig=%.3f stake=%s (id=%s)",
-                     combo["tier"], combo["label"],
+            log.info("  ✓ %s/%s [%s] EV=%.3f edge=%.3f odds=%s card_sig=%.3f stake=%s (id=%s)",
+                     bucket_key, combo["tier"], combo["label"],
                      math["ev_per_dollar"], math["edge"],
                      "+%d" % math["american_odds"] if math["american_odds"] >= 0
                                                   else str(math["american_odds"]),
@@ -1687,7 +1555,7 @@ def main():
     log.info("✓ Cards picker complete — inserted=%d, skipped_dups=%d",
              inserted_count, skipped_dups)
     log.info(
-        "Slate coverage: %d/%d games represented across all cards + straights",
+        "Slate coverage: %d/%d games represented across all buckets",
         len(inserted_game_ids), len(games),
     )
 
