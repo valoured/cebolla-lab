@@ -13,6 +13,16 @@ on:
     # ~30 minutes to complete before pick-pod fires at 3:43 AM.
     - cron: '13 7 * * *'   # 07:13 UTC = 3:13 AM ET — full data refresh
 
+    # ── 3:30 AM ET — FULL morning_lock BACKUP (Cloudflare Worker fallback) ──
+    # The 3:30 AM morning_lock is normally dispatched by an external Cloudflare
+    # Worker via the GitHub API. When that Worker fails to dispatch (as it has
+    # for several days), nothing refreshes lineups/odds/projections ahead of the
+    # picks. This NATIVE cron is a redundant backup that runs the SAME full
+    # chain (pull-lineups → pull-dk-odds → compute-projections → pick-pod →
+    # pick-cards) so we still lock a complete slate without the Worker. The
+    # 07:43 UTC cron below stays a third layer (picks-only) backup.
+    - cron: '30 7 * * *'   # 07:30 UTC = 3:30 AM ET — full morning_lock backup
+
     # ── 3:43 AM ET — PICK LOCK ──
     # 07:43 UTC = 3:43 AM ET — locks today's POD + Cards picks. Runs ~30 minutes
     # after the 3:13 data refresh, which is plenty of buffer for projections to
@@ -234,6 +244,7 @@ jobs:
       (github.event_name == 'schedule' &&
        contains(fromJSON('["13 7 * * *", "13 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'lineups' || inputs.job == 'morning_lock'
+      || (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -279,6 +290,7 @@ jobs:
       (github.event_name == 'schedule' &&
        contains(fromJSON('["13 7 * * *", "17 11 * * *", "17 12 * * *", "17 13 * * *", "17 14 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *", "17 3 * * *"]'), github.event.schedule))
       || inputs.job == 'all' || inputs.job == 'dk_odds' || inputs.job == 'morning_lock'
+      || (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -318,6 +330,7 @@ jobs:
         (github.event_name == 'schedule' &&
          contains(fromJSON('["13 7 * * *", "17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
         || inputs.job == 'all' || inputs.job == 'projections' || inputs.job == 'morning_lock'
+        || (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *')
       )
     runs-on: ubuntu-latest
     needs: [pull-dk-odds, pull-lineups]
@@ -365,6 +378,7 @@ jobs:
         (github.event_name == 'schedule' && github.event.schedule == '43 7 * * *')
         || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_pod')
         || (github.event_name == 'workflow_dispatch' && inputs.job == 'morning_lock')
+        || (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *')
       )
     runs-on: ubuntu-latest
     needs: compute-projections
@@ -399,6 +413,7 @@ jobs:
         (github.event_name == 'schedule' && github.event.schedule == '43 7 * * *')
         || (github.event_name == 'workflow_dispatch' && inputs.job == 'pick_cards')
         || (github.event_name == 'workflow_dispatch' && inputs.job == 'morning_lock')
+        || (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *')
       )
     runs-on: ubuntu-latest
     needs: pick-pod
