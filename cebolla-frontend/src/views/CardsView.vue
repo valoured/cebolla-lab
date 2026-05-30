@@ -82,7 +82,7 @@ async function load() {
     const [cardsRes, podsRes] = await Promise.all([
       supabase
         .from('cards')
-        .select('id, card_date, tier, label, leg_count, combined_prob, ' +
+        .select('id, card_date, tier, card_market, label, leg_count, combined_prob, ' +
                 'combined_odds, decimal_odds, implied_prob, edge, ev_per_dollar, ' +
                 'stake_rec, payout_if_hit, status, payout, settled_at, created_at')
         .gte('card_date', cutoffIso)

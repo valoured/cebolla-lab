@@ -73,6 +73,21 @@ const cardStatusBadge = computed(() => {
   return { kind: 'pending', label: 'PENDING' }
 })
 
+// Market-bucket badge (migration 29's card_market). Reuses the per-leg market
+// color palette: HR red / HRR orange / HITS green; MIX gets lab-teal (the
+// site complement) since it's an intentional cross-market product, not gray
+// "unknown". Returns null for legacy NULL card_market → no badge rendered.
+function cardMarketBadge(m) {
+  switch (m) {
+    case 'hr':   return { label: 'HR',   cls: 'market-hr' }
+    case 'hrr':  return { label: 'HRR',  cls: 'market-hrr-mid' }
+    case 'hits': return { label: 'HITS', cls: 'market-hits' }
+    case 'mix':  return { label: 'MIX',  cls: 'market-mix' }
+    default:     return null
+  }
+}
+const marketBadge = computed(() => cardMarketBadge(props.card.card_market))
+
 // ── Formatters ────────────────────────────────────────────
 function fmtOdds(n) {
   if (n == null) return '—'
@@ -123,6 +138,7 @@ function marketColorClass(market) {
     <div class="card-header">
       <div class="flex items-baseline gap-2 flex-wrap min-w-0">
         <span class="card-label">{{ card.label || 'Card' }}</span>
+        <span v-if="marketBadge" class="market-badge" :class="marketBadge.cls">{{ marketBadge.label }}</span>
         <span v-if="card.ev_per_dollar != null" class="card-ev"
               :class="card.ev_per_dollar >= 0.1 ? 'text-signal-400' : (card.ev_per_dollar >= 0 ? 'text-fg-500' : 'text-edge-cold-1')">
           EV {{ card.ev_per_dollar >= 0 ? '+' : '' }}{{ (card.ev_per_dollar * 100).toFixed(0) }}%
@@ -238,6 +254,21 @@ function marketColorClass(market) {
   font-weight: 600;
 }
 
+/* Market-bucket chip in the card header. Chip styling cloned from .leg-market
+   (border = currentColor so it inherits the market color class); the header's
+   flex `gap` handles spacing, so no margin-left here. Color + background come
+   from the reused .market-* classes (.market-mix added below). */
+.market-badge {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+
 .card-footer {
   display: flex;
   align-items: baseline;
@@ -349,6 +380,10 @@ function marketColorClass(market) {
 .market-default {
   color: rgba(255, 255, 255, 0.55);
   background: rgba(255, 255, 255, 0.05);
+}
+.market-mix {
+  color: #5F9EA0;  /* lab teal — cross-market product, the site complement */
+  background: rgba(95, 158, 160, 0.10);
 }
 .leg-numbers {
   display: flex;
