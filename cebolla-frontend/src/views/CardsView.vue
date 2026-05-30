@@ -220,14 +220,24 @@ const historicalAll = computed(() => {
   return merged
 })
 
-// ── Group today's by tier ─────────────────────────────────────
-function cardsByTier(tier) {
-  return todaysCards.value.filter(c => c.tier === tier)
+// ── Group today's by market bucket (card_market) ──────────────
+// Within a market section: tier ASC (STRAIGHT → 2-LEG → 3-LEG → 4-LEG via
+// leg_count), so the safest single picks sit at the top; ev_per_dollar DESC
+// breaks ties within a tier. NULL card_market (pre-migration cards) matches
+// no bucket and drops from today's menu — it still shows in Card History.
+function marketCards(market) {
+  return todaysCards.value
+    .filter(c => c.card_market === market)
+    .sort((a, b) => {
+      const tierDiff = (a.leg_count ?? 99) - (b.leg_count ?? 99)
+      if (tierDiff !== 0) return tierDiff
+      return (b.ev_per_dollar ?? -Infinity) - (a.ev_per_dollar ?? -Infinity)
+    })
 }
-const straightCards = computed(() => cardsByTier('straight'))
-const twoLegCards   = computed(() => cardsByTier('two_leg'))
-const threeLegCards = computed(() => cardsByTier('three_leg'))
-const fourLegCards  = computed(() => cardsByTier('four_leg'))
+const hrCards   = computed(() => marketCards('hr'))
+const hrrCards  = computed(() => marketCards('hrr'))
+const hitsCards = computed(() => marketCards('hits'))
+const mixCards  = computed(() => marketCards('mix'))
 
 // ── Status helpers ────────────────────────────────────────────
 // classifyGameStatus / isGameLive / isGameFinal are imported from
@@ -421,15 +431,15 @@ function openPlayer(playerId) {
           </div>
         </div>
 
-        <!-- ── STRAIGHTS (single-leg cards) ──────────────────── -->
-        <div v-if="straightCards.length" class="mb-6">
+        <!-- ── HOME RUNS ─────────────────────────────────────── -->
+        <div v-if="hrCards.length" class="mb-6">
           <div class="tier-header">
-            <span class="tier-label">STRAIGHTS</span>
-            <span class="tier-sublabel">{{ straightCards.length }} card{{ straightCards.length === 1 ? '' : 's' }} · $10 stake</span>
+            <span class="tier-label">HOME RUNS</span>
+            <span class="tier-sublabel">{{ hrCards.length }} card{{ hrCards.length === 1 ? '' : 's' }}</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <CardBlock
-              v-for="card in straightCards"
+              v-for="card in hrCards"
               :key="card.id"
               :card="card"
               :legs="legsByCard[card.id] || []"
@@ -438,15 +448,15 @@ function openPlayer(playerId) {
           </div>
         </div>
 
-        <!-- ── 2-LEGGERS ─────────────────────────────────────── -->
-        <div v-if="twoLegCards.length" class="mb-6">
+        <!-- ── H+R+RBI ───────────────────────────────────────── -->
+        <div v-if="hrrCards.length" class="mb-6">
           <div class="tier-header">
-            <span class="tier-label">2-LEGGERS</span>
-            <span class="tier-sublabel">{{ twoLegCards.length }} card{{ twoLegCards.length === 1 ? '' : 's' }} · $10 stake</span>
+            <span class="tier-label">H+R+RBI</span>
+            <span class="tier-sublabel">{{ hrrCards.length }} card{{ hrrCards.length === 1 ? '' : 's' }}</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <CardBlock
-              v-for="card in twoLegCards"
+              v-for="card in hrrCards"
               :key="card.id"
               :card="card"
               :legs="legsByCard[card.id] || []"
@@ -455,15 +465,15 @@ function openPlayer(playerId) {
           </div>
         </div>
 
-        <!-- ── 3-LEGGERS ─────────────────────────────────────── -->
-        <div v-if="threeLegCards.length" class="mb-6">
+        <!-- ── 2+ HITS ───────────────────────────────────────── -->
+        <div v-if="hitsCards.length" class="mb-6">
           <div class="tier-header">
-            <span class="tier-label">3-LEGGERS</span>
-            <span class="tier-sublabel">{{ threeLegCards.length }} card{{ threeLegCards.length === 1 ? '' : 's' }} · $5 stake</span>
+            <span class="tier-label">2+ HITS</span>
+            <span class="tier-sublabel">{{ hitsCards.length }} card{{ hitsCards.length === 1 ? '' : 's' }}</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <CardBlock
-              v-for="card in threeLegCards"
+              v-for="card in hitsCards"
               :key="card.id"
               :card="card"
               :legs="legsByCard[card.id] || []"
@@ -472,15 +482,15 @@ function openPlayer(playerId) {
           </div>
         </div>
 
-        <!-- ── LOTTERY ───────────────────────────────────────── -->
-        <div v-if="fourLegCards.length" class="mb-6">
+        <!-- ── MIX & MATCH ───────────────────────────────────── -->
+        <div v-if="mixCards.length" class="mb-6">
           <div class="tier-header">
-            <span class="tier-label">LOTTERY</span>
-            <span class="tier-sublabel">{{ fourLegCards.length }} ticket{{ fourLegCards.length === 1 ? '' : 's' }} · $1 stake</span>
+            <span class="tier-label">MIX &amp; MATCH</span>
+            <span class="tier-sublabel">{{ mixCards.length }} card{{ mixCards.length === 1 ? '' : 's' }}</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <CardBlock
-              v-for="card in fourLegCards"
+              v-for="card in mixCards"
               :key="card.id"
               :card="card"
               :legs="legsByCard[card.id] || []"
@@ -490,7 +500,7 @@ function openPlayer(playerId) {
         </div>
 
         <!-- Empty -->
-        <div v-if="!todaysPods.length && !straightCards.length && !twoLegCards.length && !threeLegCards.length && !fourLegCards.length"
+        <div v-if="!todaysPods.length && !hrCards.length && !hrrCards.length && !hitsCards.length && !mixCards.length"
              class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
           <div class="display-text text-lg text-fg-500 italic mb-1">No cards yet for today</div>
           <p class="text-fg-500 text-xs">

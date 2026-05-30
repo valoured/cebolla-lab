@@ -88,6 +88,16 @@ function cardMarketBadge(m) {
 }
 const marketBadge = computed(() => cardMarketBadge(props.card.card_market))
 
+// Per-card tier pill (leg count). Plain gray text, not a colored chip — it's a
+// detail, not a category. Now that sections group by market, this surfaces the
+// leg count per card. STRAIGHT for single-leg, N-LEG otherwise.
+const tierPill = computed(() => {
+  const n = props.card.leg_count
+  if (n === 1) return 'STRAIGHT'
+  if (n >= 2)  return `${n}-LEG`
+  return null
+})
+
 // ── Formatters ────────────────────────────────────────────
 function fmtOdds(n) {
   if (n == null) return '—'
@@ -139,6 +149,7 @@ function marketColorClass(market) {
       <div class="flex items-baseline gap-2 flex-wrap min-w-0">
         <span class="card-label">{{ card.label || 'Card' }}</span>
         <span v-if="marketBadge" class="market-badge" :class="marketBadge.cls">{{ marketBadge.label }}</span>
+        <span v-if="tierPill" class="tier-pill">{{ tierPill }}</span>
         <span v-if="card.ev_per_dollar != null" class="card-ev"
               :class="card.ev_per_dollar >= 0.1 ? 'text-signal-400' : (card.ev_per_dollar >= 0 ? 'text-fg-500' : 'text-edge-cold-1')">
           EV {{ card.ev_per_dollar >= 0 ? '+' : '' }}{{ (card.ev_per_dollar * 100).toFixed(0) }}%
@@ -267,6 +278,17 @@ function marketColorClass(market) {
   padding: 1px 6px;
   border-radius: 3px;
   border: 1px solid currentColor;
+}
+
+/* Per-card leg-count detail. Plain gray text (no border/bg) so it reads as a
+   sub-detail, clearly distinct from the colored .market-badge chip. */
+.tier-pill {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .card-footer {
