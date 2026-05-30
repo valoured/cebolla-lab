@@ -496,87 +496,74 @@ def get_todays_games() -> list[dict]:
     return res.data
 
 
+def _present_row_source(r: dict) -> str:
+    """
+    lineup_source for a row that EXISTS in today's lineups table (Finding C).
+    'confirmed' only when it's real, complete MLB data; pull-written estimates
+    pass their specific value through; legacy 'last_known' and partial 'mlb_api'
+    postings degrade conservatively to 'estimated_last_known'.
+    """
+    src = r.get("source")
+    if r.get("is_confirmed") and src == "mlb_api":
+        return "confirmed"
+    if src in ("estimated_rolling_7", "estimated_last_known"):
+        return src
+    return "estimated_last_known"
+
+
 def get_lineups_for_game(game_id: int) -> list[dict]:
     """
-    Return lineups for a game, falling back to each team's last-known lineup
-    if today's is empty.
+    Return lineups for a game, predicting any team whose lineup isn't posted yet.
 
-    Real-world need: pick_pod runs at 3 AM ET to lock POD picks before any
-    line movement. At 3 AM today's lineups are NEVER posted yet — teams
-    typically post 2-4 hours before first pitch. Without fallback, the
-    projection model fails to produce anything early-morning.
+    pick_pod/pick_cards lock at ~3 AM ET, before MLB posts lineups. For any team
+    missing today's lineup we call lineup_predict.predicted_lineup_for_projections
+    (Option B: rolling-7 most-common + best-effort handedness layer, degrading to
+    the single most-recent lineup on thin history).
 
-    Fallback strategy: for any team in this game where today's lineup is
-    empty, pull that team's most recent lineup from the last 14 days. MLB
-    lineups are sticky — ~85% of starters repeat day-to-day — so this gives
-    us realistic batting-order spots + player IDs.
-
-    Each fallback row is tagged `is_estimated=True` so downstream code (and
-    any audit query) can tell which projections came from estimated lineups.
-
-    Returns a list of lineup-row dicts.
+    Every returned row carries `lineup_source` — the single provenance signal
+    ('confirmed' | 'estimated_rolling_7' | 'estimated_last_known'); the old
+    in-memory `is_estimated` flag is removed. Returns a list of lineup-row dicts.
     """
-    # First try: today's confirmed/posted lineup
+    from lineup_predict import predicted_lineup_for_projections, _pitcher_throws_map
+
+    # First try: today's posted lineup. `source` drives provenance (Finding C).
     res = sb.table("lineups").select(
-        "id, team_id, batting_order, position, bats, player_id, is_confirmed"
+        "id, team_id, batting_order, position, bats, player_id, is_confirmed, source"
     ).eq("game_id", game_id).execute()
     rows = res.data or []
+    for r in rows:
+        r["lineup_source"] = _present_row_source(r)
 
-    # Figure out which teams DO have lineups
-    game_res = sb.table("games").select("away_team_id, home_team_id") \
-        .eq("id", game_id).single().execute()
+    # Which teams need predicting, plus the opposing starter for handedness.
+    game_res = sb.table("games").select(
+        "away_team_id, home_team_id, away_pitcher_id, home_pitcher_id, game_date"
+    ).eq("id", game_id).single().execute()
     game = game_res.data or {}
     needed_teams = {game.get("away_team_id"), game.get("home_team_id")} - {None}
     have_teams = {r["team_id"] for r in rows}
     missing_teams = needed_teams - have_teams
 
     if not missing_teams:
-        # Tag rows as not estimated for consistency
-        for r in rows:
-            r["is_estimated"] = False
         return rows
 
-    # Fall back per missing team. Use each team's most recent lineup snapshot.
-    log.info("Lineup fallback for game %d: %d/%d teams missing — using last-known",
+    log.info("Lineup predict for game %d: %d/%d teams missing — Option B rolling-7",
              game_id, len(missing_teams), len(needed_teams))
 
-    fourteen_days_ago = (date.today() - timedelta(days=14)).isoformat()
+    throws_map = _pitcher_throws_map(sb)   # one players query per cron run (memoized)
+    slate = game.get("game_date")
     for team_id in missing_teams:
-        # Find the most recent game that team had a lineup for
-        recent_lineup_res = sb.table("lineups") \
-            .select("id, team_id, batting_order, position, bats, player_id, is_confirmed, game_id, "
-                    "games!inner(game_date)") \
-            .eq("team_id", team_id) \
-            .gte("games.game_date", fourteen_days_ago) \
-            .order("games(game_date)", desc=True) \
-            .limit(20) \
-            .execute()
-        recent = recent_lineup_res.data or []
-        if not recent:
-            log.warning("  Team %d has no lineup in last 14 days — skipping", team_id)
+        opp_pid = (game.get("away_pitcher_id") if game.get("home_team_id") == team_id
+                   else game.get("home_pitcher_id"))
+        opp_throws = throws_map.get(opp_pid) if opp_pid else None
+
+        predicted = predicted_lineup_for_projections(sb, team_id, opp_throws, slate)
+        if not predicted:
+            log.warning("  Team %d has no predictable lineup (insufficient history) — skipping",
+                        team_id)
             continue
-
-        # The first row is the most recent game; grab ALL rows for that game
-        most_recent_game_id = recent[0]["game_id"]
-        team_recent = [r for r in recent if r["game_id"] == most_recent_game_id]
-
-        # Reshape to look like a "today's lineup" row for THIS game
-        for r in team_recent:
-            rows.append({
-                "id": None,                  # not a real lineup row in DB for this game
-                "team_id": r["team_id"],
-                "batting_order": r["batting_order"],
-                "position": r["position"],
-                "bats": r["bats"],
-                "player_id": r["player_id"],
-                "is_confirmed": False,       # by definition, estimated
-                "is_estimated": True,
-            })
-
-    # Tag any non-fallback rows
-    for r in rows:
-        if "is_estimated" not in r:
-            r["is_estimated"] = False
+        rows.extend(predicted)
+        log.info("  Team %d: %d predicted batters [%s]",
+                 team_id, len(predicted), predicted[0]["lineup_source"])
 
     return rows
 
@@ -1150,6 +1137,7 @@ def _project_hrr(
             "no_vig_prob": round(no_vig, 4) if no_vig is not None else None,
             "edge": round(edge, 4) if edge is not None else None,
             "edge_bucket": edge_bucket(edge) if best_american is not None else None,
+            "lineup_source": batter.get("lineup_source"),
             "created_at": snapshot_time,
         })
 

@@ -21,6 +21,8 @@ import requests
 from supabase import create_client
 from dotenv import load_dotenv
 
+from lineup_predict import predicted_lineup_for_pull, _pitcher_throws_map
+
 load_dotenv()
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -118,103 +120,30 @@ def get_todays_games() -> list[dict]:
     tomorrow_et = (et_now + timedelta(days=1)).date().isoformat()
 
     res = sb.table("games").select(
-        "id, mlb_game_pk, away_team_id, home_team_id, game_date"
+        "id, mlb_game_pk, away_team_id, home_team_id, game_date, "
+        "away_pitcher_id, home_pitcher_id"
     ).in_("game_date", [today_et, tomorrow_et]).execute()
     return res.data
 
 
-def fetch_last_known_lineup(team_id: int, current_game_id: int,
-                            lookback_days: int = 14) -> list[dict]:
+def fetch_last_known_lineup(team_id: int, opp_throws: str | None,
+                            slate_date: str) -> list[dict]:
     """
-    Fall back to this team's most recent posted lineup from the last N days,
-    excluding the current game.
+    Option B predicted lineup for `team_id` ahead of `slate_date`.
 
-    Returns a list of dicts shaped like extract_lineup() output, or [] if no
-    historical lineup is found in the lookback window.
+    Delegates to lineup_predict.predicted_lineup_for_pull: a rolling-7
+    most-common lineup with a best-effort same-handedness layer (vs the
+    opposing starter's `opp_throws`), degrading to the single most-recent
+    lineup when <7 games of history exist.
 
-    Strategy:
-      1. Find this team's most recent past game with at least 9 lineup rows
-      2. Pull those 9 batters with their batting_order, position, bats
-      3. Return them so caller can re-stamp as "projected" for the current game
+    Returns extract_lineup()-shaped dicts, each carrying a `lineup_source` key
+    ('estimated_rolling_7' | 'estimated_last_known') the caller stamps into
+    lineups.source. [] when no usable history exists.
 
-    Notes:
-      - We only consider lineups from games on dates BEFORE the current game.
-        Same-day doubleheaders are intentionally excluded to avoid the rare
-        case where Game 1 lineup is mid-write when this script fires.
-      - We accept any prior lineup with >=9 rows, regardless of whether it
-        was originally confirmed or projected. Best-available wins.
+    (Games strictly before slate_date are used, so today's row — and any
+    same-day doubleheader — is naturally excluded by the helper's date filter.)
     """
-    et_now = datetime.now(timezone.utc) - timedelta(hours=4)
-    today_et = et_now.date().isoformat()
-    cutoff_date = (et_now.date() - timedelta(days=lookback_days)).isoformat()
-
-    # Find candidate past games for this team where lineups exist
-    games_res = sb.table("games") \
-        .select("id, game_date") \
-        .or_(f"home_team_id.eq.{team_id},away_team_id.eq.{team_id}") \
-        .gte("game_date", cutoff_date) \
-        .lt("game_date", today_et) \
-        .neq("id", current_game_id) \
-        .order("game_date", desc=True) \
-        .limit(10) \
-        .execute()
-
-    candidate_games = games_res.data or []
-    if not candidate_games:
-        return []
-
-    # For each candidate (newest first), check if 9 lineup rows exist for this team
-    for cg in candidate_games:
-        lineup_res = sb.table("lineups") \
-            .select("player_id, batting_order, position, bats") \
-            .eq("game_id", cg["id"]) \
-            .eq("team_id", team_id) \
-            .order("batting_order") \
-            .execute()
-
-        rows = lineup_res.data or []
-        # Need a real starting lineup — require 9 unique slots 1-9
-        slots = sorted({r["batting_order"] for r in rows if r.get("batting_order")})
-        if slots != list(range(1, 10)):
-            continue
-
-        # Dedupe by slot (in case multiple players share a slot in history)
-        by_slot = {}
-        for r in rows:
-            slot = r["batting_order"]
-            if slot not in by_slot:
-                by_slot[slot] = r
-
-        # Reshape to match extract_lineup() output format (uses mlbam_id)
-        # We need the mlbam_id — look up each player_id
-        player_ids = [by_slot[s]["player_id"] for s in range(1, 10)]
-        players_res = sb.table("players") \
-            .select("id, mlbam_id, name") \
-            .in_("id", player_ids) \
-            .execute()
-        mlbam_by_internal = {p["id"]: p for p in players_res.data}
-
-        out = []
-        for slot in range(1, 10):
-            r = by_slot[slot]
-            p = mlbam_by_internal.get(r["player_id"])
-            if not p:
-                # Missing player record — skip this lineup, try older one
-                break
-            out.append({
-                "mlbam_id": p["mlbam_id"],
-                "name": p["name"],
-                "position": r.get("position"),
-                "bats": r.get("bats"),
-                "batting_order": slot,
-            })
-        else:
-            # All 9 slots resolved cleanly — return this lineup
-            log.info("    fallback: using lineup from game_id=%d (%s)",
-                     cg["id"], cg["game_date"])
-            return out
-
-    return []
+    return predicted_lineup_for_pull(sb, team_id, opp_throws, slate_date)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -322,11 +251,20 @@ def process_game(game: dict, team_map: dict[int, int], player_map: dict[int, int
         # If MLB hasn't posted anything for this team yet, look back to
         # this team's most recent posted lineup and use it as projection.
         if not lineup:
-            log.info("   %s team has no MLB lineup yet → trying last-known fallback",
+            log.info("   %s team has no MLB lineup yet → predicted-lineup fallback",
                      team_label)
-            lineup = fetch_last_known_lineup(our_team_id, game["id"])
+            # Opposing starter = the OTHER side's pitcher. Throws comes from the
+            # memoized pitcher map (one players query per cron run) — no per-game
+            # handedness query. Game pitcher ids ride the already-fetched game row.
+            opp_pid = (game.get("home_pitcher_id") if team_label == "away"
+                       else game.get("away_pitcher_id"))
+            opp_throws = _pitcher_throws_map(sb).get(opp_pid) if opp_pid else None
+            lineup = fetch_last_known_lineup(our_team_id, opp_throws, game["game_date"])
             if lineup:
-                source = "last_known"
+                # The helper tags every row with the specific estimator used;
+                # stamp it into lineups.source so compute_projections reads
+                # provenance back (Finding C).
+                source = lineup[0].get("lineup_source") or "estimated_last_known"
                 any_fallback = True
             else:
                 log.info("   %s team has no historical lineup either", team_label)
@@ -388,7 +326,8 @@ def process_game(game: dict, team_map: dict[int, int], player_map: dict[int, int
                 existing_rows
                 and any(r.get("is_confirmed") for r in existing_rows)
                 and any(r.get("source") == "mlb_api" for r in existing_rows)
-                and new_sources == {"last_known"}
+                and new_sources.issubset(
+                    {"last_known", "estimated_rolling_7", "estimated_last_known"})
             ):
                 log.info("   ⌀ skipping team_id=%d rewrite: existing data is confirmed", tid)
                 # Strip out the rows for this team from our payload
