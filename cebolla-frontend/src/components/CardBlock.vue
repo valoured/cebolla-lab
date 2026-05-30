@@ -140,6 +140,30 @@ function marketColorClass(market) {
   if (market && market.startsWith('h_r_rbi_')) return 'market-hrr-mid'
   return 'market-default'
 }
+
+// Per-leg suggested stake tier (Phase 1 advisory, migration 28). Conviction
+// ramp: lock (highest) → donation (barely a play). Two greens for the
+// positive-conviction tiers (lock/safe, split by saturation), break to amber at
+// risky (positive → uncertain), gray for lottery/donation. NULL tier (legacy
+// pre-Phase 1 legs) → null → no badge.
+function stakeTierBadge(tier) {
+  switch (tier) {
+    case 'lock':     return { label: 'LOCK',     cls: 'tier-badge--lock' }
+    case 'safe':     return { label: 'SAFE',     cls: 'tier-badge--safe' }
+    case 'risky':    return { label: 'RISKY',    cls: 'tier-badge--risky' }
+    case 'lottery':  return { label: 'LOTTERY',  cls: 'tier-badge--lottery' }
+    case 'donation': return { label: 'DONATION', cls: 'tier-badge--donation' }
+    default:         return null
+  }
+}
+
+// Precompute once per leg keyed by leg.id — mirrors legIndicators above so the
+// template doesn't call stakeTierBadge() multiple times per leg per render.
+const tierBadges = computed(() => {
+  const map = {}
+  for (const leg of props.legs) map[leg.id] = stakeTierBadge(leg.suggested_stake_tier)
+  return map
+})
 </script>
 
 <template>
@@ -182,6 +206,9 @@ function marketColorClass(market) {
             <span class="text-fg-500 italic">vs</span>
             <span class="label-bracket text-fg-600">{{ leg.opponent_abbrev }}</span>
             <span class="leg-market" :class="marketColorClass(leg.market)">{{ marketLabel(leg.market, leg.line) }}</span>
+            <span v-if="tierBadges[leg.id]" class="tier-badge" :class="tierBadges[leg.id].cls">
+              {{ tierBadges[leg.id].label }}
+            </span>
           </div>
           <div class="leg-numbers">
             <span class="leg-proj">{{ fmtPct(leg.projected_prob) }} proj</span>
@@ -407,6 +434,25 @@ function marketColorClass(market) {
   color: #5F9EA0;  /* lab teal — cross-market product, the site complement */
   background: rgba(95, 158, 160, 0.10);
 }
+/* Per-leg suggested stake tier (Phase 1 advisory). Conviction ramp: two greens
+   for lock/safe (split by saturation), amber break at risky, gray for
+   lottery/donation (donation dimmed). Base chip cloned from .market-badge; hex
+   literals per CLAUDE.md lesson #7 (Tailwind tokens flake in scoped styles). */
+.tier-badge {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.tier-badge--lock     { color: #22c55e; background: rgba(34, 197, 94, 0.14); }
+.tier-badge--safe     { color: #4ade80; background: rgba(74, 222, 128, 0.07); }
+.tier-badge--risky    { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+.tier-badge--lottery  { color: rgba(255, 255, 255, 0.55); background: rgba(255, 255, 255, 0.05); }
+.tier-badge--donation { color: rgba(255, 255, 255, 0.30); background: rgba(255, 255, 255, 0.02); opacity: 0.7; }
 .leg-numbers {
   display: flex;
   align-items: baseline;
