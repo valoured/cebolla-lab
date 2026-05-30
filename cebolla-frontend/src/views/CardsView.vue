@@ -224,6 +224,7 @@ const historicalAll = computed(() => {
 function cardsByTier(tier) {
   return todaysCards.value.filter(c => c.tier === tier)
 }
+const straightCards = computed(() => cardsByTier('straight'))
 const twoLegCards   = computed(() => cardsByTier('two_leg'))
 const threeLegCards = computed(() => cardsByTier('three_leg'))
 const fourLegCards  = computed(() => cardsByTier('four_leg'))
@@ -356,10 +357,10 @@ function openPlayer(playerId) {
           <span class="label-bracket !text-[8px] text-fg-500">{{ fmtDate(todayIso) }}</span>
         </div>
 
-        <!-- ── STRAIGHTS (PODs) ──────────────────────────────── -->
+        <!-- ── PLAYS OF THE DAY (PODs) ───────────────────────── -->
         <div v-if="todaysPods.length" class="mb-6">
           <div class="tier-header">
-            <span class="tier-label">STRAIGHTS</span>
+            <span class="tier-label">PLAYS OF THE DAY</span>
             <span class="tier-sublabel">{{ todaysPods.length }} projection{{ todaysPods.length === 1 ? '' : 's' }} · $10 hypothetical</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -420,6 +421,23 @@ function openPlayer(playerId) {
           </div>
         </div>
 
+        <!-- ── STRAIGHTS (single-leg cards) ──────────────────── -->
+        <div v-if="straightCards.length" class="mb-6">
+          <div class="tier-header">
+            <span class="tier-label">STRAIGHTS</span>
+            <span class="tier-sublabel">{{ straightCards.length }} card{{ straightCards.length === 1 ? '' : 's' }} · $10 stake</span>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <CardBlock
+              v-for="card in straightCards"
+              :key="card.id"
+              :card="card"
+              :legs="legsByCard[card.id] || []"
+              :games-by-id="gamesById"
+            />
+          </div>
+        </div>
+
         <!-- ── 2-LEGGERS ─────────────────────────────────────── -->
         <div v-if="twoLegCards.length" class="mb-6">
           <div class="tier-header">
@@ -472,7 +490,7 @@ function openPlayer(playerId) {
         </div>
 
         <!-- Empty -->
-        <div v-if="!todaysPods.length && !twoLegCards.length && !threeLegCards.length && !fourLegCards.length"
+        <div v-if="!todaysPods.length && !straightCards.length && !twoLegCards.length && !threeLegCards.length && !fourLegCards.length"
              class="bg-bg-50 border border-bg-200 px-4 py-8 text-center">
           <div class="display-text text-lg text-fg-500 italic mb-1">No cards yet for today</div>
           <p class="text-fg-500 text-xs">
