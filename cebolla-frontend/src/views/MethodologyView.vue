@@ -29,6 +29,9 @@ const sections = [
   { id: 'contact-score', label: 'Contact score',         code: 'M.03.j' },
   { id: 'combined-sort', label: 'Default sort & POD',    code: 'M.03.k' },
   { id: 'hrr-pod',       label: 'H+R+RBI POD',           code: 'M.03.l' },
+  { id: 'cards-pool',    label: 'Cards: matchup read',   code: 'M.03.p' },
+  { id: 'cards-markets', label: 'Card markets & buckets',code: 'M.03.q' },
+  { id: 'cards-fill',    label: 'Building the menu',      code: 'M.03.r' },
   { id: 'pitch-types',   label: 'Pitch-type breakdown',  code: 'M.03.m' },
   { id: 'principles',    label: 'What we don\u2019t do', code: 'M.03.n' },
   { id: 'freshness',     label: 'Updates & freshness',   code: 'M.03.o' },
@@ -582,9 +585,11 @@ function scrollTo(id) {
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
             The projection combines a hitter's rolling-window contact
             quality (Brl%, HH%, xSLG) with the opposing pitcher's allowed
-            contact profile, then adjusts for handedness, park, and weather.
-            The market price is converted to an implied probability the
-            standard way.
+            contact profile and the batter's results against the pitcher's
+            pitch mix. Park and weather are tracked separately as an
+            informational conditions overlay — surfaced next to the pick, but
+            <em>not</em> baked into the probability or the edge. The market
+            price is converted to an implied probability the standard way.
           </p>
           <details class="mt-2 text-fg-500 text-xs">
             <summary class="cursor-pointer hover:text-fg-700 transition">show formula</summary>
@@ -593,9 +598,10 @@ function scrollTo(id) {
               <br><br>
               projected_hr_prob = base_rate
               <br>&nbsp;&nbsp;× pitcher_adj
-              <br>&nbsp;&nbsp;× park_adj_by_hand
-              <br>&nbsp;&nbsp;× weather_adj
-              <br>&nbsp;&nbsp;× recent_form_factor
+              <br>&nbsp;&nbsp;× arsenal_adj
+              <br><br>
+              # park &amp; weather are an informational modifier shown
+              <br># alongside the pick — NOT factors in the probability/edge
               <br><br>
               implied_market_prob = 1 / decimal_odds
               <br>(after de-vigging the book's posted lines)
@@ -704,7 +710,7 @@ function scrollTo(id) {
             <span class="text-fg-700">Play of the Day (POD):</span>
             The daily public-scoreboard pick is the highest-combined-score HR
             prop in the slate, gated by <span class="text-fg-700">projected_prob ≥ 20%</span>
-            so we don't pick wild longshots. The pick locks at ~10:30 AM ET
+            so we don't pick wild longshots. The pick locks at 3:30 AM ET
             after the morning projections run, and settles automatically
             after games end. The combined score AND contact score at lock
             time are snapshot into the POD record, so the public scoreboard
@@ -727,7 +733,7 @@ function scrollTo(id) {
             Alongside the HR POD, Cebolla picks a second daily play for the
             <span class="text-fg-700">Hits + Runs + RBIs</span> market — a DraftKings
             prop where the line is posted at 1.5, 2.5, or 3.5 for each batter.
-            Same daily lock window (~10:30 AM ET), same combined edge × contact ranking,
+            Same daily lock window (3:30 AM ET), same combined edge × contact ranking,
             just a different stat to clear.
           </p>
           <p class="text-fg-600 text-sm leading-relaxed mb-3">
@@ -790,6 +796,147 @@ function scrollTo(id) {
           </p>
         </section>
 
+        <!-- 10c. CARDS — MATCHUP-FIRST LEG POOL -->
+        <section id="cards-pool" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">Cards: the matchup-first read</h2>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('cards-pool') }}</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            Cebolla Cards are built leg by leg from a matchup-first read. For
+            every batter on the slate we compute a single
+            <span class="text-fg-700">matchup signal</span> — a conviction score
+            that answers one question: how favorable is <em>this</em> hitter
+            against <em>this</em> pitcher, today?
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            The signal is drawn from the strongest evidence available, in
+            priority order — stronger, more direct evidence outranks weaker
+            proxies:
+          </p>
+          <ul class="text-fg-600 text-sm leading-relaxed space-y-2 list-none pl-0 mb-3">
+            <li class="border-l-2 border-signal-400/40 pl-3">
+              <span class="label-caps text-signal-200">head-to-head history</span>
+              — how the batter has actually fared against this exact starter
+              over their careers, when there's enough of a sample to mean
+              something.
+            </li>
+            <li class="border-l-2 border-signal-400/40 pl-3">
+              <span class="label-caps text-signal-200">pitch-type matchup</span>
+              — how the hitter handles the starter's primary pitch, using the
+              batter's own results against that family of pitch.
+            </li>
+            <li class="border-l-2 border-signal-400/40 pl-3">
+              <span class="label-caps text-signal-200">recent power form</span>
+              — last-7-day contact quality, falling back to a 14-day window
+              when the 7-day sample is too thin.
+            </li>
+          </ul>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            A real track record against the arm beats a hot week against
+            everyone else, so head-to-head evidence wins when it exists; the
+            recent-form read is the floor when nothing more specific is
+            available. A batter with too little data to evaluate is excluded
+            rather than guessed at.
+          </p>
+
+          <div class="bg-bg-50 border border-bg-200 px-4 py-3 mb-3">
+            <div class="label-caps text-signal-400 mb-2">Conviction tiers</div>
+            <p class="text-fg-600 text-xs leading-relaxed mb-2">
+              The matchup signal sorts each pick into an advisory tier — a
+              conviction band, shown as a label, not a dollar figure:
+            </p>
+            <ul class="text-fg-600 text-xs leading-relaxed space-y-1 list-none pl-0">
+              <li><span class="label-caps text-signal-300">Lock</span> &nbsp; rare, highest-conviction single read</li>
+              <li><span class="label-caps text-signal-200">Safe</span> &nbsp; strong, dependable matchup</li>
+              <li><span class="label-caps text-amber-300">Risky</span> &nbsp; positive read, but less certain</li>
+              <li><span class="label-caps text-fg-500">Lottery</span> &nbsp; long-odds dart on a thin signal</li>
+              <li><span class="label-caps text-fg-500">Donation</span> &nbsp; minimal edge — essentially a flier</li>
+            </ul>
+          </div>
+          <p class="text-fg-500 text-xs italic mt-4">
+            Tiers are conviction bands, not bet-sizing instructions. They tell
+            you <em>why</em> a pick is on the board, not how much to put on it.
+          </p>
+        </section>
+
+        <!-- 10d. CARDS — MARKETS & BUCKETS -->
+        <section id="cards-markets" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">Card markets &amp; buckets</h2>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('cards-markets') }}</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            The card menu is organized by <span class="text-fg-700">market</span>,
+            not by leg count. Each bucket holds a mix of single picks and
+            two-, three-, and four-leg parlays, ranked best-first, with the leg
+            count shown as a small tag on each card.
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+            <div class="bg-bg-50 border border-bg-200 px-3 py-2">
+              <div class="label-caps text-signal-400">Home Runs</div>
+              <div class="text-fg-600 text-xs mt-1 leading-snug">Anytime-HR legs.</div>
+            </div>
+            <div class="bg-bg-50 border border-bg-200 px-3 py-2">
+              <div class="label-caps text-signal-400">H+R+RBI</div>
+              <div class="text-fg-600 text-xs mt-1 leading-snug">Hits + Runs + RBIs lines (1.5 and 2.5).</div>
+            </div>
+            <div class="bg-bg-50 border border-bg-200 px-3 py-2">
+              <div class="label-caps text-signal-400">2+ Hits</div>
+              <div class="text-fg-600 text-xs mt-1 leading-snug">The two-hit line — a harder bar than 1+ hits.</div>
+            </div>
+            <div class="bg-bg-50 border border-bg-200 px-3 py-2">
+              <div class="label-caps text-signal-400">Mix &amp; Match</div>
+              <div class="text-fg-600 text-xs mt-1 leading-snug">Cross-market only — legs from 2+ different markets.</div>
+            </div>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            <span class="text-fg-700">Mix &amp; Match</span> is the only
+            cross-market bucket: every card in it combines legs from at least
+            two of the markets above. The other three buckets are
+            market-pure — every leg on the card is the same kind of bet.
+          </p>
+          <p class="text-fg-500 text-xs italic mt-4">
+            The Cards <span class="text-fg-700">2+ Hits</span> bucket is a
+            different bet from the 1+ hits numbers shown on the slate page —
+            cards target the harder two-hit line, while the slate view keeps
+            1+ hits for matchup context.
+          </p>
+        </section>
+
+        <!-- 10e. CARDS — HOW THE MENU IS BUILT -->
+        <section id="cards-fill" class="scroll-mt-24">
+          <div class="flex items-baseline gap-3 mb-3">
+            <h2 class="display-text text-xl text-fg-800">Building the menu</h2>
+            <span class="label-bracket !text-[8px] text-fg-500">{{ codeFor('cards-fill') }}</span>
+          </div>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            Within each bucket, cards are ranked by a blend of expected value
+            and matchup conviction — value weighted most heavily, conviction
+            breaking ties. The best cards rise to the top of their section.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            We fill positive-value cards first. If a bucket is still short of
+            its target, we'll add slightly-negative cards down to a small
+            floor — but no further. A confidently-losing parlay never ships
+            just to hit a number; the bucket simply runs shorter that day. We'd
+            rather show you six honest cards than eight with two duds padding
+            the count.
+          </p>
+          <p class="text-fg-600 text-sm leading-relaxed mb-3">
+            One structural guardrail: <span class="text-fg-700">no batter
+            appears on more than two cards</span> across the entire menu — every
+            bucket combined. A single hot hitter can't blanket the board, so the
+            menu stays diversified across the slate.
+          </p>
+          <p class="text-fg-500 text-xs italic mt-4">
+            Honesty note: the ranking math slightly favors longer parlays, so on
+            a thin slate you may see more multi-leg cards near the top. Real
+            slates, with their natural variance, tend to produce a healthy mix
+            of singles and parlays.
+          </p>
+        </section>
+
         <!-- 9. PITCH-TYPE BREAKDOWN -->
         <section id="pitch-types" class="scroll-mt-24">
           <div class="flex items-baseline gap-3 mb-3">
@@ -829,9 +976,12 @@ function scrollTo(id) {
               don't surface that combination as a recommended structure.
             </li>
             <li class="border-l-2 border-signal-400/40 pl-3">
-              <span class="text-fg-700">No same-game parlays.</span>
-              SGP correlation models are deliberately mispriced in the
-              book's favor. We pass.
+              <span class="text-fg-700">Correlation is penalized, not banned.</span>
+              Legs from the same game, team, or player are discounted (a
+              same-game pairing loses ~12%, same-team or same-player ~15%) so a
+              correlated card has to clear a meaningfully higher bar to make the
+              menu. We surface them when they're still worth it — we don't
+              pretend correlation doesn't exist.
             </li>
             <li class="border-l-2 border-signal-400/40 pl-3">
               <span class="text-fg-700">No scraping competitor ratings.</span>
@@ -867,11 +1017,11 @@ function scrollTo(id) {
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Lineups</span>
-              <span class="text-fg-600 text-sm">Pulled at morning lock; refreshed throughout the day as teams post confirmed lineups.</span>
+              <span class="text-fg-600 text-sm">Pulled at the 3:30 AM ET lock; refreshed throughout the day as teams post confirmed lineups.</span>
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Odds</span>
-              <span class="text-fg-600 text-sm">Captured at morning lock, then refreshed hourly through the last game of the day.</span>
+              <span class="text-fg-600 text-sm">Captured at the 3:30 AM ET lock, then refreshed hourly through the last game of the day.</span>
             </div>
             <div class="flex items-baseline gap-3">
               <span class="label-caps text-signal-400 w-28 shrink-0">Live scores</span>
