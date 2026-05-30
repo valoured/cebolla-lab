@@ -149,15 +149,30 @@ MARKET_MIN_PROB = {
     "rbi_yes":      0.35,
 }
 
-# Stake recommendations by tier (canonical — frontend can scale linearly).
-# Straights inherit the 2-leg stake — they're single-leg conviction picks
-# for Lock/Safe-tier anchors, analogous to PODs but in the cards stream.
-STAKE_REC = {
-    "straight":   10.00,
-    "two_leg":    10.00,
-    "three_leg":   5.00,
-    "four_leg":    1.00,
+# ── Stake sizing (tier_v1 bankroll framework, sql/30) ────────────────────
+# Stake is sized by CONVICTION (suggested_stake_tier), NOT leg count. 1U =
+# $100 on a $10,000 bankroll; a single play maxes at 2U. The frontend renders
+# these dollars as U-units. settle_cards.py denominates realized P&L in
+# stake_rec, so these are REAL DOLLARS — not units.
+#   lock 2U / safe 1U / risky 0.25U / lottery 0.10U / donation 0.05U
+TIER_STAKE = {
+    "lock":     200.00,
+    "safe":     100.00,
+    "risky":     25.00,
+    "lottery":   10.00,
+    "donation":   5.00,
 }
+# Any leg with a None/unknown tier forces this fallback (risky, 0.25U).
+TIER_STAKE_FALLBACK = 25.00
+
+# Written to cards.stake_framework (sql/30) so ROI views can separate the new
+# tier-sized regime from legacy leg-count rows (which stay NULL).
+STAKE_FRAMEWORK = "tier_v1"
+
+# LEGACY (leg_count_v1, pre 2026-05-30): stake keyed on leg count, not tier.
+# Superseded by TIER_STAKE above; retained as documentation only.
+#   STAKE_REC = {"straight": 10.00, "two_leg": 10.00,
+#                "three_leg": 5.00, "four_leg": 1.00}
 
 # NOTE: the old per-tier card-level EV_GATES (straight 0.0 / two 0.05 /
 # three 0.08 / four 0.10) were removed in the market-segregated rebuild.
@@ -933,6 +948,27 @@ def _worst_ev_action(legs):
     return "full"
 
 
+def _card_stake_for(legs):
+    """
+    tier_v1 stake (real dollars) sized by the MOST CONSERVATIVE leg tier —
+    a Lock+Risky parlay is sized at Risky (the smaller stake). Any leg with a
+    None/unknown tier forces the risky fallback (25.00 / 0.25U). For a
+    single-leg straight this is simply that leg's tier stake.
+
+    NOTE: this sizes off the per-LEG suggested_stake_tier, which can differ
+    from the card-level suggested_stake_tier (mean-signal) shown as the card's
+    badge. Intentional per the bankroll framework: stake follows the weakest
+    leg, the badge follows the card's aggregate conviction.
+    """
+    stakes = []
+    for l in legs:
+        s = TIER_STAKE.get(l.get("suggested_stake_tier"))
+        if s is None:
+            return TIER_STAKE_FALLBACK
+        stakes.append(s)
+    return min(stakes) if stakes else TIER_STAKE_FALLBACK
+
+
 def make_combo_record(legs, tier, slate_quality, cfg=None):
     """
     Bundle a combination's math + legs + tier into a finalized record.
@@ -952,7 +988,7 @@ def make_combo_record(legs, tier, slate_quality, cfg=None):
         return None
 
     score = score_combination(math, legs)
-    stake = STAKE_REC[tier]
+    stake = _card_stake_for(legs)
     profit_if_hit = round(stake * (math["decimal_odds"] - 1), 2)
 
     leg_sigs = [float(l.get("primary_signal") or 0.0) for l in legs]
@@ -989,6 +1025,7 @@ def make_combo_record(legs, tier, slate_quality, cfg=None):
         "label":         label_for(legs, tier, math),
         "primary_signal":       card_primary_signal,
         "suggested_stake_tier": card_stake_tier,
+        "stake_framework":      STAKE_FRAMEWORK,
         "phase1_metadata":      phase1_metadata,
     }
 
@@ -1338,6 +1375,8 @@ def insert_card(date_iso, combo):
         # Market-segregated bucket (migration 29). Independent of `tier`,
         # which still carries leg-count (straight/two_leg/three_leg/four_leg).
         "card_market":          combo.get("card_market"),
+        # Stake-sizing regime (migration 30). tier_v1 = conviction-tier dollars.
+        "stake_framework":      combo.get("stake_framework"),
         # Back-compat dual write
         "confidence_score":     card_sig,
         "status":               "pending",

@@ -113,6 +113,13 @@ function fmtMoney(n, signed = false) {
   const sign = signed ? (v > 0 ? '+' : (v < 0 ? '-' : '')) : (v < 0 ? '-' : '')
   return `${sign}$${Math.abs(v).toFixed(2)}`
 }
+// tier_v1 bankroll units: 1U = $100. 200→"2U", 25→"0.25U", 5→"0.05U".
+// Trailing zeros trimmed via parseFloat. Only used when stake_framework is
+// 'tier_v1'; legacy NULL cards render raw dollars (see footer).
+function fmtUnits(dollars) {
+  if (dollars == null || !Number.isFinite(Number(dollars))) return '—'
+  return `${parseFloat((Number(dollars) / 100).toFixed(2))}U`
+}
 function marketLabel(market, line) {
   if (market === 'hr_anytime') return 'HR'
   if (market === 'hr_0.5')     return 'HR'  // legacy POD market name
@@ -256,7 +263,12 @@ const convBars = computed(() => {
 
     <!-- Footer: stake → payout line -->
     <div class="card-footer">
-      <span class="text-fg-500">{{ fmtMoney(card.stake_rec) }} stake</span>
+      <!-- tier_v1 cards show bankroll units (primary) + dollars; legacy NULL
+           stake_framework cards show raw dollars only. -->
+      <span v-if="card.stake_framework === 'tier_v1'" class="text-fg-500">
+        {{ fmtUnits(card.stake_rec) }} · {{ fmtMoney(card.stake_rec) }} stake
+      </span>
+      <span v-else class="text-fg-500">{{ fmtMoney(card.stake_rec) }} stake</span>
       <span class="text-fg-500">·</span>
       <span class="text-fg-500">{{ fmtOdds(card.combined_odds) }}</span>
       <span class="text-fg-500">·</span>

@@ -105,6 +105,20 @@ HRR_MIN_PROB_BY_LINE = {
     "h_r_rbi_3.5": 0.07,
 }
 
+# ── Stake sizing (tier_v1, sql/30) — mirrors pick_cards.TIER_STAKE ────────
+# Conviction-tier dollars; 1U = $100 on a $10k bankroll. settle reads
+# pods.stake as REAL DOLLARS, so these are dollars not units. A Lock POD →
+# $200 (2U), Safe → $100 (1U), etc. None/unknown tier → risky fallback.
+TIER_STAKE = {
+    "lock":     200.00,
+    "safe":     100.00,
+    "risky":     25.00,
+    "lottery":   10.00,
+    "donation":   5.00,
+}
+TIER_STAKE_FALLBACK = 25.00          # None/unknown tier → risky (0.25U)
+STAKE_FRAMEWORK = "tier_v1"
+
 
 # ─── Date helpers ─────────────────────────────────────────────────────────────
 
@@ -670,6 +684,7 @@ def insert_pod(pick, date_iso, market_class):
     market_context, contact_score.
     """
     sig = pick.get("primary_signal")
+    stake = TIER_STAKE.get(pick.get("suggested_stake_tier"), TIER_STAKE_FALLBACK)
     sb.table("pods").insert({
         "pod_date": date_iso,
         "market_class": market_class,
@@ -691,9 +706,11 @@ def insert_pod(pick, date_iso, market_class):
         "primary_signal_source": pick.get("primary_signal_source"),
         "suggested_stake_tier": pick.get("suggested_stake_tier"),
         "phase1_metadata": pick.get("phase1_metadata"),
+        # Stake-sizing regime (migration 30). tier_v1 = conviction-tier dollars.
+        "stake_framework": STAKE_FRAMEWORK,
         # Back-compat dual write
         "confidence_score": sig,
-        "stake": 10.00,
+        "stake": stake,
         "status": "pending",
     }).execute()
 

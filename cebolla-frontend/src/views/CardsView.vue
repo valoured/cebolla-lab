@@ -92,7 +92,7 @@ async function load() {
       supabase
         .from('pods')
         .select('id, pod_date, market_class, market, projected_prob, edge, ' +
-                'american_odds, status, payout, stake, player_name, ' +
+                'american_odds, status, payout, stake, stake_framework, player_name, ' +
                 'team_abbrev, opponent_abbrev, player_id, player_mlbam_id, game_id')
         .gte('pod_date', cutoffIso)
         .order('pod_date', { ascending: false }),
@@ -290,6 +290,13 @@ function fmtMoney(n, signed = false) {
   const sign = signed ? (v > 0 ? '+' : (v < 0 ? '-' : '')) : (v < 0 ? '-' : '')
   return `${sign}$${Math.abs(v).toFixed(2)}`
 }
+// tier_v1 bankroll units: 1U = $100. 200→"2U", 25→"0.25U", 5→"0.05U".
+// Mirrors CardBlock.vue's helper. Only applied to tier_v1 PODs; legacy NULL
+// stake_framework PODs render the canonical $10 fallback.
+function fmtUnits(dollars) {
+  if (dollars == null || !Number.isFinite(Number(dollars))) return '—'
+  return `${parseFloat((Number(dollars) / 100).toFixed(2))}U`
+}
 function fmtDate(s) {
   if (!s) return ''
   const [y, m, d] = s.split('-').map(Number)
@@ -371,7 +378,7 @@ function openPlayer(playerId) {
         <div v-if="todaysPods.length" class="mb-6">
           <div class="tier-header">
             <span class="tier-label">PLAYS OF THE DAY</span>
-            <span class="tier-sublabel">{{ todaysPods.length }} projection{{ todaysPods.length === 1 ? '' : 's' }} · $10 hypothetical</span>
+            <span class="tier-sublabel">{{ todaysPods.length }} projection{{ todaysPods.length === 1 ? '' : 's' }} · hypothetical stake by tier</span>
           </div>
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div v-for="pod in todaysPods" :key="`pod-${pod.id}`" class="card-frame">
@@ -412,7 +419,12 @@ function openPlayer(playerId) {
                 </span>
               </div>
               <div class="card-footer">
-                <span class="text-fg-500">$10 stake</span>
+                <!-- tier_v1 PODs show bankroll units + dollars; legacy NULL
+                     stake_framework PODs show the canonical $10 fallback. -->
+                <span v-if="pod.stake_framework === 'tier_v1'" class="text-fg-500">
+                  {{ fmtUnits(pod.stake) }} · {{ fmtMoney(pod.stake) }} stake
+                </span>
+                <span v-else class="text-fg-500">$10 stake</span>
                 <span class="text-fg-500">·</span>
                 <span v-if="pod.status === 'win'" class="text-signal-400 display-num">
                   cashed {{ fmtMoney(pod.payout, true) }}
@@ -424,7 +436,7 @@ function openPlayer(playerId) {
                   voided · refund
                 </span>
                 <span v-else class="text-fg-700 display-num">
-                  → {{ fmtMoney(10 * (1 + (pod.american_odds >= 0 ? pod.american_odds / 100 : 100 / Math.abs(pod.american_odds)))) }} if hit
+                  → {{ fmtMoney((pod.stake_framework === 'tier_v1' ? pod.stake : 10) * (1 + (pod.american_odds >= 0 ? pod.american_odds / 100 : 100 / Math.abs(pod.american_odds)))) }} if hit
                 </span>
               </div>
             </div>
