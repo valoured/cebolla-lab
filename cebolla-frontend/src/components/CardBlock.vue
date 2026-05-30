@@ -164,6 +164,22 @@ const tierBadges = computed(() => {
   for (const leg of props.legs) map[leg.id] = stakeTierBadge(leg.suggested_stake_tier)
   return map
 })
+
+// Per-leg conviction bar: primary_signal (0–1) as a fill width, colored by the
+// leg's stake tier so the bar and the tier badge always agree. Needs BOTH a
+// finite primary_signal (width) AND a valid tier (color) — either missing →
+// null → no bar (silent for legacy pre-Phase 1 legs).
+const convBars = computed(() => {
+  const map = {}
+  for (const leg of props.legs) {
+    const sig = Number(leg.primary_signal)
+    const hasTier = stakeTierBadge(leg.suggested_stake_tier) != null
+    map[leg.id] = (leg.primary_signal != null && Number.isFinite(sig) && hasTier)
+      ? { pct: Math.max(0, Math.min(100, sig * 100)), cls: `conv-fill--${leg.suggested_stake_tier}` }
+      : null
+  }
+  return map
+})
 </script>
 
 <template>
@@ -217,6 +233,16 @@ const tierBadges = computed(() => {
                   :class="leg.edge != null && Number(leg.edge) >= 0 ? 'text-signal-400' : 'text-fg-500'">
               <template v-if="leg.edge != null && Number.isFinite(Number(leg.edge))">{{ Number(leg.edge) >= 0 ? '+' : '' }}{{ fmtPct(leg.edge) }} edge</template>
               <template v-else>— edge</template>
+            </span>
+          </div>
+          <div v-if="convBars[leg.id]" class="conv-bar">
+            <div class="conv-track">
+              <div class="conv-fill" :class="convBars[leg.id].cls"
+                   :style="{ width: convBars[leg.id].pct + '%' }"></div>
+            </div>
+            <span class="conv-meta">
+              <span class="conv-label">CONV</span>
+              <span class="conv-pct">{{ convBars[leg.id].pct.toFixed(0) }}%</span>
             </span>
           </div>
         </div>
@@ -453,6 +479,50 @@ const tierBadges = computed(() => {
 .tier-badge--risky    { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
 .tier-badge--lottery  { color: rgba(255, 255, 255, 0.55); background: rgba(255, 255, 255, 0.05); }
 .tier-badge--donation { color: rgba(255, 255, 255, 0.30); background: rgba(255, 255, 255, 0.02); opacity: 0.7; }
+/* Per-leg conviction bar: continuous primary_signal as a fill, colored by the
+   leg's stake tier (same hex as .tier-badge--*) so bar and badge agree. */
+.conv-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+}
+.conv-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.conv-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
+.conv-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.conv-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #9B9BA8;            /* fg-500 muted */
+}
+.conv-pct {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  color: #E8E8EE;            /* fg-700 readable */
+}
+.conv-fill--lock     { background: #22c55e; }
+.conv-fill--safe     { background: #4ade80; }
+.conv-fill--risky    { background: #fbbf24; }
+.conv-fill--lottery  { background: rgba(255, 255, 255, 0.55); }
+.conv-fill--donation { background: rgba(255, 255, 255, 0.30); }
 .leg-numbers {
   display: flex;
   align-items: baseline;
