@@ -162,8 +162,9 @@ STAKE_REC = {
 # NOTE: the old per-tier card-level EV_GATES (straight 0.0 / two 0.05 /
 # three 0.08 / four 0.10) were removed in the market-segregated rebuild.
 # Bucket fill now uses a single EV boundary: ev_per_dollar > 0 qualifies a
-# combo for pass 1, and pass 2 force-adds ev_per_dollar <= 0 combos to reach
-# the bucket target. See fill_bucket().
+# combo for pass 1, and pass 2 force-adds combos with
+# FORCE_ADD_EV_FLOOR <= ev_per_dollar <= 0 to reach the bucket target (combos
+# below the floor are skipped and the bucket ships short). See fill_bucket().
 
 # Correlation penalties applied to combined_prob. SGP penalty intentionally
 # HIGHER than initial design — SGPs usually carry unfavorable correlation
@@ -189,6 +190,14 @@ MIX_BUCKET_MAX     = 3   # cross-market only; best-effort, never force-added
 # (HR -> HRR -> Hits -> mix); a batter at the cap is excluded from every later
 # card. Mix runs last and sees the most-constrained appearance counts.
 PER_BATTER_CAP = 2
+
+# Force-add EV floor. Pass 2 of fill_bucket backfills toward the bucket target
+# with ev_per_dollar <= 0 combos, but NOT below this floor — a card worse than
+# this is a confidently-losing parlay we'd rather not ship just to hit a count.
+# So pass-2 eligibility is FORCE_ADD_EV_FLOOR <= ev <= 0 (floor INCLUSIVE);
+# below it, the bucket ships under target. (Motivating example: HR cards at
+# -0.133 / -0.153 force-added purely to reach the 8-card target.)
+FORCE_ADD_EV_FLOOR = -0.05
 
 # Stake tiers that qualify a SINGLE leg as a straight pick. Applies ONLY to
 # straight eligibility — multi-leg parlay legs are never tier-filtered.
@@ -1131,13 +1140,16 @@ def fill_bucket(pool, target, appearances, card_market, cfg=None):
 
       pass 1  — append positive-EV combos (ev_per_dollar > 0) by score until
                 the target is hit, skipping any that violate PER_BATTER_CAP.
-      pass 2  — if still short, FORCE-ADD ev_per_dollar <= 0 combos by score
-                (negative EV allowed) until the target is hit. The per-batter
-                cap is STILL HARD here — if the cap blocks, the bucket ships
-                short rather than exceeding the cap.
+      pass 2  — if still short, FORCE-ADD combos by score with
+                FORCE_ADD_EV_FLOOR <= ev_per_dollar <= 0 (floor inclusive)
+                until the target is hit. Combos below the floor are skipped
+                (counted as floor_skipped) and the bucket ships under target
+                rather than shipping a confidently-losing card. The per-batter
+                cap is STILL HARD here — if the cap blocks, the bucket also
+                ships short rather than exceeding the cap.
 
     Mutates `appearances` (the global per-batter counter) as it commits.
-    Returns (bucket_list, forced_count).
+    Returns (bucket_list, forced_count, floor_skipped_count).
     """
     straights = make_straight_records(pool, cfg=cfg)
     parlays = []
@@ -1164,20 +1176,26 @@ def fill_bucket(pool, target, appearances, card_market, cfg=None):
             continue
         _commit_card(combo, bucket, appearances, card_market)
 
-    # pass 2 — force-add negative EV to reach target (cap stays hard)
+    # pass 2 — force-add to reach target: FORCE_ADD_EV_FLOOR <= ev <= 0.
+    # Cap stays hard; combos below the floor are skipped (bucket ships short).
     forced = 0
+    floor_skipped = 0
     if len(bucket) < target:
         for combo in cands:
             if len(bucket) >= target:
                 break
-            if combo["math"]["ev_per_dollar"] > 0:
+            ev = combo["math"]["ev_per_dollar"]
+            if ev > 0:
                 continue  # already considered in pass 1
             if not _cap_ok(combo, appearances):
                 continue
+            if ev < FORCE_ADD_EV_FLOOR:
+                floor_skipped += 1
+                continue  # confidently-losing — don't ship to hit the count
             _commit_card(combo, bucket, appearances, card_market)
             forced += 1
 
-    return bucket, forced
+    return bucket, forced, floor_skipped
 
 
 def fill_mix(candidates, max_cards, appearances, cfg=None):
@@ -1462,7 +1480,7 @@ def main():
     appearances = {}          # player_id -> total cards across ALL buckets
     selected = {}
     for market in ("hr", "hrr", "hits"):
-        bucket, forced = fill_bucket(
+        bucket, forced, floor_skipped = fill_bucket(
             pools[market], BUCKET_TARGETS[market], appearances, market, cfg=cfg
         )
         selected[market] = bucket
@@ -1470,9 +1488,9 @@ def main():
         for card in bucket:
             by_legs[card["leg_count"]] = by_legs.get(card["leg_count"], 0) + 1
         log.info(
-            "%-4s bucket: %d/%d cards (%d force-added)  "
+            "%-4s bucket: %d/%d cards (%d force-added, %d below floor skipped)  "
             "[straight=%d, 2-leg=%d, 3-leg=%d, 4-leg=%d]",
-            market.upper(), len(bucket), BUCKET_TARGETS[market], forced,
+            market.upper(), len(bucket), BUCKET_TARGETS[market], forced, floor_skipped,
             by_legs[1], by_legs[2], by_legs[3], by_legs[4],
         )
 
