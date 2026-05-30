@@ -243,6 +243,11 @@ def market_lookup(pod_or_leg_market: str, line: float | None = None) -> tuple[st
         return (None, None)
     if m == "hits_yes":
         return ("hits_yes", 0.5)
+    if m == "hits_yes_1.5":
+        # 2+ hits projection. Closing odds live under snapshot market
+        # 'hits_yes' at line=1.5 (pull_dk_odds writes every hits ladder there);
+        # closing_market_for_devig('hits_yes') then selects the hits vig curve.
+        return ("hits_yes", 1.5)
     if m == "rbi_yes":
         return ("rbi_yes", 0.5)
     return (None, None)

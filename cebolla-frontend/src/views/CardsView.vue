@@ -288,7 +288,8 @@ function fmtDate(s) {
 function marketLabel(market, line) {
   if (market === 'hr_anytime') return 'HR Anytime'
   if (market === 'hr_0.5')     return 'HR Anytime'   // legacy POD market name
-  if (market === 'hits_yes')   return `Hits O${line ?? 0.5}`
+  if (market === 'hits_yes_1.5') return '2+ Hits'
+  if (market === 'hits_yes')   return '1+ Hits'
   if (market === 'rbi_yes')    return `RBI O${line ?? 0.5}`
   if (market && market.startsWith('h_r_rbi_')) {
     return `H+R+RBI O${market.replace('h_r_rbi_', '')}`
@@ -298,6 +299,7 @@ function marketLabel(market, line) {
 function marketColorClass(market) {
   if (market === 'hr_anytime')    return 'market-hr'
   if (market === 'hr_0.5')        return 'market-hr'  // legacy POD market name
+  if (market === 'hits_yes_1.5')  return 'market-hits'   // 2+ hits — same family as 1+
   if (market === 'hits_yes')      return 'market-hits'
   if (market === 'rbi_yes')       return 'market-rbi'
   if (market === 'h_r_rbi_1.5')   return 'market-hrr-low'

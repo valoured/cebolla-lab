@@ -36,7 +36,10 @@ HITS market formula (v0.4.0 — park moved to stake_modifier):
   shrunk_pitcher_hit_per_pa = (BF × obs + 60 × LEAGUE) / (BF + 60)
   pitcher_baa_factor = clamp(shrunk_p_hit_per_pa / LEAGUE_HIT_PER_PA, [0.80, 1.25])
   projected_hit_per_pa = shrunk_batter × pitcher_baa_factor
-  projected_1plus_hits = 1 - (1 - per_pa)^expected_PAs
+  projected_1plus_hits = 1 - (1 - per_pa)^expected_PAs   (market='hits_yes')
+  projected_2plus_hits = 1 - (1-per_pa)^PA - PA·per_pa·(1-per_pa)^(PA-1)
+                         (market='hits_yes_1.5'; same per_pa + PA as 1+, so
+                          P(2+) ≤ P(1+) by construction)
   stake_modifier = clamp(park_ba × weather, 0.7, 1.3)  ← INFORMATIONAL only
 
 HRR market formula (v0.4.0 — park moved to stake_modifier):
@@ -447,6 +450,27 @@ def one_minus_pow_per_pa(rate_per_pa: float, expected_pas: float) -> float:
 hr_anytime_from_per_pa = one_minus_pow_per_pa
 
 
+def two_plus_from_per_pa(rate_per_pa: float, expected_pas: float) -> float:
+    """
+    P(2+ hits) under the SAME per-PA binomial-survival model used for 1+:
+        P(2+) = 1 - (1-p)^n - n*p*(1-p)^(n-1)
+    where p = rate_per_pa, n = expected_pas (fractional, from lineup spot).
+
+    Uses identical p and n as one_minus_pow_per_pa (the 1+ form), so
+    P(2+) <= P(1+) holds by construction (their difference is exactly the
+    P(exactly 1) term, which is >= 0). Clamped to [0, 1] defensively — for
+    the model's valid (p, n) range P(0)+P(1) < 1 always, but the clamp guards
+    against any future cap change pushing it out of bounds.
+    """
+    if rate_per_pa <= 0 or expected_pas <= 0:
+        return 0.0
+    if rate_per_pa >= 1:
+        return 1.0
+    p0 = math.pow(1 - rate_per_pa, expected_pas)
+    p1 = expected_pas * rate_per_pa * math.pow(1 - rate_per_pa, expected_pas - 1)
+    return max(0.0, min(1.0, 1 - p0 - p1))
+
+
 def edge_bucket(edge: float | None) -> str:
     if edge is None:
         return "longshot_unrated"
@@ -702,12 +726,14 @@ def project_game(game: dict) -> list[dict]:
     batter_stats_map = get_batter_stats_map(all_batter_ids)
     batter_stats_l14_map = get_batter_stats_l14_map(all_batter_ids)
 
-    # Odds markets, fetched in parallel
-    # NOTE: hits_yes contains BOTH 1+ Hits (line=0.5) and 2+ Hits (line=1.5)
-    # rows because DK uses Yes/No labels for both ladders. Filter to line=0.5.
-    hr_odds_map   = get_current_odds(game["id"], all_batter_ids, "hr_anytime_yes")
-    hits_odds_map = get_current_odds(game["id"], all_batter_ids, "hits_yes", line=0.5)
-    hrr_odds_map  = get_hrr_odds_map(game["id"], all_batter_ids)
+    # Odds markets, fetched in parallel.
+    # NOTE: odds_snapshots stores ALL hits ladders under market='hits_yes',
+    # differentiated by line: 0.5 = 1+ Hits, 1.5 = 2+ Hits (also 2.5/3.5 exist).
+    # We pull the 0.5 and 1.5 lines separately to price the 1+ and 2+ rows.
+    hr_odds_map    = get_current_odds(game["id"], all_batter_ids, "hr_anytime_yes")
+    hits_odds_map  = get_current_odds(game["id"], all_batter_ids, "hits_yes", line=0.5)
+    hits2_odds_map = get_current_odds(game["id"], all_batter_ids, "hits_yes", line=1.5)
+    hrr_odds_map   = get_hrr_odds_map(game["id"], all_batter_ids)
 
     # Pitcher data
     away_arsenal = get_pitcher_arsenal(game.get("away_pitcher_id"))
@@ -735,13 +761,13 @@ def project_game(game: dict) -> list[dict]:
         if hr_row:
             rows.append(hr_row)
 
-        hits_row = _project_hits(
+        hits_rows = _project_hits(
             batter, home_pstats, bstats,
             hits_odds_map.get(batter["player_id"]),
+            hits2_odds_map.get(batter["player_id"]),
             park_ba, game["id"], snapshot_time,
         )
-        if hits_row:
-            rows.append(hits_row)
+        rows.extend(hits_rows)
 
         hrr_rows = _project_hrr(
             batter, home_pstats, bstats, bstats_l14,
@@ -764,13 +790,13 @@ def project_game(game: dict) -> list[dict]:
         if hr_row:
             rows.append(hr_row)
 
-        hits_row = _project_hits(
+        hits_rows = _project_hits(
             batter, away_pstats, bstats,
             hits_odds_map.get(batter["player_id"]),
+            hits2_odds_map.get(batter["player_id"]),
             park_ba, game["id"], snapshot_time,
         )
-        if hits_row:
-            rows.append(hits_row)
+        rows.extend(hits_rows)
 
         hrr_rows = _project_hrr(
             batter, away_pstats, bstats, bstats_l14,
@@ -888,19 +914,28 @@ def _project_hits(
     batter: dict,
     opposing_pstats: dict | None,
     batter_stats: dict | None,
-    odds_row: dict | None,
+    odds_row_1plus: dict | None,
+    odds_row_2plus: dict | None,
     park_ba_factor: float,
     game_id: int,
     snapshot_time: str,
-) -> dict | None:
-    """1+ Hits projection — one row per batter."""
+) -> list[dict]:
+    """
+    Hits projections — returns BOTH the 1+ row (market='hits_yes') and the
+    2+ row (market='hits_yes_1.5'), computed from the same per-PA rate and
+    expected-PA count. Returns [] if the required batter hit rate is missing.
+
+    The 1+ and 2+ rows are intentionally derived from identical (p, n) inputs
+    so P(2+) <= P(1+) always holds (see two_plus_from_per_pa). Each row is
+    priced against its own DK line: 1+ uses line=0.5 odds, 2+ uses line=1.5.
+    """
     if not batter_stats:
-        return None
+        return []
 
     raw_hit_per_pa = batter_stats.get("hit_per_pa")
     pa = batter_stats.get("pa") or 0
     if raw_hit_per_pa is None:
-        return None
+        return []
     raw_hit_per_pa = float(raw_hit_per_pa)
 
     # ─── Bayesian shrinkage on batter (hits) ───
@@ -927,44 +962,50 @@ def _project_hits(
 
     spot = batter.get("batting_order") or 6
     expected_pas = PA_BY_LINEUP_SPOT.get(spot, 4.0)
-    projected_prob = one_minus_pow_per_pa(projected_per_pa, expected_pas)
+    prob_1plus = one_minus_pow_per_pa(projected_per_pa, expected_pas)
+    prob_2plus = two_plus_from_per_pa(projected_per_pa, expected_pas)
 
-    # Stake modifier (informational only)
+    # Stake modifier (informational only) — shared by both lines.
     weather_factor = 1.0
     stake_modifier = max(0.7, min(1.3, park * weather_factor))
 
-    # ─── Edge ───
-    edge = None
-    no_vig = None
-    best_american = None
-    if odds_row:
-        american = odds_row.get("american_odds")
-        if american is not None:
-            implied = american_to_implied(american)
-            no_vig = devig_anytime(american, implied, market="hits_yes")
-            if no_vig is not None:
-                edge = projected_prob - no_vig
-            best_american = american
+    def _hits_row(market: str, projected_prob: float, odds_row: dict | None) -> dict:
+        # Both hits lines use the "hits_yes" devig curve (tighter/flatter than HR).
+        edge = None
+        no_vig = None
+        best_american = None
+        if odds_row:
+            american = odds_row.get("american_odds")
+            if american is not None:
+                implied = american_to_implied(american)
+                no_vig = devig_anytime(american, implied, market="hits_yes")
+                if no_vig is not None:
+                    edge = projected_prob - no_vig
+                best_american = american
+        return {
+            "game_id": game_id,
+            "player_id": batter["player_id"],
+            "market": market,
+            "model_version": MODEL_VERSION,
+            "projected_prob": round(projected_prob, 4),
+            "base_rate": round(base, 5),
+            "pitcher_adj": round(p_factor, 3),
+            "park_adj": round(park, 3),
+            "weather_adj": 1.0,
+            "arsenal_adj": 1.0,                          # n/a for hits
+            "stake_modifier": round(stake_modifier, 3),
+            "best_book": "draftkings" if best_american is not None else None,
+            "best_american_odds": best_american,
+            "no_vig_prob": round(no_vig, 4) if no_vig is not None else None,
+            "edge": round(edge, 4) if edge is not None else None,
+            "edge_bucket": edge_bucket(edge) if best_american is not None else None,
+            "created_at": snapshot_time,
+        }
 
-    return {
-        "game_id": game_id,
-        "player_id": batter["player_id"],
-        "market": "hits_yes",
-        "model_version": MODEL_VERSION,
-        "projected_prob": round(projected_prob, 4),
-        "base_rate": round(base, 5),
-        "pitcher_adj": round(p_factor, 3),
-        "park_adj": round(park, 3),
-        "weather_adj": 1.0,
-        "arsenal_adj": 1.0,                          # n/a for hits
-        "stake_modifier": round(stake_modifier, 3),
-        "best_book": "draftkings" if best_american is not None else None,
-        "best_american_odds": best_american,
-        "no_vig_prob": round(no_vig, 4) if no_vig is not None else None,
-        "edge": round(edge, 4) if edge is not None else None,
-        "edge_bucket": edge_bucket(edge) if best_american is not None else None,
-        "created_at": snapshot_time,
-    }
+    return [
+        _hits_row("hits_yes",     prob_1plus, odds_row_1plus),
+        _hits_row("hits_yes_1.5", prob_2plus, odds_row_2plus),
+    ]
 
 
 # Back-compat shim (older code paths)
@@ -1210,10 +1251,12 @@ def main():
         log.info("  strong_back(≥+5%%)=%d  lean_back=%d  flat(±2%%)=%d  lean_fade=%d  strong_fade(≤-5%%)=%d",
                  strong_back, lean_back, flat, lean_fade, strong_fade)
 
-    hr_rows   = [r for r in all_rows if r["market"] == "hr_anytime"]
-    hits_rows = [r for r in all_rows if r["market"] == "hits_yes"]
+    hr_rows    = [r for r in all_rows if r["market"] == "hr_anytime"]
+    hits_rows  = [r for r in all_rows if r["market"] == "hits_yes"]
+    hits2_rows = [r for r in all_rows if r["market"] == "hits_yes_1.5"]
     _diag("HR ANYTIME", hr_rows)
     _diag("1+ HITS",    hits_rows)
+    _diag("2+ HITS",    hits2_rows)
 
     log.info("🧅 Projection compute complete")
 

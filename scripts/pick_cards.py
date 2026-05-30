@@ -24,7 +24,7 @@ its suggested stake tier bumped one step worse).
 CARD BUCKETS (market-segregated; targets are aims, not hard counts):
   hr   bucket — 7-8 cards   (legs: hr_anytime)
   hrr  bucket — 6-7 cards   (legs: h_r_rbi_1.5 OR h_r_rbi_2.5)
-  hits bucket — 6-7 cards   (legs: hits_yes)
+  hits bucket — 6-7 cards   (legs: hits_yes_1.5 — 2+ hits)
   mix  bucket — <=3 cards   (cross-market: >=2 distinct families per card)
   rbi_yes is NOT bucketed by this rebuild.
 
@@ -64,7 +64,8 @@ PER-MARKET PROBABILITY FLOORS (sanity, applied BEFORE Phase 1 enrich):
   hr_anytime    >= 0.08
   h_r_rbi_1.5   >= 0.40
   h_r_rbi_2.5   >= 0.20
-  hits_yes      >= 0.55
+  hits_yes      >= 0.55   (1+ hits — fetched but NOT bucketed; see below)
+  hits_yes_1.5  >= 0.15   (2+ hits — the Hits bucket's source market)
   rbi_yes       >= 0.35
 The Phase 1 EV screen handles negative-edge cases via demote/disqualify
 downstream; the per-market min_prob is just a data-quality guard.
@@ -140,11 +141,12 @@ REQUIRED_MODEL_VERSION = "v0.4.0"
 # whose projected_prob is way below the line baseline (e.g. 1+ hits @ 8%),
 # which is almost always a data issue rather than a real edge.
 MARKET_MIN_PROB = {
-    "hr_anytime":  0.08,
-    "h_r_rbi_1.5": 0.40,
-    "h_r_rbi_2.5": 0.20,
-    "hits_yes":    0.55,
-    "rbi_yes":     0.35,
+    "hr_anytime":   0.08,
+    "h_r_rbi_1.5":  0.40,
+    "h_r_rbi_2.5":  0.20,
+    "hits_yes":     0.55,   # 1+ hits — kept defensively; not bucketed (see MARKET_FAMILY)
+    "hits_yes_1.5": 0.15,   # 2+ hits — the Hits bucket's source market (rarer → lower floor)
+    "rbi_yes":      0.35,
 }
 
 # Stake recommendations by tier (canonical — frontend can scale linearly).
@@ -216,10 +218,10 @@ BUCKET_TARGETS = {
 # to the full cross-market pool (the real blowup risk), and the tighter
 # PER_MARKET_COMBO_CAPS covers the now-partitioned single-market pools.
 MARKET_FAMILY = {
-    "hr_anytime":  "hr",
-    "h_r_rbi_1.5": "hrr",
-    "h_r_rbi_2.5": "hrr",
-    "hits_yes":    "hits",
+    "hr_anytime":   "hr",
+    "h_r_rbi_1.5":  "hrr",
+    "h_r_rbi_2.5":  "hrr",
+    "hits_yes_1.5": "hits",   # 2+ hits ONLY — the Hits bucket does not source 1+ hits
 }
 
 
@@ -733,6 +735,9 @@ def fetch_candidates(date_iso, games, cfg=None):
             # leg row matches the math and the display helper has a value
             # to anchor on.
             line = 0.5
+        elif p["market"] == "hits_yes_1.5":
+            # 2+ hits (over 1.5). Mirrors the hits_yes line-parse pattern.
+            line = 1.5
 
         is_home = player["team_id"] == game["home_team_id"]
         own = (game["home_team"] if is_home else game["away_team"]) or {}
@@ -988,6 +993,8 @@ def _market_display(market, line):
     (line column was historically NULL for that market; fetch_candidates
     now writes 0.5 but pre-existing rows still have NULL).
     """
+    if market == "hits_yes_1.5":
+        return "2+ Hits"
     if market == "hits_yes":
         return "1+ Hits"
     if market == "hr_anytime":

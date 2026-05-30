@@ -108,8 +108,13 @@ def classify_game_status(status_str):
 # LEG GRADING
 # ────────────────────────────────────────────────────────────────────────
 
-def parse_hrr_line(market):
-    """h_r_rbi_1.5 -> 1.5"""
+def parse_market_line(market):
+    """
+    Extract the trailing line float from a per-line market string.
+      'h_r_rbi_1.5' -> 1.5   'hits_yes_1.5' -> 1.5
+    Returns None when there is no numeric suffix ('hits_yes', 'hr_anytime'),
+    so callers can fall back to a default (e.g. 0.5 for the bare hits market).
+    """
     try:
         return float(market.split("_")[-1])
     except (ValueError, IndexError):
@@ -144,12 +149,17 @@ def grade_leg(leg, batting, game_status):
     market = leg["market"]
     if market == "hr_anytime":
         return "win" if hr >= 1 else "loss"
-    elif market == "hits_yes":
-        return "win" if hits >= 1 else "loss"
+    elif market.startswith("hits_yes"):
+        # hits_yes -> 1+ (line 0.5); hits_yes_1.5 -> 2+; hits_yes_2.5 -> 3+ ...
+        # Bare 'hits_yes' has no numeric suffix, so default the line to 0.5.
+        line = parse_market_line(market)
+        if line is None:
+            line = 0.5
+        return "win" if hits >= int(line + 0.5) else "loss"
     elif market == "rbi_yes":
         return "win" if rbi >= 1 else "loss"
     elif market.startswith("h_r_rbi_"):
-        line = parse_hrr_line(market)
+        line = parse_market_line(market)
         if line is None:
             return "pending"
         total = hits + runs + rbi
