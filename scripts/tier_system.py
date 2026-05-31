@@ -1006,6 +1006,14 @@ def compute_primary_signal_v3(
     if not candidates:
         return (0.0, None)
     value, source = max(candidates, key=lambda x: x[0])
+    # Clamp to [0, 1] at the single computation site. Components are nominally
+    # in [0, 1] but recent_power_form (l7.xslg / 2.0) can exceed 1.0 on an
+    # extreme hot streak (xSLG > 2.0 → component > 1.0). The signal is
+    # dual-written into confidence_score (pods/card_legs/cards), which carries
+    # a CHECK [0, 1] constraint — an unclamped value violates it and crashes
+    # both pickers. Clamp the winning max (not each candidate) so the
+    # primary_signal_source label still reflects which component actually won.
+    value = min(1.0, max(0.0, value))
     return (round(value, 5), source)
 
 
