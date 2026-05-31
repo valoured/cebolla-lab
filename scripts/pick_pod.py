@@ -59,6 +59,7 @@ from tier_system import (
     # Phase 1 primitives
     evaluate_eligibility,
     compute_primary_signal_v3,
+    compute_recency_dampener,
     apply_ev_screen,
     suggested_stake_tier_for,
     pitch_family_for,
@@ -200,6 +201,71 @@ def fetch_batter_l7_stats(player_ids, season):
         .in_("batter_id", player_ids) \
         .execute()
     return {r["batter_id"]: r for r in (res.data or [])}
+
+
+def fetch_recent_game_logs(player_ids, today_iso, lookback_days=21):
+    """
+    Path B (recency dampener): per-batter recent game lines from batter_game_log,
+    grouped {player_id: [rows]} sorted MOST-RECENT FIRST. Each row carries
+    total_bases + ab so compute_recency_dampener can build last-3 vs last-7 SLG.
+
+    Only games the batter actually played (pa > 0) are returned — DNPs would
+    otherwise occupy a "last N games" slot with no contact. A 21-day window
+    comfortably covers 7 games for an everyday hitter (slack for off-days);
+    extra rows are harmless (the dampener slices to the first 7). Paginated
+    because the slate-wide pull can exceed PostgREST's 1000-row default cap.
+    """
+    if not player_ids:
+        return {}
+    start = (datetime.fromisoformat(today_iso).date()
+             - timedelta(days=lookback_days)).isoformat()
+    out = {}
+    page = 0
+    PAGE = 1000
+    while True:
+        res = sb.table("batter_game_log") \
+            .select("batter_id, game_date, ab, total_bases, pa") \
+            .in_("batter_id", player_ids) \
+            .gte("game_date", start) \
+            .gt("pa", 0) \
+            .order("game_date", desc=True) \
+            .range(page * PAGE, page * PAGE + PAGE - 1) \
+            .execute()
+        rows = res.data or []
+        for r in rows:                      # global desc order → per-player desc preserved
+            out.setdefault(r["batter_id"], []).append(r)
+        if len(rows) < PAGE:
+            break
+        page += 1
+    return out
+
+
+def fetch_recent_pod_losses(date_iso):
+    """
+    Path A (consecutive-loss suppression): player_ids whose POD in a given
+    market_class LOST on EITHER of the prior 2 slate days. Returns
+    {"hr": set(player_ids), "hrr": set(player_ids)}.
+
+    Yordan-style guard: after a POD loses, the same player is barred from being
+    POD in that same market_class for the next 2 days — long enough to span the
+    common case where a player is POD one day, misses, sits/loses, and the stale
+    single-source signal would re-nominate him the very next slate.
+    """
+    d = datetime.fromisoformat(date_iso).date()
+    prior_days = [(d - timedelta(days=1)).isoformat(),
+                  (d - timedelta(days=2)).isoformat()]
+    res = sb.table("pods") \
+        .select("player_id, market_class, pod_date, status") \
+        .in_("pod_date", prior_days) \
+        .eq("status", "loss") \
+        .execute()
+    out = {"hr": set(), "hrr": set()}
+    for r in (res.data or []):
+        mc = r.get("market_class")
+        pid = r.get("player_id")
+        if mc in out and pid is not None:
+            out[mc].add(pid)
+    return out
 
 
 def fetch_batter_season_stats(player_ids, season):
@@ -375,7 +441,8 @@ def _log_signal_distribution(anchors, cfg=None):
 
 def _enrich_anchor(player_id, game_id, games_by_id, players_by_id,
                    batter_stats_l14, batter_stats_l7, batter_stats_season,
-                   pitcher_arsenals, bvp_pairs, starter_by_game_team, cfg):
+                   pitcher_arsenals, bvp_pairs, starter_by_game_team,
+                   game_log_by_player, cfg):
     """
     Market-agnostic anchor enrichment. Computes eligibility + primary_signal
     + per-component forensics from the batter's stats vs the opposing pitcher.
@@ -408,8 +475,10 @@ def _enrich_anchor(player_id, game_id, games_by_id, players_by_id,
     if not passed:
         return None
 
+    dampener = compute_recency_dampener(player_id, game_log_by_player, cfg=cfg)
     signal, source = compute_primary_signal_v3(
-        bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg=cfg
+        bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg=cfg,
+        recency_dampener=dampener,
     )
     components = _phase1_signal_components(
         bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg
@@ -427,6 +496,7 @@ def _enrich_anchor(player_id, game_id, games_by_id, players_by_id,
         "opponent_abbrev": opp_abbrev,
         "primary_signal": signal,
         "primary_signal_source": source,
+        "recency_dampener": dampener,
         "gate": gate,
         "eligibility_detail": elig_detail,
         "signal_components": components,
@@ -469,6 +539,7 @@ def _materialize_pick(anchor, proj, market, cfg=None):
         "eligibility_detail": anchor.get("eligibility_detail"),
         "primary_signal_components": anchor.get("signal_components"),
         "primary_signal_source": anchor.get("primary_signal_source"),
+        "recency_dampener": anchor.get("recency_dampener"),
     }
 
     return {
@@ -501,7 +572,8 @@ def _materialize_pick(anchor, proj, market, cfg=None):
 def select_anchors_and_market_picks(
     date_iso, games, players_by_id,
     batter_stats_l14, batter_stats_l7, batter_stats_season,
-    pitcher_arsenals, bvp_pairs, starter_by_game_team, cfg
+    pitcher_arsenals, bvp_pairs, starter_by_game_team,
+    game_log_by_player, cfg
 ):
     """
     Phase 1 unified-anchor selection. Returns {"hr": pick|None, "hrr": pick|None}.
@@ -569,7 +641,8 @@ def select_anchors_and_market_picks(
                 pid, rep["game_id"],
                 games_by_id, players_by_id,
                 batter_stats_l14, batter_stats_l7, batter_stats_season,
-                pitcher_arsenals, bvp_pairs, starter_by_game_team, cfg=cfg,
+                pitcher_arsenals, bvp_pairs, starter_by_game_team,
+                game_log_by_player, cfg=cfg,
             )
         except Exception as e:
             # Per-candidate skip (don't let one batter blow up the run); caught
@@ -608,10 +681,26 @@ def select_anchors_and_market_picks(
     _log_signal_distribution(anchors, cfg=cfg)
     log_top3("anchor", anchors)
 
+    # ── Path A: consecutive-loss POD suppression (per market_class) ──
+    # A player whose POD in this market lost on either of the prior 2 days is
+    # barred from being POD here today — the stale single-source signal keeps
+    # re-nominating a cold bat (Yordan: 3 straight HR-POD losses) otherwise.
+    suppressed = fetch_recent_pod_losses(date_iso)
+    for mc in ("hr", "hrr"):
+        if suppressed[mc]:
+            names = sorted(players_by_id.get(pid, {}).get("name", str(pid))
+                           for pid in suppressed[mc])
+            log.info("Suppressed %d player(s) from %s POD for consecutive losses "
+                     "(prior 2 days): %s", len(suppressed[mc]), mc.upper(), names)
+
     # ── Materialize HR pick (walk anchors until one passes EV screen) ──
     hr_pick = None
     hr_skipped = 0
+    hr_suppressed = 0
     for anchor in anchors:
+        if anchor["player_id"] in suppressed["hr"]:
+            hr_suppressed += 1
+            continue
         proj = hr_by_player.get(anchor["player_id"])
         if not proj:
             continue
@@ -625,7 +714,11 @@ def select_anchors_and_market_picks(
     # ── Materialize HRR pick (walk anchors until one passes EV screen) ──
     hrr_pick = None
     hrr_skipped = 0
+    hrr_suppressed = 0
     for anchor in anchors:
+        if anchor["player_id"] in suppressed["hrr"]:
+            hrr_suppressed += 1
+            continue
         proj = hrr_by_player.get(anchor["player_id"])
         if not proj:
             continue
@@ -640,6 +733,14 @@ def select_anchors_and_market_picks(
         log.info("HR: %d anchor(s) skipped by EV screen before pick locked", hr_skipped)
     if hrr_skipped:
         log.info("HRR: %d anchor(s) skipped by EV screen before pick locked", hrr_skipped)
+    if hr_suppressed:
+        log.info("HR: %d anchor(s) skipped by consecutive-loss suppression", hr_suppressed)
+    if hrr_suppressed:
+        log.info("HRR: %d anchor(s) skipped by consecutive-loss suppression", hrr_suppressed)
+    if hr_pick is None and hr_suppressed:
+        log.warning("HR: no anchor survived suppression — no HR POD today.")
+    if hrr_pick is None and hrr_suppressed:
+        log.warning("HRR: no anchor survived suppression — no HRR POD today.")
 
     return {"hr": hr_pick, "hrr": hrr_pick}
 
@@ -805,6 +906,8 @@ def main():
     log.info("  L7 stats:     %d rows", len(batter_stats_l7))
     batter_stats_season = fetch_batter_season_stats(all_proj_player_ids, season)
     log.info("  Season stats: %d rows", len(batter_stats_season))
+    game_log_by_player = fetch_recent_game_logs(all_proj_player_ids, today)
+    log.info("  Game logs:    %d batters w/ recent games", len(game_log_by_player))
 
     # ── Pitcher matchups ──
     starter_by_game_team = fetch_starting_pitcher_for_game(games)
@@ -833,7 +936,8 @@ def main():
     picks = select_anchors_and_market_picks(
         today, games, players_by_id,
         batter_stats_l14, batter_stats_l7, batter_stats_season,
-        pitcher_arsenals, bvp_pairs, starter_by_game_team, cfg,
+        pitcher_arsenals, bvp_pairs, starter_by_game_team,
+        game_log_by_player, cfg,
     )
 
     pick_for_market(today, "hr", picks.get("hr"))

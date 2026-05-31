@@ -107,6 +107,7 @@ from tier_system import (
     # Phase 1 primitives
     evaluate_eligibility,
     compute_primary_signal_v3,
+    compute_recency_dampener,
     apply_ev_screen,
     suggested_stake_tier_for,
     pitch_family_for,
@@ -334,6 +335,39 @@ def fetch_batter_l7_stats(player_ids, season):
     return {r["batter_id"]: r for r in (res.data or [])}
 
 
+def fetch_recent_game_logs(player_ids, today_iso, lookback_days=21):
+    """
+    Path B (recency dampener): per-batter recent game lines from batter_game_log,
+    grouped {player_id: [rows]} sorted MOST-RECENT FIRST, each carrying
+    total_bases + ab for compute_recency_dampener's last-3 vs last-7 SLG. Only
+    games actually played (pa > 0); 21-day window covers 7 games with slack;
+    paginated past PostgREST's 1000-row default. Mirror of pick_pod's fetcher.
+    """
+    if not player_ids:
+        return {}
+    start = (datetime.fromisoformat(today_iso).date()
+             - timedelta(days=lookback_days)).isoformat()
+    out = {}
+    page = 0
+    PAGE = 1000
+    while True:
+        res = sb.table("batter_game_log") \
+            .select("batter_id, game_date, ab, total_bases, pa") \
+            .in_("batter_id", player_ids) \
+            .gte("game_date", start) \
+            .gt("pa", 0) \
+            .order("game_date", desc=True) \
+            .range(page * PAGE, page * PAGE + PAGE - 1) \
+            .execute()
+        rows = res.data or []
+        for r in rows:
+            out.setdefault(r["batter_id"], []).append(r)
+        if len(rows) < PAGE:
+            break
+        page += 1
+    return out
+
+
 def fetch_batter_season_stats(player_ids, season):
     """
     Season-window batter_stats — drives Gate A (season_pa, family-summed
@@ -544,7 +578,8 @@ def implied_from_decimal(decimal):
 
 def _enrich_leg(candidate, games_by_id, players_by_id,
                 batter_stats_l14, batter_stats_l7, batter_stats_season,
-                pitcher_arsenals, bvp_pairs, starter_by_game_team, cfg):
+                pitcher_arsenals, bvp_pairs, starter_by_game_team,
+                game_log_by_player, cfg):
     """
     Phase 1 enrichment for one leg. Mutates `candidate` in place with
     primary_signal, primary_signal_source, gate, ev_action, ev_warning,
@@ -581,8 +616,10 @@ def _enrich_leg(candidate, games_by_id, players_by_id,
     if not passed:
         return False
 
+    dampener = compute_recency_dampener(candidate["player_id"], game_log_by_player, cfg=cfg)
     signal, source = compute_primary_signal_v3(
-        bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg=cfg
+        bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg=cfg,
+        recency_dampener=dampener,
     )
     components = _phase1_signal_components(
         bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg
@@ -597,6 +634,7 @@ def _enrich_leg(candidate, games_by_id, players_by_id,
 
     candidate["primary_signal"] = signal
     candidate["primary_signal_source"] = source
+    candidate["recency_dampener"] = dampener
     candidate["gate"] = gate
     candidate["ev_action"] = ev_action
     candidate["ev_warning"] = ev_warning
@@ -608,6 +646,7 @@ def _enrich_leg(candidate, games_by_id, players_by_id,
         "eligibility_detail": elig_detail,
         "primary_signal_components": components,
         "primary_signal_source": source,
+        "recency_dampener": dampener,
     }
     return True
 
@@ -801,6 +840,8 @@ def fetch_candidates(date_iso, games, cfg=None):
     log.info("  L7 stats:     %d rows", len(batter_stats_l7))
     batter_stats_season = fetch_batter_season_stats(qualifying_player_ids, season)
     log.info("  Season stats: %d rows", len(batter_stats_season))
+    game_log_by_player = fetch_recent_game_logs(qualifying_player_ids, get_today_iso())
+    log.info("  Game logs:    %d batters w/ recent games", len(game_log_by_player))
 
     starter_by_game_team = fetch_starting_pitcher_for_game(games)
     pitcher_ids = list({pid for pid in starter_by_game_team.values() if pid})
@@ -820,7 +861,8 @@ def fetch_candidates(date_iso, games, cfg=None):
             ok = _enrich_leg(
                 cand, games_by_id, players_by_id,
                 batter_stats_l14, batter_stats_l7, batter_stats_season,
-                pitcher_arsenals, bvp_pairs, starter_by_game_team, cfg=cfg,
+                pitcher_arsenals, bvp_pairs, starter_by_game_team,
+                game_log_by_player, cfg=cfg,
             )
         except Exception as e:
             etype = type(e).__name__

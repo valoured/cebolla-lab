@@ -914,6 +914,54 @@ def evaluate_eligibility(
     return (False, None, detail)
 
 
+def compute_recency_dampener(
+    player_id,
+    game_log_by_player: Optional[dict],
+    cfg: Optional[dict] = None,
+) -> float:
+    """
+    Recency dampener in [floor, 1.0], applied to the recent_power_form component
+    of primary_signal_v3. Compares the batter's ACTUAL slugging over his last 3
+    games vs his last 7 games (from batter_game_log total_bases / ab):
+
+        slg_last3 = Σ total_bases(last 3 games) / Σ ab(last 3 games)
+        slg_last7 = Σ total_bases(last 7 games) / Σ ab(last 7 games)
+        dampener  = clamp(slg_last3 / slg_last7, floor, 1.0)
+
+    A hitter whose most-recent 3 games are colder than his 7-game baseline gets
+    scaled DOWN. The 1.0 ceiling means a still-hot hitter is never scaled UP, so
+    this can only suppress — it patches the stale-L7-xSLG problem where a 3-game
+    barrage keeps the signal pinned high after the bat has gone cold. Unlike
+    L7 xSLG (balls-in-play only, blind to strikeouts), actual SLG counts Ks via
+    the AB denominator, so a strikeout-heavy slump is captured.
+
+    `game_log_by_player` is {player_id: [game rows]} pre-sorted MOST-RECENT FIRST,
+    each row carrying total_bases + ab. Edge cases all return 1.0 (no dampening):
+      - fewer than 3 recent games (call-up / injury return / sparse log)
+      - last-3 AB == 0 (no contact data to dampen with)
+      - last-7 SLG == 0 / None (no total bases in window; picker won't pick anyway)
+    The floor (default 0.4) prevents over-correction on a noisy 3-game sample.
+    """
+    floor = _cfg_num(cfg, "recency_dampener_floor", 0.4)
+    ceil  = _cfg_num(cfg, "recency_dampener_ceiling", 1.0)
+    rows = (game_log_by_player or {}).get(player_id) or []
+    if len(rows) < 3:
+        return 1.0
+
+    def _slg(games):
+        tb = sum(int(g.get("total_bases") or 0) for g in games)
+        ab = sum(int(g.get("ab") or 0) for g in games)
+        return (tb / ab) if ab > 0 else None
+
+    slg3 = _slg(rows[:3])
+    slg7 = _slg(rows[:7])           # rows[:7] takes all if the batter has 3-6 games
+    if slg3 is None:                # last-3 AB == 0 → nothing to dampen with
+        return 1.0
+    if not slg7:                    # None or 0.0 → no baseline ratio possible
+        return 1.0
+    return round(max(floor, min(ceil, slg3 / slg7)), 4)
+
+
 def compute_primary_signal_v3(
     bvp_row: Optional[dict],
     by_pitch_season: Optional[dict],
@@ -921,6 +969,7 @@ def compute_primary_signal_v3(
     l7_stats: Optional[dict],
     l14_stats: Optional[dict],
     cfg: Optional[dict] = None,
+    recency_dampener: float = 1.0,
 ) -> tuple[float, Optional[str]]:
     """
     Phase 1 ranking signal — max of three components, returns (signal, source).
@@ -937,17 +986,22 @@ def compute_primary_signal_v3(
         missing from by_pitch — we don't synthesize from family averages.
         source = "pitch_type_observed"
 
-      recent_power_form      = l7.xslg / primary_l7_xslg_divisor
+      recent_power_form      = (l7.xslg / primary_l7_xslg_divisor) * recency_dampener
         If l7.pa >= primary_l7_pa_min and l7.xslg present → source "l7_power_form".
         Else fall back to l14.xslg / primary_l7_xslg_divisor (any L14 PA, just
         needs xslg present) → source "l14_power_form".
+        recency_dampener (default 1.0 = no-op) is the [0.4,1.0] factor from
+        compute_recency_dampener — applied BEFORE the max() so a cooling bat can
+        be knocked out of winning the signal. Callers without game-log data pass
+        the 1.0 default and behave exactly as before.
 
-    All three unavailable → (0.0, None).
+    All three unavailable → (0.0, None). Final value clamped to [0,1].
     """
     divisor   = _cfg_num(cfg, "primary_l7_xslg_divisor", 2.0)
     bvp_ab_min = _cfg_num(cfg, "primary_bvp_ab_min", 8)
     pt_pa_min  = _cfg_num(cfg, "primary_pitch_type_pa_min", 20)
     l7_pa_min  = _cfg_num(cfg, "primary_l7_pa_min", 10)
+    damp = float(recency_dampener) if recency_dampener is not None else 1.0
 
     candidates: list[tuple[float, str]] = []
 
@@ -991,7 +1045,7 @@ def compute_primary_signal_v3(
         if l7_pa is not None and l7_xslg is not None:
             try:
                 if int(l7_pa) >= l7_pa_min and divisor:
-                    candidates.append((float(l7_xslg) / divisor, "l7_power_form"))
+                    candidates.append((float(l7_xslg) / divisor * damp, "l7_power_form"))
                     used_l7 = True
             except (TypeError, ValueError):
                 pass
@@ -999,7 +1053,7 @@ def compute_primary_signal_v3(
         l14_xslg = l14_stats.get("xslg")
         if l14_xslg is not None and divisor:
             try:
-                candidates.append((float(l14_xslg) / divisor, "l14_power_form"))
+                candidates.append((float(l14_xslg) / divisor * damp, "l14_power_form"))
             except (TypeError, ValueError):
                 pass
 
