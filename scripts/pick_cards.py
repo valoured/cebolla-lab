@@ -113,6 +113,7 @@ from tier_system import (
     pitch_family_for,
     # Reused infra
     primary_pitch_type,
+    legacy_primary_pitch_type,
     load_thresholds,
     configure,
     _cfg_num,
@@ -388,8 +389,9 @@ def fetch_batter_season_stats(player_ids, season):
 
 def fetch_pitcher_arsenals(pitcher_ids, season):
     """
-    Pitcher arsenals across both stances. primary_pitch_type() sums usage_pct
-    across stances to pick the overall most-thrown pitch.
+    Pitcher arsenals (both stances). primary_pitch_type() is stance-aware
+    (Phase 2): it filters these rows to the batter's effective stance before
+    taking the highest-usage pitch, so both vs_stance rows are needed here.
     """
     if not pitcher_ids:
         return {}
@@ -403,6 +405,17 @@ def fetch_pitcher_arsenals(pitcher_ids, season):
     for r in res.data or []:
         out.setdefault(r["pitcher_id"], []).append(r)
     return out
+
+
+def fetch_pitcher_throws(pitcher_ids):
+    """
+    {pitcher_id: throws ('L'|'R'|None)} for stance-aware primary-pitch resolution
+    of switch hitters (Phase 2). Cheap — one query over the slate's starters.
+    """
+    if not pitcher_ids:
+        return {}
+    res = sb.table("players").select("id, throws").in_("id", pitcher_ids).execute()
+    return {r["id"]: r.get("throws") for r in (res.data or [])}
 
 
 def fetch_bvp(batter_ids, pitcher_ids):
@@ -579,7 +592,7 @@ def implied_from_decimal(decimal):
 def _enrich_leg(candidate, games_by_id, players_by_id,
                 batter_stats_l14, batter_stats_l7, batter_stats_season,
                 pitcher_arsenals, bvp_pairs, starter_by_game_team,
-                game_log_by_player, cfg):
+                game_log_by_player, pitcher_throws_by_id, cfg):
     """
     Phase 1 enrichment for one leg. Mutates `candidate` in place with
     primary_signal, primary_signal_source, gate, ev_action, ev_warning,
@@ -599,10 +612,17 @@ def _enrich_leg(candidate, games_by_id, players_by_id,
     # pitcher (the call is removed in Phase 1 but the leg shape is preserved).
     candidate["opposing_pitcher_id"] = opposing_pitcher_id
 
+    bats = player.get("bats")
+    pitcher_throws = pitcher_throws_by_id.get(opposing_pitcher_id) if opposing_pitcher_id else None
     pitcher_primary = None
+    primary_reason = "no_arsenal"
+    old_primary = None
     if opposing_pitcher_id:
         arsenal = pitcher_arsenals.get(opposing_pitcher_id) or []
-        pitcher_primary = primary_pitch_type(arsenal)
+        pitcher_primary, _primary_usage, primary_reason = primary_pitch_type(
+            arsenal, bats=bats, pitcher_throws=pitcher_throws, cfg=cfg
+        )
+        old_primary = legacy_primary_pitch_type(arsenal)
 
     bstats_season = batter_stats_season.get(candidate["player_id"])
     by_pitch = (bstats_season or {}).get("by_pitch_type") if bstats_season else None
@@ -617,7 +637,7 @@ def _enrich_leg(candidate, games_by_id, players_by_id,
         return False
 
     dampener = compute_recency_dampener(candidate["player_id"], game_log_by_player, cfg=cfg)
-    signal, source = compute_primary_signal_v3(
+    signal, source, boost_detail = compute_primary_signal_v3(
         bvp_row, by_pitch, pitcher_primary, l7_stats, l14_stats, cfg=cfg,
         recency_dampener=dampener,
     )
@@ -647,6 +667,17 @@ def _enrich_leg(candidate, games_by_id, players_by_id,
         "primary_signal_components": components,
         "primary_signal_source": source,
         "recency_dampener": dampener,
+        # Phase 2 matchup-boost forensics
+        "match_boost": boost_detail.get("match_boost", 1.0),
+        "matchup_diagnostics": {
+            "primary_pitch_stance_aware": pitcher_primary,
+            "primary_pitch_old_argmax": old_primary,
+            "primary_pitch_changed": pitcher_primary != old_primary,
+            "primary_pitch_reason": primary_reason,
+            "family_pa": boost_detail.get("family_pa"),
+            "batter_brl_pct_vs_family": boost_detail.get("batter_brl_pct_vs_family"),
+            "league_brl_baseline": boost_detail.get("league_brl_baseline"),
+        },
     }
     return True
 
@@ -755,7 +786,7 @@ def fetch_candidates(date_iso, games, cfg=None):
 
     # Player metadata
     player_ids = list({p["player_id"] for p in projections if p.get("player_id")})
-    players_res = sb.table("players").select("id, name, mlbam_id, team_id, position") \
+    players_res = sb.table("players").select("id, name, mlbam_id, team_id, position, bats") \
         .in_("id", player_ids).execute()
     players_by_id = {p["id"]: p for p in (players_res.data or [])}
 
@@ -848,6 +879,7 @@ def fetch_candidates(date_iso, games, cfg=None):
     log.info("  Starting pitchers: %d", len(pitcher_ids))
     pitcher_arsenals = fetch_pitcher_arsenals(pitcher_ids, season)
     log.info("  Pitcher arsenals:  %d", len(pitcher_arsenals))
+    pitcher_throws = fetch_pitcher_throws(pitcher_ids)
 
     bvp_pairs = fetch_bvp(qualifying_player_ids, pitcher_ids)
     log.info("  BvP pairs: %d", len(bvp_pairs))
@@ -862,7 +894,7 @@ def fetch_candidates(date_iso, games, cfg=None):
                 cand, games_by_id, players_by_id,
                 batter_stats_l14, batter_stats_l7, batter_stats_season,
                 pitcher_arsenals, bvp_pairs, starter_by_game_team,
-                game_log_by_player, cfg=cfg,
+                game_log_by_player, pitcher_throws, cfg=cfg,
             )
         except Exception as e:
             etype = type(e).__name__

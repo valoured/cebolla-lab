@@ -387,20 +387,144 @@ def stake_modifier_for(park_factor: float, weather_factor: float = 1.0,
 
 # ─── Pitcher primary pitch helper ─────────────────────────────────────────────
 
-def primary_pitch_type(pitcher_arsenal_rows: list) -> Optional[str]:
+def legacy_primary_pitch_type(pitcher_arsenal_rows: list) -> Optional[str]:
     """
-    Pick the pitch type the pitcher throws most. Returns None if no arsenal.
+    PRE-Phase-2 behaviour: highest-usage pitch across BOTH stances, no usage
+    gate. Retained ONLY for A/B forensics (phase1_metadata.matchup_diagnostics
+    .primary_pitch_old_argmax) so the 14-day audit can attribute signal changes
+    to the stance fix. Not used in the live signal path.
     """
-    if not pitcher_arsenal_rows:
-        return None
     best = None
     best_usage = -1.0
-    for row in pitcher_arsenal_rows:
+    for row in (pitcher_arsenal_rows or []):
         u = row.get("usage_pct")
         if u is not None and float(u) > best_usage:
             best_usage = float(u)
             best = row.get("pitch_type")
     return best
+
+
+def primary_pitch_type(
+    pitcher_arsenal_rows: list,
+    bats: Optional[str] = None,
+    pitcher_throws: Optional[str] = None,
+    cfg: Optional[dict] = None,
+) -> tuple[Optional[str], Optional[float], str]:
+    """
+    Stance-aware pitcher primary pitch. Returns (pitch_type, usage_pct, reason)
+    with reason ∈ {'ok', 'no_arsenal', 'no_stance_rows', 'gated'}.
+
+    usage_pct in pitcher_arsenals is computed PER STANCE (denominator = pitches
+    vs that stance), so a batter only sees the pitcher's mix vs his own stance.
+    Effective stance:
+      bats 'L'/'R'                          → that stance
+      bats 'S' (switch)                     → opposite of pitcher_throws
+                                              (S vs RHP → 'L', S vs LHP → 'R')
+      bats unknown, or 'S' w/ unknown throws → stance-agnostic argmax across all
+                                              rows (legacy graceful-degrade so a
+                                              missing handedness never zeroes the
+                                              signal).
+
+    Gate: if the top pitch's usage_pct < primary_pitch_usage_min (default 25%),
+    the pitcher has no meaningful "primary" (true pitch-mix arm) → (None, usage,
+    'gated'); the signal then falls back to its other components.
+    """
+    rows = pitcher_arsenal_rows or []
+    if not rows:
+        return (None, None, "no_arsenal")
+
+    usage_gate = _cfg_num(cfg, "primary_pitch_usage_min", 25.0)
+
+    eff = None
+    if bats in ("L", "R"):
+        eff = bats
+    elif bats == "S" and pitcher_throws in ("L", "R"):
+        eff = "L" if pitcher_throws == "R" else "R"
+
+    stance_rows = []
+    if eff is not None:
+        stance_rows = [r for r in rows
+                       if r.get("vs_stance") == eff and r.get("usage_pct") is not None]
+    # Fall back to stance-agnostic when stance is unknown OR the pitcher has no
+    # rows vs this stance (sparse one-sided sample) — better an approximate
+    # primary than a zeroed signal.
+    if not stance_rows:
+        stance_rows = [r for r in rows if r.get("usage_pct") is not None]
+    if not stance_rows:
+        return (None, None, "no_stance_rows")
+
+    best = max(stance_rows, key=lambda r: float(r["usage_pct"]))
+    usage = float(best["usage_pct"])
+    if usage < usage_gate:
+        return (None, usage, "gated")
+    return (best.get("pitch_type"), usage, "ok")
+
+
+def compute_matchup_boost(
+    by_pitch_season: Optional[dict],
+    pitcher_primary_pitch_type: Optional[str],
+    cfg: Optional[dict] = None,
+) -> tuple[float, dict]:
+    """
+    Phase 2 — asymmetric (boost-only) multiplier for the recent_power_form arm,
+    rewarding a batter whose barrel rate vs the pitcher's primary-pitch FAMILY
+    clears that family's league barrel baseline:
+
+        excess = clamp(brl_pct_vs_family − _LEAGUE_BRL_BY_FAMILY[family], 0, cap_pp)
+        boost  = 1.0 + _MATCH_BOOST_K * excess          # floor 1.0 → never dampens
+
+    brl_pct_vs_family is the PA-weighted mean of by_pitch_season[*].brl_pct over
+    labels in the primary's family. Gate: family-summed PA ≥ primary_pitch_type_
+    pa_min (default 20) AND a weighted brl_pct is computable; otherwise boost is
+    1.0 (no effect). brl_pct is PERCENT (0-100), so baselines/cap are pp units.
+
+    Returns (boost, detail) where detail carries the forensics fields:
+      {match_boost, family_pa, batter_brl_pct_vs_family, league_brl_baseline}.
+    NOTE: detail['match_boost'] mirrors the returned boost (the multiplier this
+    matchup would apply); the picker overrides it to 1.0 in phase1_metadata when
+    there is no power-form arm for it to actually multiply.
+    """
+    family = pitch_family_for(pitcher_primary_pitch_type)
+    detail = {
+        "match_boost": 1.0,
+        "family_pa": None,
+        "batter_brl_pct_vs_family": None,
+        "league_brl_baseline": _LEAGUE_BRL_BY_FAMILY.get(family) if family else None,
+    }
+    if not family or not by_pitch_season:
+        return (1.0, detail)
+
+    pa_min = _cfg_num(cfg, "primary_pitch_type_pa_min", 20)
+    family_pa = 0
+    wsum = 0.0
+    wtot = 0
+    for label, e in by_pitch_season.items():
+        if not isinstance(e, dict) or pitch_family_for(label) != family:
+            continue
+        try:
+            pa = int(e.get("pa") or 0)
+        except (TypeError, ValueError):
+            continue
+        family_pa += pa
+        br = e.get("brl_pct")
+        if br is not None and pa > 0:
+            try:
+                wsum += float(br) * pa
+                wtot += pa
+            except (TypeError, ValueError):
+                pass
+    detail["family_pa"] = family_pa
+    brl = (wsum / wtot) if wtot > 0 else None
+    detail["batter_brl_pct_vs_family"] = round(brl, 2) if brl is not None else None
+
+    baseline = _LEAGUE_BRL_BY_FAMILY.get(family)
+    if family_pa < pa_min or brl is None or baseline is None:
+        return (1.0, detail)
+
+    excess = max(0.0, min(_MATCH_BOOST_CAP_PP, brl - baseline))
+    boost = round(1.0 + _MATCH_BOOST_K * excess, 5)
+    detail["match_boost"] = boost
+    return (boost, detail)
 
 
 # ─── Tier 3 tiebreaker key ────────────────────────────────────────────────────
@@ -764,6 +888,23 @@ def _market_context(edge, ev_per_dollar, cfg=None):
 # one step worse on an EV "drop" / "warn_drop".
 _PHASE1_STAKE_TIER_ORDER = ["lock", "safe", "risky", "lottery", "donation"]
 
+# ─── Pitcher-batter matchup boost (Phase 2) ───────────────────────────────────
+# Asymmetric (boost-only) multiplier on the recent_power_form arm of
+# primary_signal_v3, rewarding a batter whose barrel rate vs the pitcher's
+# primary-pitch FAMILY clears that family's league barrel baseline. Hard-coded
+# constants this pass (NOT model_thresholds rows yet) per the Phase 2 plan.
+#
+# UNITS: brl_pct is stored as PERCENT (0-100) in batter_stats.by_pitch_type, so
+# the baselines and cap are in PERCENTAGE-POINT units and k scales pp→multiplier.
+# Family baselines are the per-family p75 of barrel-vs-primary-family from the
+# Phase 1 slate audit (2026-06-01): FB 14.6, BB 13.4, OS 6.6 (offspeed's
+# distribution is tight so its p75 sits near its mean). Anchoring at p75 — not
+# the family mean — reserves the boost for roughly the top quartile of hitters
+# per family, so only genuine elites-in-matchup are rewarded.
+_LEAGUE_BRL_BY_FAMILY = {"fastball": 14.6, "breaking": 13.4, "offspeed": 6.6}
+_MATCH_BOOST_K = 0.05          # multiplier per percentage-point of excess barrel
+_MATCH_BOOST_CAP_PP = 6.0      # cap on excess (pp) → max boost 1.0 + 0.05*6 = 1.30
+
 
 def pitch_family_for(pitch_type: Optional[str]) -> Optional[str]:
     """Public wrapper around _PITCH_FAMILY. Returns 'fastball'|'breaking'|'offspeed' or None."""
@@ -970,9 +1111,12 @@ def compute_primary_signal_v3(
     l14_stats: Optional[dict],
     cfg: Optional[dict] = None,
     recency_dampener: float = 1.0,
-) -> tuple[float, Optional[str]]:
+) -> tuple[float, Optional[str], dict]:
     """
-    Phase 1 ranking signal — max of three components, returns (signal, source).
+    Phase 1 ranking signal — max of three components. Returns
+    (signal, source, boost_detail); boost_detail is the Phase 2
+    compute_matchup_boost() forensics dict (match_boost reported as 1.0 when no
+    power-form arm existed for it to multiply).
 
       observed_vs_pitcher    = bvp.hr / bvp.ab            if bvp.ab >= primary_bvp_ab_min
         source = "bvp_observed"
@@ -986,7 +1130,10 @@ def compute_primary_signal_v3(
         missing from by_pitch — we don't synthesize from family averages.
         source = "pitch_type_observed"
 
-      recent_power_form      = (l7.xslg / primary_l7_xslg_divisor) * recency_dampener
+      recent_power_form      = (l7.xslg / primary_l7_xslg_divisor) * recency_dampener * match_boost
+        match_boost (Phase 2, >= 1.0) from compute_matchup_boost — rewards a
+        batter who barrels the pitcher's primary-pitch family above its league
+        baseline. Boost-only (never < 1.0), applied to THIS arm only.
         If l7.pa >= primary_l7_pa_min and l7.xslg present → source "l7_power_form".
         Else fall back to l14.xslg / primary_l7_xslg_divisor (any L14 PA, just
         needs xslg present) → source "l14_power_form".
@@ -995,13 +1142,22 @@ def compute_primary_signal_v3(
         be knocked out of winning the signal. Callers without game-log data pass
         the 1.0 default and behave exactly as before.
 
-    All three unavailable → (0.0, None). Final value clamped to [0,1].
+    All three unavailable → (0.0, None, boost_detail). Final value clamped to [0,1].
     """
     divisor   = _cfg_num(cfg, "primary_l7_xslg_divisor", 2.0)
     bvp_ab_min = _cfg_num(cfg, "primary_bvp_ab_min", 8)
     pt_pa_min  = _cfg_num(cfg, "primary_pitch_type_pa_min", 20)
     l7_pa_min  = _cfg_num(cfg, "primary_l7_pa_min", 10)
     damp = float(recency_dampener) if recency_dampener is not None else 1.0
+
+    # Phase 2 matchup boost — asymmetric multiplier applied ONLY to the
+    # recent_power_form arm (not BvP, not pitch_type_observed), before the max()
+    # and the final [0,1] clamp. boost is 1.0 unless the batter clears the
+    # family-barrel gate, so a bad matchup never dampens.
+    boost, boost_detail = compute_matchup_boost(
+        by_pitch_season, pitcher_primary_pitch_type, cfg
+    )
+    power_form_added = False
 
     candidates: list[tuple[float, str]] = []
 
@@ -1037,7 +1193,7 @@ def compute_primary_signal_v3(
                 except (TypeError, ValueError):
                     pass
 
-    # ── recent_power_form ───────────────────────────────────────────────
+    # ── recent_power_form (boost applied here, before max + clamp) ───────
     used_l7 = False
     if l7_stats:
         l7_pa = l7_stats.get("pa")
@@ -1045,20 +1201,28 @@ def compute_primary_signal_v3(
         if l7_pa is not None and l7_xslg is not None:
             try:
                 if int(l7_pa) >= l7_pa_min and divisor:
-                    candidates.append((float(l7_xslg) / divisor * damp, "l7_power_form"))
+                    candidates.append((float(l7_xslg) / divisor * damp * boost, "l7_power_form"))
                     used_l7 = True
+                    power_form_added = True
             except (TypeError, ValueError):
                 pass
     if not used_l7 and l14_stats:
         l14_xslg = l14_stats.get("xslg")
         if l14_xslg is not None and divisor:
             try:
-                candidates.append((float(l14_xslg) / divisor * damp, "l14_power_form"))
+                candidates.append((float(l14_xslg) / divisor * damp * boost, "l14_power_form"))
+                power_form_added = True
             except (TypeError, ValueError):
                 pass
 
+    # The boost only multiplies the power-form arm; if no power-form arm exists
+    # there was nothing to boost — report 1.0 in the forensics so the audit
+    # doesn't credit a boost that never touched the signal.
+    if not power_form_added:
+        boost_detail["match_boost"] = 1.0
+
     if not candidates:
-        return (0.0, None)
+        return (0.0, None, boost_detail)
     value, source = max(candidates, key=lambda x: x[0])
     # Clamp to [0, 1] at the single computation site. Components are nominally
     # in [0, 1] but recent_power_form (l7.xslg / 2.0) can exceed 1.0 on an
@@ -1068,7 +1232,7 @@ def compute_primary_signal_v3(
     # both pickers. Clamp the winning max (not each candidate) so the
     # primary_signal_source label still reflects which component actually won.
     value = min(1.0, max(0.0, value))
-    return (round(value, 5), source)
+    return (round(value, 5), source, boost_detail)
 
 
 def apply_ev_screen(edge: Optional[float], cfg: Optional[dict] = None) -> tuple[str, bool]:
