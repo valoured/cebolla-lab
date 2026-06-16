@@ -888,6 +888,18 @@ def _market_context(edge, ev_per_dollar, cfg=None):
 # one step worse on an EV "drop" / "warn_drop".
 _PHASE1_STAKE_TIER_ORDER = ["lock", "safe", "risky", "lottery", "donation"]
 
+# ── STOP-THE-BLEED (rebuild stop-gap) ──────────────────────────────────────
+# The tier_v1 conviction→dollars mapping (TIER_STAKE in pick_pod/pick_cards) is
+# NEUTRALIZED while the picker model is rebuilt: 3 weeks of production data
+# showed the tiers inverted (Lottery 8.4% hit > Safe 7.1% hit), so the dollar
+# amounts implied by a tier are not trustworthy. Every published pick/card is
+# sized at a FLAT $1 regardless of tier. The tier LABEL (suggested_stake_tier)
+# is STILL computed and persisted on cards/legs for diagnostic forensics — we
+# want to see what the broken model THINKS the tier is — but the dollar number
+# no longer follows it. Restore tier_v1 sizing by reverting the
+# REBUILD_FLAT_STAKE wiring in pick_pod.insert_pod and pick_cards._card_stake_for.
+REBUILD_FLAT_STAKE = 1.00
+
 # ─── Pitcher-batter matchup boost (Phase 2) ───────────────────────────────────
 # Asymmetric (boost-only) multiplier on the recent_power_form arm of
 # primary_signal_v3, rewarding a batter whose barrel rate vs the pitcher's
@@ -902,8 +914,12 @@ _PHASE1_STAKE_TIER_ORDER = ["lock", "safe", "risky", "lottery", "donation"]
 # the family mean — reserves the boost for roughly the top quartile of hitters
 # per family, so only genuine elites-in-matchup are rewarded.
 _LEAGUE_BRL_BY_FAMILY = {"fastball": 14.6, "breaking": 13.4, "offspeed": 6.6}
-_MATCH_BOOST_K = 0.05          # multiplier per percentage-point of excess barrel
-_MATCH_BOOST_CAP_PP = 6.0      # cap on excess (pp) → max boost 1.0 + 0.05*6 = 1.30
+# STOP-THE-BLEED (rebuild stop-gap): matchup boost NEUTRALIZED (was 0.05).
+# Production data showed it net-negative — boosted legs hit 27.8% vs 33.0% for
+# unboosted — so k=0.0 makes compute_matchup_boost a pure no-op (boost ≡ 1.0)
+# while leaving all surrounding forensics/plumbing intact for the v2 rebuild.
+_MATCH_BOOST_K = 0.0           # was 0.05 — neutralized pending v2 rebuild
+_MATCH_BOOST_CAP_PP = 6.0      # cap on excess (pp); inert while k=0.0
 
 
 def pitch_family_for(pitch_type: Optional[str]) -> Optional[str]:

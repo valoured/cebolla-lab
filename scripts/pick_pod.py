@@ -69,6 +69,8 @@ from tier_system import (
     load_thresholds,
     configure,
     _cfg_num,
+    # STOP-THE-BLEED stop-gap: flat $1 stake (tier_v1 dollars neutralized).
+    REBUILD_FLAT_STAKE,
 )
 
 load_dotenv()
@@ -821,7 +823,13 @@ def insert_pod(pick, date_iso, market_class):
     market_context, contact_score.
     """
     sig = pick.get("primary_signal")
-    stake = TIER_STAKE.get(pick.get("suggested_stake_tier"), TIER_STAKE_FALLBACK)
+    # STOP-THE-BLEED (rebuild stop-gap): flat $1 stake regardless of tier — the
+    # tier_v1 dollar mapping is neutralized (see tier_system.REBUILD_FLAT_STAKE).
+    # suggested_stake_tier is still persisted below for forensics. (PODs are
+    # disabled at main()'s top, so this path is dormant today; kept coherent so
+    # re-enabling PODs without reverting stakes can't resurrect tier_v1 dollars.)
+    # Revert: stake = TIER_STAKE.get(pick.get("suggested_stake_tier"), TIER_STAKE_FALLBACK)
+    stake = REBUILD_FLAT_STAKE
     sb.table("pods").insert({
         "pod_date": date_iso,
         "market_class": market_class,
@@ -886,6 +894,19 @@ def pick_for_market(date_iso, market_class, pick):
 def main():
     today = get_today_iso()
     log.info("🧅 POD picker — slate %s (Phase 1: matchup-first anchor)", today)
+
+    # ── STOP-THE-BLEED (rebuild stop-gap) ───────────────────────────────
+    # PODs are DISABLED while the picker model is rebuilt (v2). 3 weeks of
+    # production data showed the picker miscalibrated (HR market at random-
+    # chance hit rate, inverted tiers, net-negative matchup boost), so we
+    # publish NO new POD rows until the rebuild + shadow validation ships.
+    # The data pipeline (schedule/savant/arsenals/lineups/odds/projections)
+    # keeps running upstream of this, so ongoing data still flows. All
+    # selection logic below is left intact — delete this block to re-enable
+    # cleanly. Placed after the slate-date determination but BEFORE any DB
+    # writes (the first write is insert_pod near the end of the run).
+    log.info("PODs disabled — model under rebuild")
+    return
 
     # ── Idempotency gate ────────────────────────────────────────────────
     existing = sb.table("pods").select("id, market_class") \

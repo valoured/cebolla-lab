@@ -117,6 +117,8 @@ from tier_system import (
     load_thresholds,
     configure,
     _cfg_num,
+    # STOP-THE-BLEED stop-gap: flat $1 stake (tier_v1 dollars neutralized).
+    REBUILD_FLAT_STAKE,
 )
 
 load_dotenv()
@@ -1034,6 +1036,14 @@ def _card_stake_for(legs):
     badge. Intentional per the bankroll framework: stake follows the weakest
     leg, the badge follows the card's aggregate conviction.
     """
+    # STOP-THE-BLEED (rebuild stop-gap): every card ships at a FLAT $1 stake
+    # regardless of tier — the tier_v1 dollar mapping is neutralized while the
+    # model is rebuilt (see tier_system.REBUILD_FLAT_STAKE). The tier LABEL is
+    # still computed/persisted for forensics; only the dollar number is flat.
+    # The TIER_STAKE-based sizing below is left intact (unreachable) for a clean
+    # revert — delete this return to restore tier_v1 sizing.
+    return REBUILD_FLAT_STAKE
+
     stakes = []
     for l in legs:
         s = TIER_STAKE.get(l.get("suggested_stake_tier"))

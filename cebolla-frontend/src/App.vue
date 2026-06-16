@@ -1,10 +1,52 @@
 <script setup>
+import { ref } from 'vue'
 import TopNav from './components/TopNav.vue'
 import SearchModal from './components/SearchModal.vue'
+
+// ─── STOP-THE-BLEED NOTICE (rebuild stop-gap) ──────────────────────────────
+// Sitewide "model under reconstruction" banner shown on every page while the
+// picker model is rebuilt. Dismissible per browser SESSION (sessionStorage,
+// not localStorage) so it reappears each new session until the v2 rebuild
+// ships and this block + the banner markup are removed.
+const REBUILD_BANNER_KEY = 'cebolla_rebuild_banner_dismissed'
+const rebuildBannerDismissed = ref(
+  sessionStorage.getItem(REBUILD_BANNER_KEY) === '1'
+)
+function dismissRebuildBanner() {
+  rebuildBannerDismissed.value = true
+  try { sessionStorage.setItem(REBUILD_BANNER_KEY, '1') } catch (e) { /* storage blocked — fine, just won't persist */ }
+}
 </script>
 
 <template>
   <div class="min-h-screen flex flex-col">
+    <!-- ─── STOP-THE-BLEED NOTICE ──────────────────────────────────────── -->
+    <!-- Above everything (incl. TopNav). High-visibility yellow/red, but    -->
+    <!-- dismissible per session. Hex literals per aesthetic-lock lesson 7   -->
+    <!-- (Tailwind tokens flaky for critical UI).                            -->
+    <div
+      v-if="!rebuildBannerDismissed"
+      role="alert"
+      class="relative z-50 w-full"
+      style="background:#FFD400;color:#111111;border-bottom:2px solid #FF2A2A;"
+    >
+      <div class="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex items-start gap-3">
+        <span class="text-base leading-none mt-0.5" aria-hidden="true">⚠️</span>
+        <p class="flex-1 text-[12px] sm:text-[13px] font-semibold leading-snug">
+          Model under reconstruction.
+          Picks shown for tracking only — do not bet real money.
+          Returning with improved predictions soon.
+        </p>
+        <button
+          type="button"
+          @click="dismissRebuildBanner"
+          aria-label="Dismiss notice"
+          class="shrink-0 text-[18px] leading-none font-bold px-1 hover:opacity-60 transition"
+          style="color:#111111;"
+        >×</button>
+      </div>
+    </div>
+
     <TopNav />
     <main class="flex-1 min-w-0 relative z-10">
       <router-view v-slot="{ Component, route }">
