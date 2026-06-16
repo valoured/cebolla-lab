@@ -19,6 +19,7 @@ import sys
 import logging
 from datetime import datetime, timezone, date, timedelta
 
+import numpy as np
 import pandas as pd
 from supabase import create_client
 from dotenv import load_dotenv
@@ -45,6 +46,15 @@ WINDOWS = [
 
 # Minimum PAs we'll bother writing for a non-season window. Below this it's noise.
 MIN_PA_FOR_WINDOW = 5
+
+# Reference high-pull power hitters — spray-angle sanity check vs their public
+# Baseball Savant pull%. Logged each run as permanent diagnostic output by
+# _log_pull_validation (does not affect any written data).
+PULL_VALIDATION_MLBAM = {
+    663728: "Cal Raleigh",
+    679529: "Spencer Torkelson",
+    670623: "Isaac Paredes",
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -208,6 +218,30 @@ def aggregate_batter(group: pd.DataFrame,
             ]
             pull_pct = len(pulled) / len(bip_clean) * 100
 
+    # ── Pulled airball rates (v2 HR predictor) ──
+    # Spray-angle pull-THIRD (Bill Petti convention), distinct from pull_pct
+    # above — that's a half-field split, kept as a separate, coarser signal.
+    # "Pulled" = adjusted spray angle > 15° toward the pull side (sign-flipped
+    # for RHB so pull is always positive). Airball = fly_ball + line_drive
+    # (popups excluded — ≈0% HR). Both rates are over BBE, matching pull_pct /
+    # barrel_pct so the scale is comparable across metrics.
+    pulled_fb_rate = None
+    pulled_airball_rate = None
+    if not bip.empty and {"hc_x", "hc_y", "stand", "bb_type"}.issubset(bip.columns):
+        bb = bip.dropna(subset=["hc_x", "hc_y", "stand", "bb_type"])
+        if len(bb):
+            # Home plate at (125.42, 198.27); angle 0 = straight up the middle,
+            # + toward RF, − toward LF.
+            angle = np.degrees(np.arctan2(bb["hc_x"] - 125.42, 198.27 - bb["hc_y"]))
+            # RHB pull to LF (negative) → flip so pull is positive for both hands.
+            adj = np.where(bb["stand"] == "R", -angle, angle)
+            is_pulled = adj > 15            # pull-third threshold
+            fly = bb["bb_type"] == "fly_ball"
+            air = bb["bb_type"].isin(("fly_ball", "line_drive"))
+            denom = len(bb)
+            pulled_fb_rate      = round(float((is_pulled & fly).sum()) / denom * 100, 2)
+            pulled_airball_rate = round(float((is_pulled & air).sum()) / denom * 100, 2)
+
     # ── xStats (mean of Statcast estimated metrics across the window) ──
     # These columns exist for every batted ball with sufficient data.
     xba = xslg = xwoba = None
@@ -247,6 +281,9 @@ def aggregate_batter(group: pd.DataFrame,
         "ev_max":         round(ev_max, 1)         if ev_max         is not None else None,
         "la_avg":         round(la_avg, 1)         if la_avg         is not None else None,
         "pull_pct":       round(pull_pct, 2)       if pull_pct       is not None else None,
+        # v2 Day 1: spray-angle pull-third airball rates (already rounded above)
+        "pulled_fb_rate":      pulled_fb_rate,
+        "pulled_airball_rate": pulled_airball_rate,
         "xba":            round(xba, 3)            if xba            is not None else None,
         "xslg":           round(xslg, 3)           if xslg           is not None else None,
         "xwoba":          round(xwoba, 3)          if xwoba          is not None else None,
@@ -300,6 +337,43 @@ def aggregate_by_pitch_type(group: pd.DataFrame) -> dict:
         }
 
     return out
+
+
+def _log_pull_validation(rows: list[dict], known: dict[int, int]) -> None:
+    """
+    Diagnostic (permanent): log spray-angle pulled-airball rates for the
+    reference high-pull hitters (sanity vs their public Savant pull%) plus the
+    top-5 leaguewide. Reads the in-memory season/'A' rows only — no DB
+    dependency, no effect on written data.
+    """
+    id_to_mlbam = {pid: mlbam for mlbam, pid in known.items()}
+    season = [r for r in rows
+              if r.get("window_type") == "season" and r.get("vs_hand") == "A"]
+
+    matched = 0
+    for r in season:
+        mlbam = id_to_mlbam.get(r["batter_id"])
+        if mlbam in PULL_VALIDATION_MLBAM:
+            log.info("PULL-VAL %-18s mlbam=%s  pulled_airball_rate=%s  "
+                     "pulled_fb_rate=%s  pull_pct[half]=%s  bbe=%s pa=%s",
+                     PULL_VALIDATION_MLBAM[mlbam], mlbam,
+                     r.get("pulled_airball_rate"), r.get("pulled_fb_rate"),
+                     r.get("pull_pct"), r.get("bbe"), r.get("pa"))
+            matched += 1
+    if not matched:
+        log.warning("PULL-VAL: no reference hitters matched this run's data")
+
+    ranked = sorted(
+        [r for r in season
+         if r.get("pulled_airball_rate") is not None and (r.get("pa") or 0) >= 100],
+        key=lambda r: r["pulled_airball_rate"], reverse=True,
+    )[:5]
+    for r in ranked:
+        log.info("PULL-VAL top  mlbam=%s  pulled_airball_rate=%.2f  "
+                 "pulled_fb_rate=%.2f  pull_pct[half]=%.2f  pa=%d",
+                 id_to_mlbam.get(r["batter_id"]),
+                 r["pulled_airball_rate"], r["pulled_fb_rate"],
+                 r.get("pull_pct") or 0.0, r["pa"])
 
 
 def lookup_player_name(mlbam_id: int) -> str:
@@ -505,6 +579,15 @@ def main():
 
     today_date = date.today()
 
+    # One-time/diagnostic: confirm bb_type strings (pulled-airball rates depend
+    # on them) and flag if the column is missing. Kept as permanent output.
+    if "bb_type" in df.columns:
+        bbe_all = df[df["type"] == "X"] if "type" in df.columns else df
+        vc = bbe_all["bb_type"].value_counts(dropna=False).to_dict()
+        log.info("bb_type value counts (batted balls): %s", vc)
+    else:
+        log.warning("Statcast df has no 'bb_type' column — pulled_*_rate will be NULL")
+
     # ──────────────── BATTER PROCESSING ────────────────
     known = get_known_batters()
 
@@ -592,6 +675,8 @@ def main():
 
     log.info("Prepared %d rows (%d new batter records, %d window rows skipped for small samples)",
              len(rows), new_count, skipped_windows)
+
+    _log_pull_validation(rows, known)
 
     written = 0
     for i in range(0, len(rows), 100):
