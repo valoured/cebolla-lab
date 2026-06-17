@@ -77,6 +77,16 @@ const routes = [
     meta: { title: 'Activity Log · Cebolla' },
   },
 
+  // ── Shadow Lab (v2 research infrastructure) ──
+  // URL-only, like /bets — no TopNav entry. Tracking-only shadow validation
+  // of the hr_v2.0 model; bookmark or direct-share /shadow.
+  {
+    path: '/shadow',
+    name: 'shadow',
+    component: () => import('./views/ShadowLab.vue'),
+    meta: { title: 'Shadow Lab · Cebolla' },
+  },
+
   // ── Legal / informational routes ──
   // These MUST exist or footer links will 404. Each renders a static
   // page mirroring its master markdown in /legal at the repo root.
