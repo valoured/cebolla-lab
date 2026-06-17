@@ -24,7 +24,10 @@ from typing import Optional
 NEUTRAL = 100.0                  # league-average index → no park effect
 _SEASON = 2026
 _WINDOW_YRS = 3
-_SOURCE = "savant_3yr"
+# Source preference, best first: real Savant 3-yr rolling wins; manual_override
+# is the fallback for parks Savant omits (Day-2: ATH/Sacramento lacks 3-yr venue
+# history → seeded as a manual ~108 approximation, see sql + compute notes).
+_SOURCE_PREFERENCE = ("savant_3yr", "manual_override")
 
 
 def _effective_side(batter_bats: Optional[str],
@@ -83,12 +86,20 @@ def _fetch_park_row(team_id: int, sb=None) -> Optional[dict]:
     if team_id in _row_cache:
         return _row_cache[team_id]
     client = sb or _client()
+    # Fetch all sources for this team/window, then pick by _SOURCE_PREFERENCE
+    # (savant_3yr beats manual_override). One query; preference applied in Python.
     res = client.table("park_factors") \
-        .select("hr_factor, hr_factor_lhb, hr_factor_rhb, runs_factor") \
+        .select("hr_factor, hr_factor_lhb, hr_factor_rhb, runs_factor, source") \
         .eq("team_id", team_id).eq("season", _SEASON) \
-        .eq("window_yrs", _WINDOW_YRS).eq("source", _SOURCE) \
-        .limit(1).execute()
-    row = (res.data or [None])[0]
+        .eq("window_yrs", _WINDOW_YRS) \
+        .in_("source", list(_SOURCE_PREFERENCE)) \
+        .execute()
+    rows = res.data or []
+    row = None
+    for src in _SOURCE_PREFERENCE:
+        row = next((r for r in rows if r.get("source") == src), None)
+        if row is not None:
+            break
     _row_cache[team_id] = row
     return row
 
