@@ -18,7 +18,7 @@ import os
 import sys
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 from supabase import create_client
@@ -94,6 +94,39 @@ def fetch_pitcher_season(mlbam_id: int) -> dict | None:
         return None
 
 
+def fetch_pitcher_daterange(mlbam_id: int, start: str, end: str) -> dict | None:
+    """
+    MLB Stats API pitching stats over a date range (v2 Day 4, L30 HR/9 + IP).
+    byDateRange can return multiple splits — duplicates for a single-team
+    pitcher, or one-per-team for a pitcher traded inside the window. Prefer the
+    combined split (numTeams > 1); otherwise the first (duplicates are identical).
+    """
+    url = f"{MLB_API}/people/{mlbam_id}/stats"
+    params = {
+        "stats": "byDateRange",
+        "group": "pitching",
+        "startDate": start,
+        "endDate": end,
+        "season": CURRENT_SEASON,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if not r.ok:
+            return None
+        stats_list = r.json().get("stats", [])
+        if not stats_list:
+            return None
+        splits = stats_list[0].get("splits", [])
+        if not splits:
+            return None
+        combined = [s for s in splits if (s.get("numTeams") or 1) > 1]
+        chosen = combined[0] if combined else splits[0]
+        return chosen.get("stat", {})
+    except Exception as e:
+        log.warning("  byDateRange failed for mlbam=%d: %s", mlbam_id, e)
+        return None
+
+
 def parse_ip(ip_str) -> float:
     """
     MLB API returns IP as a string like '125.2' meaning 125 and 2/3 innings.
@@ -131,8 +164,9 @@ def safe_int(v) -> int | None:
         return None
 
 
-def transform(stat: dict, pitcher_id: int, throws: str | None) -> dict:
-    """Convert MLB Stats API response into our pitcher_stats row."""
+def transform(stat: dict, pitcher_id: int, throws: str | None,
+              window_type: str = "season") -> dict:
+    """Convert MLB Stats API response into our pitcher_stats row (any window)."""
     ip = parse_ip(stat.get("inningsPitched"))
     bf = safe_int(stat.get("battersFaced")) or 0
     hr = safe_int(stat.get("homeRuns")) or 0
@@ -146,7 +180,7 @@ def transform(stat: dict, pitcher_id: int, throws: str | None) -> dict:
     return {
         "pitcher_id": pitcher_id,
         "season": CURRENT_SEASON,
-        "window_type": "season",
+        "window_type": window_type,
         "games_started": safe_int(stat.get("gamesStarted")),
         "innings_pitched": round(ip, 1) if ip else None,
         "batters_faced": bf if bf else None,
@@ -179,6 +213,14 @@ def main():
         log.info("No pitchers to sync.")
         return
 
+    # v2 Day 4: L30 window for recent-form HR/9 + IP (byDateRange). ET-relative,
+    # mirroring the rest of the pipeline. Only fetched for pitchers that cleared
+    # the season activity gate below (bounds the extra ~1 API call/pitcher).
+    et_today = (datetime.now(timezone.utc) - timedelta(hours=4)).date()
+    l30_start = (et_today - timedelta(days=30)).isoformat()
+    l30_end = et_today.isoformat()
+    log.info("L30 window: %s → %s", l30_start, l30_end)
+
     rows = []
     no_data = 0
     success = 0
@@ -201,6 +243,18 @@ def main():
             else:
                 rows.append(row)
                 success += 1
+                # v2 Day 4: L30 windowed HR/9 + IP via byDateRange. Only for
+                # active (season-qualified) pitchers; write only with enough
+                # recent work to be meaningful (>=10 BF in the window).
+                l30 = fetch_pitcher_daterange(p["mlbam_id"], l30_start, l30_end)
+                if l30:
+                    try:
+                        wrow = transform(l30, p["id"], p.get("throws"), window_type="l30")
+                        if (wrow["batters_faced"] or 0) >= 10:
+                            rows.append(wrow)
+                    except Exception as e:
+                        log.warning("  L30 transform failed for %s: %s", p["name"], e)
+                    time.sleep(REQUEST_DELAY)
         except Exception as e:
             log.warning("  Transform failed for %s: %s", p["name"], e)
 

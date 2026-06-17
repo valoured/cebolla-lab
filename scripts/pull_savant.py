@@ -453,6 +453,18 @@ def aggregate_pitcher(group: pd.DataFrame,
         barrels = (bip["launch_speed_angle"] == 6).sum()
         barrel_pct = barrels / bbe * 100
 
+    # ── Fly-ball metrics allowed (v2 Day 4): FB% + HR/FB ──
+    # FanGraphs convention: FB% = fly balls / all BBE; HR/FB = HR / fly balls.
+    # From Statcast bb_type + events. All 4 windows (this aggregator runs them).
+    fb_pct = hr_per_fb = None
+    if not bip.empty and "bb_type" in bip.columns:
+        bb = bip.dropna(subset=["bb_type"])
+        if len(bb):
+            fly = int((bb["bb_type"] == "fly_ball").sum())
+            fb_pct = fly / len(bb) * 100
+            hr = int((group["events"] == "home_run").sum()) if "events" in group.columns else 0
+            hr_per_fb = (hr / fly * 100) if fly else None
+
     # ── EV / Hard-Hit / Sweet Spot allowed ──
     hh_pct = ev_avg = ev_max = sweet_spot_pct = None
     if not bip.empty and "launch_speed" in bip.columns:
@@ -490,6 +502,9 @@ def aggregate_pitcher(group: pd.DataFrame,
         "sweet_spot_pct": round(sweet_spot_pct, 2) if sweet_spot_pct is not None else None,
         "ev_avg":         round(ev_avg, 1)         if ev_avg         is not None else None,
         "ev_max":         round(ev_max, 1)         if ev_max         is not None else None,
+        # v2 Day 4: fly-ball metrics allowed
+        "fb_pct":         round(fb_pct, 2)         if fb_pct         is not None else None,
+        "hr_per_fb":      round(hr_per_fb, 2)      if hr_per_fb      is not None else None,
         "xba":            round(xba, 3)            if xba            is not None else None,
         "xslg":           round(xslg, 3)           if xslg            is not None else None,
         "xwoba":          round(xwoba, 3)          if xwoba          is not None else None,
