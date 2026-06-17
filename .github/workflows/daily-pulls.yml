@@ -76,7 +76,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, morning_lock, schedule, rosters, savant, arsenals, pitcher_stats, batter_counting_stats, batter_game_log, batter_trends, weather, dk_odds, lineups, bvp, scores, projections, pick_pod, pick_cards, capture_closing_lines, settle_bets, settle_pods, settle_cards, settle_picks_v2, calibration, near_miss]
+        options: [all, morning_lock, schedule, rosters, savant, arsenals, pitcher_stats, batter_counting_stats, batter_game_log, batter_trends, weather, dk_odds, lineups, bvp, scores, projections, pick_pod, pick_cards, capture_closing_lines, settle_bets, settle_pods, settle_cards, pick_v2, settle_picks_v2, calibration, near_miss]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -365,6 +365,31 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/compute_projections.py
+
+  # ── PICK V2 (shadow): hourly after odds + lineups — the v2 analog of
+  # compute-projections. Reads CONFIRMED lineups + odds and writes the full
+  # shadow slate to picks_v2 (tracking only, no stake). Self-skips cleanly when
+  # no confirmed lineups exist, so the broad window is harmless. Mirrors
+  # compute-projections' :17 slate window MINUS the 13 7 (3:13 AM) trigger,
+  # which would be a guaranteed no-op (no confirmed lineups that early).
+  pick-v2:
+    if: |
+      always() && (
+        (github.event_name == 'schedule' &&
+         contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+        || inputs.job == 'all' || inputs.job == 'pick_v2'
+      )
+    runs-on: ubuntu-latest
+    needs: [pull-dk-odds, pull-lineups]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - run: pip install -r scripts/requirements.txt
+      - env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/pick_v2.py
 
   # ── SETTLE BETS: post-game grading + overnight catch-up ──
   settle-bets:
