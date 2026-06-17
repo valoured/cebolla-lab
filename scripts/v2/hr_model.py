@@ -149,7 +149,8 @@ def compute_hr_probability(batter_id, game_id, pitcher_id, *, sb=None, ctx=None)
     idx = PFL.get_park_hr_factor(ctx.get("home_team_id"), ctx.get("bats") or "R",
                                  ctx.get("throws"), sb=sb)
     park_mult = _clamp(idx / 100.0, *PARK_MULT_CLAMP)
-    weather_mult = _clamp(WL.get_weather_hr_index(game_id, sb=sb), *WEATHER_MULT_CLAMP)
+    weather_raw, weather_found = WL.get_weather_index_and_found(game_id, sb=sb)
+    weather_mult = _clamp(weather_raw, *WEATHER_MULT_CLAMP)
 
     per_pa = min(MODEL_INTERCEPT_C * shrunk * batter_factor * pitcher_factor
                  * park_mult * weather_mult, PROJ_PER_PA_CAP)
@@ -175,6 +176,7 @@ def compute_hr_probability(batter_id, game_id, pitcher_id, *, sb=None, ctx=None)
         "lineup_source": ctx.get("lineup_source"),
         "longshot": longshot,
         "per_game_high": per_game > PER_GAME_HIGH_THRESHOLD,
+        "weather_fallback": not weather_found,
     }
     return {
         "batter_id": batter_id, "game_id": game_id, "pitcher_id": pitcher_id,

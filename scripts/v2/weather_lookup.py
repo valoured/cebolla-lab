@@ -41,7 +41,7 @@ def resolve_latest_index(rows: Optional[list]) -> float:
 
 # ── DB-backed wrapper ────────────────────────────────────────────────────
 _sb = None
-_cache: dict[int, float] = {}
+_cache: dict[int, tuple[float, bool]] = {}
 
 
 def _client():
@@ -52,17 +52,30 @@ def _client():
     return _sb
 
 
-def get_weather_hr_index(game_id: int, sb=None) -> float:
-    """Latest weather_hr_index for game_id (neutral 1.000 if none). Cached per process."""
+def _lookup(game_id: int, sb=None) -> tuple[float, bool]:
+    """(index, found) for game_id. found=False when no usable row exists → the
+    neutral 1.000 returned is a FALLBACK, not a measured neutral. Cached."""
     if game_id in _cache:
         return _cache[game_id]
     client = sb or _client()
     res = client.table("game_weather") \
         .select("snapshot_type, weather_hr_index, fetched_at") \
         .eq("game_id", game_id).execute()
-    val = resolve_latest_index(res.data or [])
-    _cache[game_id] = val
-    return val
+    rows = res.data or []
+    found = any(r.get("weather_hr_index") is not None for r in rows)
+    val = resolve_latest_index(rows)
+    _cache[game_id] = (val, found)
+    return val, found
+
+
+def get_weather_hr_index(game_id: int, sb=None) -> float:
+    """Latest weather_hr_index for game_id (neutral 1.000 if none). Cached per process."""
+    return _lookup(game_id, sb)[0]
+
+
+def get_weather_index_and_found(game_id: int, sb=None) -> tuple[float, bool]:
+    """Like get_weather_hr_index but also reports whether a usable row existed."""
+    return _lookup(game_id, sb)
 
 
 # ── Unit self-tests (pure resolver; no DB) ───────────────────────────────

@@ -76,6 +76,11 @@ def fetch_forecast(lat: float, lng: float, game_time_utc: str) -> dict | None:
     }
 
 
+# Games already final at fetch time are expected only on ad-hoc late-day runs
+# (or postponed makeups); the early-morning cron runs pre-slate. We still fetch.
+FINAL_STATUSES = ("Final", "Game Over", "Completed Early")
+
+
 def get_today_iso():
     """ET-relative slate date (same convention as the rest of the pipeline)."""
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
@@ -171,7 +176,7 @@ def main():
     today = get_today_iso()
     games = sb.table("games").select(
         "id, game_time_utc, venue, home_team_id, status"
-    ).eq("game_date", today).not_.in_("status", ["Final", "Game Over", "Completed Early"]).execute().data or []
+    ).eq("game_date", today).execute().data or []
     teams = {t["id"]: t for t in sb.table("teams").select(
         "id, abbrev, stadium_lat, stadium_lng, home_plate_bearing").execute().data or []}
     log.info("Slate %s: %d games", today, len(games))
@@ -182,6 +187,10 @@ def main():
         if not team or team.get("stadium_lat") is None:
             log.warning("  game %s: missing home team coords — skipped", g["id"])
             continue
+        if g.get("status") in FINAL_STATUSES:
+            log.warning("  game %s (%s) already %s at fetch time — fetching weather "
+                        "anyway (expected on ad-hoc late runs / postponements).",
+                        g["id"], team.get("abbrev"), g.get("status"))
         s = build_snapshot(g, team, snapshot_type)
         if s:
             snaps.append(s)
