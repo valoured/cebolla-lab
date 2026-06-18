@@ -78,7 +78,7 @@ function warningChips(warnings) {
   <div v-else class="overflow-x-auto border border-bg-200/40 rounded-sm">
     <table class="w-full text-sm">
       <thead>
-        <tr class="border-b border-bg-200/60 text-fg-300 label-bracket !text-[9px]">
+        <tr class="border-b border-bg-200/60 text-fg-300 font-mono uppercase tracking-wide2 !text-[9px]">
           <th class="text-left py-2 px-3">PLAYER</th>
           <th class="text-left py-2 px-3">MATCHUP</th>
           <th class="text-right py-2 px-3">ODDS</th>
