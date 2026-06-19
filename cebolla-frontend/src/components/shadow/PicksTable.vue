@@ -112,6 +112,7 @@ function warningChips(warnings) {
             </span>
           </td>
           <td class="py-2 px-3">
+            <span v-if="p.lineup_source === 'projected'" class="proj-chip" title="Projected lineup (recent-history typical 9)">proj</span>
             <span v-for="w in warningChips(p.warnings)" :key="w" class="warn-chip">{{ w }}</span>
           </td>
         </tr>
@@ -140,6 +141,19 @@ function warningChips(warnings) {
   margin-right: 3px;
   border: 1px solid rgba(255, 200, 80, 0.35);
   color: rgba(255, 200, 80, 0.85);
+  border-radius: 2px;
+}
+/* Projected-lineup chip — lab teal, distinct from amber warnings */
+.proj-chip {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  margin-right: 3px;
+  border: 1px solid rgba(95, 158, 160, 0.45);
+  color: rgba(95, 158, 160, 0.95);
   border-radius: 2px;
 }
 </style>

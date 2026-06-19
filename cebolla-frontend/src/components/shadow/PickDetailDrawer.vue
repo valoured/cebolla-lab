@@ -62,6 +62,11 @@ const activeWarnings = computed(() => {
   return Object.keys(w).filter(k => w[k] === true)
 })
 
+// Projected-lineup provenance: source label + the history window it was built
+// from. lineup_source lives on the row; the date range on warnings.lineup_window.
+const isProjected = computed(() => props.pick?.lineup_source === 'projected')
+const lineupWindow = computed(() => props.pick?.warnings?.lineup_window || null)
+
 function onKeydown(e) {
   if (e.key === 'Escape' && visible.value) emit('close')
 }
@@ -124,6 +129,18 @@ onUnmounted(() => {
             <dl class="kv">
               <div v-for="[k, v] in zRows" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></div>
             </dl>
+          </section>
+
+          <!-- Lineup provenance -->
+          <section v-if="pick.lineup_source" class="drawer-section">
+            <div class="label-bracket text-signal-400 mb-2">lineup</div>
+            <dl class="kv">
+              <div><dt>Source</dt><dd>{{ isProjected ? 'projected' : pick.lineup_source }}</dd></div>
+            </dl>
+            <p v-if="isProjected" class="text-fg-500 text-xs italic mt-1.5">
+              Projected lineup used<template v-if="lineupWindow">
+              ({{ lineupWindow.from }} → {{ lineupWindow.to }}, {{ lineupWindow.days }}-day typical 9)</template>.
+            </p>
           </section>
 
           <!-- Warnings -->
