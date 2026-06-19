@@ -366,21 +366,29 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/compute_projections.py
 
-  # ── PICK V2 (shadow): hourly after odds + lineups — the v2 analog of
-  # compute-projections. Reads CONFIRMED lineups + odds and writes the full
-  # shadow slate to picks_v2 (tracking only, no stake). Self-skips cleanly when
-  # no confirmed lineups exist, so the broad window is harmless. Mirrors
-  # compute-projections' :17 slate window MINUS the 13 7 (3:13 AM) trigger,
-  # which would be a guaranteed no-op (no confirmed lineups that early).
+  # ── PICK V2 (shadow): ONCE daily at 8:17 AM ET (17 12 UTC) — the v2 analog of
+  # compute-projections. Builds each team's PROJECTED lineup from the last 14
+  # days of batter_game_log (projected_lineup.py) and writes the full shadow
+  # slate to picks_v2 (tracking only, no stake). No longer waits for confirmed
+  # lineups (BallparkPal/Krashboard-style).
+  #
+  # WHY 17 12 (8:17 AM ET): pick-v2 needs fresh DK odds, so it MUST share a
+  # trigger with pull-dk-odds (needs: only orders jobs within the same run).
+  # 17 12 is a pull-dk-odds cron, odds are mature by 8 AM, and batter_game_log
+  # is already current from the 3:13 AM pull-batter-game-log (cross-run, table-
+  # persisted) — so no game-log dependency edge is required.
+  #
+  # pull-lineups dependency DROPPED — projected lineups don't need it. Idempotent:
+  # pick_v2.py never overwrites a (game_id, player_id) already written today, so a
+  # manual re-run is safe.
   pick-v2:
     if: |
       always() && (
-        (github.event_name == 'schedule' &&
-         contains(fromJSON('["17 15 * * *", "17 16 * * *", "17 17 * * *", "17 18 * * *", "17 19 * * *", "17 20 * * *", "17 21 * * *", "17 22 * * *", "17 23 * * *", "17 0 * * *", "17 1 * * *", "17 2 * * *"]'), github.event.schedule))
+        (github.event_name == 'schedule' && github.event.schedule == '17 12 * * *')
         || inputs.job == 'all' || inputs.job == 'pick_v2'
       )
     runs-on: ubuntu-latest
-    needs: [pull-dk-odds, pull-lineups]
+    needs: [pull-dk-odds]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1,14 +1,22 @@
 """
-pick_v2.py — v2 shadow HR picker (hr_score_v2). Day 5.
+pick_v2.py — v2 shadow HR picker (hr_score_v2). Day 5; projected-lineup since
+2026-06-19.
 
-Reads CONFIRMED lineups for the slate, computes hr_model.compute_hr_probability
-for every confirmed batter, runs slate-level sanity checks, and writes the full
+Builds each team's PROJECTED lineup from recent history (projected_lineup.py,
+last 14 days of batter_game_log), computes hr_model.compute_hr_probability for
+every projected batter, runs slate-level sanity checks, and writes the full
 slate to picks_v2 (or picks_v2_rejected on failure). TRACKING ONLY — no stake,
-under stop-the-bleed. Idempotent on UNIQUE(pick_date, game_id, player_id,
-market, model_version).
+under stop-the-bleed.
 
-CRON: hourly 11:00-19:00 ET — catches each game as its lineup confirms
-(confirmed lineups aren't posted at the 3:30 AM pick time). Re-runs upsert.
+WHY PROJECTED (not confirmed): we no longer wait for daily confirmed lineups.
+Like BallparkPal / Krashboard, we pick at the start of the day off each team's
+typical lineup. When confirmed lineups arrive later, NO re-pick — the projected
+picks are already tracked. Every row carries warnings.lineup_source='projected'.
+
+CRON: once daily at 8:17 AM ET (17 12 UTC), on a pull-dk-odds trigger so odds
+are fresh. batter_game_log is already current from the 3:13 AM pull. Idempotent:
+existing (game_id, player_id) picks for today are NOT overwritten — the morning
+line stays the tracked line.
 
 SANITY GATES:
   per-pick   — hard reject if model_prob_per_game > 0.30 → picks_v2_rejected
@@ -34,6 +42,9 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from v2 import hr_model as HM
+from v2 import projected_lineup as PJ
+
+LINEUP_WINDOW_DAYS = 14
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -49,16 +60,41 @@ def _today_iso():
     return (datetime.now(timezone.utc) - timedelta(hours=4)).date().isoformat()
 
 
-def _confirmed_lineups(date_iso):
+def _projected_lineups(date_iso):
+    """Today's games + a confirmed-lineup-shaped list built from each team's
+    PROJECTED lineup (top-9-by-PA over the last LINEUP_WINDOW_DAYS, modal slot).
+    Returns (games, lus, window) where lus rows mimic the old lineups shape:
+    {game_id, team_id, player_id, batting_order}. `window` is the shared
+    {days, from, to} history range, stamped onto every pick's warnings."""
     games = {g["id"]: g for g in sb.table("games").select(
         "id, home_team_id, away_team_id, home_pitcher_id, away_pitcher_id, status")
         .eq("game_date", date_iso).execute().data or []}
-    lus = sb.table("lineups").select(
-        "game_id, team_id, batting_order, player_id, source, is_confirmed") \
-        .in_("game_id", list(games)).execute().data or []
-    lus = [l for l in lus if (l.get("is_confirmed") or l.get("source") == "mlb_api")
-           and l.get("player_id")]
-    return games, lus
+    tids = [t for g in games.values()
+            for t in (g["home_team_id"], g["away_team_id"]) if t]
+    proj = PJ.get_projected_lineups(tids, sb, days=LINEUP_WINDOW_DAYS)
+    window = next((info["window"] for info in proj.values()), None)
+
+    lus = []
+    for g in games.values():
+        for team_id in (g["home_team_id"], g["away_team_id"]):
+            info = proj.get(team_id)
+            if not info:
+                continue
+            for b in info["batters"]:
+                lus.append({"game_id": g["id"], "team_id": team_id,
+                            "player_id": b["player_id"],
+                            "batting_order": b["batting_order"]})
+    return games, lus, window
+
+
+def _existing_keys(date_iso):
+    """(game_id, player_id) pairs already written to picks_v2 for this
+    pick_date + market + model_version. Used to never overwrite the morning
+    line on a manual re-run."""
+    rows = sb.table("picks_v2").select("game_id, player_id") \
+        .eq("pick_date", date_iso).eq("market", MARKET) \
+        .eq("model_version", HM.MODEL_VERSION).execute().data or []
+    return {(r["game_id"], r["player_id"]) for r in rows}
 
 
 def _build_ctx_map(games, lus):
@@ -90,7 +126,7 @@ def _ctx_for(l, games, players, bstats, prows, odds):
     is_home = l["team_id"] == g["home_team_id"]
     opp = g["away_pitcher_id"] if is_home else g["home_pitcher_id"]
     pr = prows.get(opp, {})
-    lsrc = "confirmed" if (l.get("is_confirmed") and l.get("source") == "mlb_api") else l.get("source")
+    lsrc = "projected"   # every pick is now off the projected lineup
     ctx = {
         "bstats": bstats.get(l["player_id"]),
         "batting_order": l.get("batting_order"),
@@ -132,10 +168,14 @@ def main():
     log.info("🧅 pick_v2 %s — slate %s (model %s, c=%.2f)",
              "DRY-RUN" if dry else "sync", date_iso, HM.MODEL_VERSION, HM.MODEL_INTERCEPT_C)
 
-    games, lus = _confirmed_lineups(date_iso)
+    games, lus, window = _projected_lineups(date_iso)
     if not lus:
-        log.warning("No confirmed lineups for %s — nothing to do (run later once they post).", date_iso)
+        log.warning("No projected lineups for %s — no games on the slate or no "
+                    "recent batter_game_log history.", date_iso)
         return
+    if window:
+        log.info("Projected lineups from %s → %s (%d-day window)",
+                 window["from"], window["to"], window["days"])
     players, bstats, prows, odds = _build_ctx_map(games, lus)
 
     picks, rejected, team_of = [], [], {}
@@ -144,6 +184,8 @@ def main():
         r = HM.compute_hr_probability(l["player_id"], l["game_id"], opp, sb=sb, ctx=ctx)
         if r is None:
             continue
+        if window:
+            r["warnings"]["lineup_window"] = window
         team_of[r["batter_id"]] = l["team_id"]
         if r["hard_reject"]:
             rejected.append((r, "per_game_gt_0.30"))
@@ -198,9 +240,15 @@ def main():
         log.info("DRY-RUN — NO DB writes.")
         return
 
-    # ── write (idempotent upsert) ──
+    # ── write (don't-overwrite: keep the morning line as the tracked line) ──
     if picks:
-        rows = [_row(p, date_iso, team_of.get(p["batter_id"])) for p in picks]
+        existing = _existing_keys(date_iso)
+        fresh = [p for p in picks if (p["game_id"], p["batter_id"]) not in existing]
+        skipped = len(picks) - len(fresh)
+        if skipped:
+            log.info("Idempotency: %d pick(s) already written for %s — left untouched.",
+                     skipped, date_iso)
+        rows = [_row(p, date_iso, team_of.get(p["batter_id"])) for p in fresh]
         for i in range(0, len(rows), 200):
             sb.table("picks_v2").upsert(
                 rows[i:i + 200],
